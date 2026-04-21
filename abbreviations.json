@@ -1,0 +1,60 @@
+{
+  "categories": {
+    "Colors": [
+      "white", "black", "red", "blue", "green", "yellow", "pink", "purple",
+      "orange", "grey", "gray", "beige", "navy", "cream", "clear",
+      "transparent", "brown", "ivory", "silver", "gold"
+    ],
+    "Sizes": [
+      "XS", "S", "M", "L", "XL", "XXL", "XXXL", "sm", "med", "lge",
+      "extra large", "one size", "OS", "regular", "petite", "plus"
+    ],
+    "UOMs": [
+      "oz", "fl oz", "ml", "mL", "L", "g", "mg", "kg", "lb", "lbs", "ct",
+      "count", "pk", "pack", "ea", "each", "cs", "case", "bx", "box",
+      "roll", "rolls", "pair", "pairs", "tube", "tubes", "bottle",
+      "bottles", "bag", "bags", "pouch", "pouches", "sheet", "sheets",
+      "pad", "pads", "wipe", "wipes", "piece", "pieces", "unit", "units",
+      "gallon", "gal", "qt", "quart", "pt", "pint", "tsp", "tbsp", "cup"
+    ],
+    "Forms": [
+      "cream", "gel", "lotion", "ointment", "spray", "foam", "liquid",
+      "powder", "tablet", "capsule", "patch", "strip", "wipe", "serum",
+      "oil", "balm", "stick", "bar", "drop", "drops", "solution",
+      "suspension", "emulsion", "paste"
+    ],
+    "Sterility": [
+      "sterile", "non-sterile", "non sterile", "steriled",
+      "individually wrapped", "single use", "single-use", "disposable"
+    ],
+    "Materials": [
+      "cotton", "polyester", "nylon", "latex", "nitrile", "vinyl",
+      "silicone", "foam", "fabric", "woven", "non-woven", "nonwoven",
+      "plastic", "paper", "bamboo", "microfiber", "spandex", "lycra",
+      "elastic"
+    ],
+    "Scents": [
+      "unscented", "fragrance free", "fragrance-free", "lavender",
+      "eucalyptus", "mint", "peppermint", "citrus", "lemon", "vanilla",
+      "rose", "aloe", "coconut", "chamomile", "tea tree"
+    ],
+    "Flavors": [
+      "unflavored", "original", "mint", "spearmint", "bubblegum", "cherry",
+      "grape", "strawberry", "watermelon", "citrus", "lemon", "orange",
+      "vanilla", "chocolate", "mixed berry"
+    ],
+    "Packaging": [
+      "individually wrapped", "bulk", "retail", "resealable", "zip lock",
+      "sealed", "blister pack", "clamshell", "jar", "tub", "canister",
+      "dispenser", "pump", "flip cap", "twist cap", "dropper"
+    ],
+    "Product Attributes": [
+      "antimicrobial", "antibacterial", "antifungal", "hypoallergenic",
+      "alcohol free", "alcohol-free", "BPA free", "BPA-free", "latex free",
+      "latex-free", "oil free", "oil-free", "water resistant", "waterproof",
+      "breathable", "absorbent", "ultra absorbent", "extra strength",
+      "regular strength", "maximum strength", "sensitive", "gentle",
+      "ultra thin", "heavy duty"
+    ]
+  }
+}

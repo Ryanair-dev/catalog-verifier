@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+
+# SQLite DB (created on first run)
+catalog_verifier.db
+catalog_verifier.db-journal
+catalog_verifier.db-wal
+catalog_verifier.db-shm
+
+# Environment
+.env
+.env.local
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

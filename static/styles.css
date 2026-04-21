@@ -1,0 +1,361 @@
+/* =========================================================================
+   Catalog Verifier — custom styles on top of Tailwind (CDN).
+   Kept intentionally small. Tailwind does the heavy lifting.
+   ========================================================================= */
+
+:root {
+  --navy-900: #0b1f38;
+  --navy-800: #0e2a47;
+  --navy-700: #14355a;
+  --teal-500: #0f8a8d;
+  --teal-600: #0a6f71;
+  --teal-400: #29a7aa;
+  --teal-100: #d8f0f1;
+  --grey-50: #f7f8fa;
+  --grey-100: #eef0f4;
+  --grey-200: #e2e6ec;
+  --grey-500: #6b7480;
+  --grey-700: #37404c;
+  --green-50:  #e9f8ee;
+  --green-500: #1f9d55;
+  --yellow-50: #fef7e0;
+  --yellow-500: #c79a14;
+  --red-50:    #fdecec;
+  --red-500:   #cf3535;
+  --orange-50: #fff1e0;
+  --orange-500:#d47818;
+  --shadow-card: 0 1px 2px rgba(10, 30, 60, 0.04), 0 4px 14px rgba(10, 30, 60, 0.06);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--grey-50);
+  color: var(--grey-700);
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* ---------- Sidebar ------------------------------------------------------ */
+
+.sidebar {
+  background: var(--navy-900);
+  color: #dde4ef;
+  width: 240px;
+  min-height: 100vh;
+}
+.sidebar .nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 8px;
+  font-size: 14px; color: #b6c1d1;
+  cursor: pointer; transition: background 120ms;
+}
+.sidebar .nav-item:hover { background: var(--navy-800); color: #fff; }
+.sidebar .nav-item.active {
+  background: var(--navy-700); color: #fff;
+  box-shadow: inset 3px 0 0 var(--teal-400);
+}
+.sidebar .nav-item.disabled {
+  opacity: 0.45; cursor: not-allowed;
+}
+.sidebar .nav-item.disabled:hover { background: transparent; }
+.sidebar .section-label {
+  font-size: 11px; letter-spacing: 0.08em; color: #7a8697;
+  text-transform: uppercase; margin: 18px 14px 6px;
+}
+
+/* ---------- Cards -------------------------------------------------------- */
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--grey-100);
+}
+.card-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--grey-100);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-body { padding: 20px; }
+
+/* ---------- Buttons ------------------------------------------------------ */
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 16px; border-radius: 8px;
+  font-weight: 500; font-size: 14px;
+  transition: all 120ms ease-in-out;
+  cursor: pointer; border: 1px solid transparent;
+}
+.btn-primary {
+  background: var(--teal-500); color: #fff;
+}
+.btn-primary:hover { background: var(--teal-600); }
+.btn-primary:disabled {
+  background: var(--grey-200); color: var(--grey-500); cursor: not-allowed;
+}
+.btn-secondary {
+  background: #fff; color: var(--grey-700);
+  border-color: var(--grey-200);
+}
+.btn-secondary:hover { background: var(--grey-50); border-color: var(--grey-500); }
+.btn-ghost {
+  background: transparent; color: var(--grey-700);
+}
+.btn-ghost:hover { background: var(--grey-100); }
+
+/* ---------- Toggle (source type) ---------------------------------------- */
+
+.toggle {
+  display: inline-flex; background: var(--grey-100);
+  padding: 4px; border-radius: 8px;
+  font-size: 13px; font-weight: 500;
+}
+.toggle button {
+  padding: 6px 14px; border-radius: 6px;
+  color: var(--grey-500); transition: all 120ms;
+  cursor: pointer;
+}
+.toggle button.active {
+  background: #fff; color: var(--navy-800);
+  box-shadow: 0 1px 2px rgba(10, 30, 60, 0.08);
+}
+
+/* ---------- Upload drop zone ------------------------------------------- */
+
+.drop-zone {
+  border: 2px dashed var(--grey-200);
+  border-radius: 10px;
+  padding: 32px 20px;
+  text-align: center;
+  transition: all 150ms;
+  cursor: pointer;
+  background: var(--grey-50);
+}
+.drop-zone:hover, .drop-zone.drag {
+  border-color: var(--teal-500);
+  background: var(--teal-100);
+}
+.drop-zone.loaded {
+  border-style: solid;
+  border-color: var(--teal-500);
+  background: #fff;
+}
+.drop-zone .file-name { font-weight: 600; color: var(--navy-800); }
+
+/* ---------- Verdict badges (pill) -------------------------------------- */
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+  white-space: nowrap;
+}
+.badge-verified  { background: var(--green-50);  color: var(--green-500); }
+.badge-review    { background: var(--yellow-50); color: var(--yellow-500); }
+.badge-not       { background: var(--red-50);    color: var(--red-500); }
+.badge-overridden{ background: var(--grey-100);  color: var(--grey-500); }
+.badge-duplicate { background: #fff3c2; color: #7a5a00; }
+.strikethrough { text-decoration: line-through; opacity: 0.55; }
+
+/* ---------- Results table --------------------------------------------- */
+
+.results-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.results-table thead th {
+  position: sticky; top: 0;
+  background: var(--navy-900); color: #e2e8f0;
+  text-align: left; padding: 10px 12px;
+  font-weight: 600; font-size: 12px;
+  letter-spacing: 0.02em;
+  z-index: 5;
+}
+.results-table tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--grey-100);
+  vertical-align: middle;
+  color: var(--grey-700);
+}
+.results-table tbody tr:hover { background: var(--grey-50); }
+.results-table tbody tr.row-verified { background: #f2fbf5; }
+.results-table tbody tr.row-review   { background: #fffbe8; }
+.results-table tbody tr.row-not      { background: #fdf2f2; }
+.results-table tbody tr.row-duplicate { background: #fffac2 !important; }
+.results-table tbody tr.row-overridden { background: #fff0dc !important; }
+
+.signal-cell {
+  font-size: 12px; color: var(--grey-500);
+  display: flex; flex-direction: column;
+}
+.signal-score { font-weight: 600; color: var(--grey-700); }
+.signal-score.ok { color: var(--green-500); }
+.signal-score.warn { color: var(--yellow-500); }
+.signal-score.bad { color: var(--red-500); }
+
+/* ---------- Confidence bar ------------------------------------------- */
+
+.confidence-bar {
+  width: 92px; height: 6px; background: var(--grey-100);
+  border-radius: 6px; overflow: hidden; margin-top: 4px;
+}
+.confidence-bar .fill { height: 100%; border-radius: 6px; }
+.confidence-bar .fill.verified { background: var(--green-500); }
+.confidence-bar .fill.review   { background: var(--yellow-500); }
+.confidence-bar .fill.not      { background: var(--red-500); }
+
+/* ---------- Progress bar --------------------------------------------- */
+
+.progress {
+  width: 100%; height: 10px;
+  background: var(--grey-100); border-radius: 999px; overflow: hidden;
+}
+.progress .bar {
+  height: 100%; background: linear-gradient(90deg, var(--teal-500), var(--teal-400));
+  transition: width 200ms;
+}
+
+/* ---------- AI banner ------------------------------------------------- */
+
+.ai-banner {
+  background: linear-gradient(90deg, #7c3aed, #0f8a8d);
+  color: #fff; padding: 8px 20px;
+  font-size: 13px; font-weight: 500;
+  display: flex; align-items: center; gap: 10px;
+}
+
+/* ---------- Side panel (abbreviations) ------------------------------ */
+
+.side-panel {
+  position: fixed; right: 0; top: 0; bottom: 0;
+  width: 420px; background: #fff;
+  box-shadow: -10px 0 32px rgba(10, 30, 60, 0.12);
+  transform: translateX(100%);
+  transition: transform 250ms ease-in-out;
+  z-index: 40; display: flex; flex-direction: column;
+}
+.side-panel.open { transform: translateX(0); }
+.side-panel-header {
+  padding: 18px 20px; border-bottom: 1px solid var(--grey-100);
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+/* ---------- Review modal -------------------------------------------- */
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(11, 31, 56, 0.55);
+  display: flex; align-items: stretch; justify-content: stretch;
+  z-index: 50; padding: 24px;
+}
+.modal-shell {
+  background: #fff; border-radius: 14px; flex: 1;
+  display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.28);
+}
+.modal-tabs {
+  display: flex; gap: 4px; padding: 8px 24px 0;
+  border-bottom: 1px solid var(--grey-100); background: #fff;
+}
+.modal-tab {
+  padding: 10px 18px; border-radius: 8px 8px 0 0;
+  font-size: 14px; font-weight: 600; color: var(--grey-500);
+  cursor: pointer; position: relative; top: 1px;
+}
+.modal-tab.active {
+  background: var(--grey-50); color: var(--navy-800);
+  border: 1px solid var(--grey-100); border-bottom-color: transparent;
+}
+
+/* ---------- Empty state --------------------------------------------- */
+
+.empty-state {
+  padding: 60px 20px; text-align: center;
+}
+.empty-state .icon-wrap {
+  width: 56px; height: 56px;
+  border-radius: 14px; background: var(--teal-100);
+  color: var(--teal-500);
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-bottom: 16px;
+}
+
+/* ---------- Scrollbars ---------------------------------------------- */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--grey-200); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: var(--grey-500); }
+
+/* ---------- Animations ---------------------------------------------- */
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.fade-in { animation: fadeIn 150ms ease-out; }
+
+.locked-tag {
+  font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(255,255,255,0.08); color: #9aa7b8;
+  margin-left: 6px;
+}
+
+/* ---------- AI Extract toggle ---------------------------------------- */
+
+.ai-toggle-btn.active {
+  background: var(--teal-500); color: #fff;
+  border-color: var(--teal-500);
+  box-shadow: 0 0 0 3px rgba(15, 138, 141, 0.15);
+}
+.ai-toggle-btn.active:hover { background: var(--teal-600); border-color: var(--teal-600); }
+
+/* ---------- Status / review-status tags ------------------------------ */
+
+.tag-reviewed          { background: #e1ecff; color: #2d4bb7; }
+.tag-manually-approved { background: var(--orange-50); color: var(--orange-500); }
+.tag-manually-rejected { background: var(--orange-50); color: var(--orange-500); }
+
+/* ---------- Category table in abbreviation panel --------------------- */
+
+.abbr-cat h4 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--grey-500); margin: 14px 0 6px;
+}
+.abbr-cat table { width: 100%; font-size: 13px; }
+.abbr-cat td { padding: 4px 8px; border-bottom: 1px solid var(--grey-100); }
+.abbr-cat td:last-child { text-align: right; width: 32px; }
+.abbr-cat .del-btn {
+  color: var(--red-500); font-size: 12px; cursor: pointer;
+  background: none; border: none; padding: 0;
+}
+.abbr-cat .del-btn:hover { text-decoration: underline; }
+
+/* ---------- Row action buttons --------------------------------------- */
+
+.row-action-btn {
+  padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  cursor: pointer; border: 1px solid transparent; transition: all 120ms;
+}
+.row-action-btn.promote  { background: #e9f8ee; color: var(--green-500); }
+.row-action-btn.promote:hover  { background: #d2f0dd; }
+.row-action-btn.reject   { background: var(--red-50); color: var(--red-500); }
+.row-action-btn.reject:hover   { background: #fac7c7; }
+.row-action-btn.approve  { background: #e9f8ee; color: var(--green-500); }
+.row-action-btn.approve:hover  { background: #d2f0dd; }
+.row-action-btn.discard  { background: var(--red-50); color: var(--red-500); }
+.row-action-btn.discard:hover  { background: #fac7c7; }
+.row-action-btn.unlock   { background: var(--teal-100); color: var(--teal-600); }
+.row-action-btn.unlock:hover   { background: #c3e6e7; }
+.row-action-btn.clear-cache {
+  background: transparent; color: var(--grey-500); padding: 2px 8px;
+  border: 1px solid var(--grey-200);
+}
+.row-action-btn.clear-cache:hover { color: var(--navy-800); border-color: var(--grey-500); }
+
+.mini-spinner {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--grey-200); border-top-color: var(--teal-500);
+  animation: spin 0.8s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+

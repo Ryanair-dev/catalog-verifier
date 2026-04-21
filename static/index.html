@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Catalog Verifier — Amazon Listing Verification</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="min-h-screen">
+
+  <!-- AI banner (visible only when AI mode is active) -->
+  <div id="ai-banner" class="ai-banner hidden">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+    <span>AI Extractor active — GPT-4o will be used when the next verification run starts.</span>
+    <button id="ai-banner-close" class="ml-auto text-white/80 hover:text-white text-sm">Disable</button>
+  </div>
+
+  <div class="flex min-h-screen">
+
+    <!-- ==================== Sidebar ==================== -->
+    <aside class="sidebar flex-shrink-0 px-4 py-6">
+      <div class="flex items-center gap-3 mb-8 px-2">
+        <div class="w-9 h-9 rounded-lg flex items-center justify-center" style="background: var(--teal-500)">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </div>
+        <div>
+          <div class="text-white font-semibold text-sm leading-4">Catalog Verifier</div>
+          <div class="text-[11px] text-[#7a8697]">Amazon listing QA</div>
+        </div>
+      </div>
+
+      <div class="section-label">Category</div>
+      <div class="nav-item active" data-view="cpg">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v6H3z"/><path d="M3 15h18v6H3z"/><circle cx="8" cy="18" r="1"/></svg>
+        CPG
+      </div>
+      <div class="nav-item disabled" title="Coming in next phase">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L3 12v8h18v-8l-7-4V2z"/></svg>
+        Medical <span class="locked-tag">Locked</span>
+      </div>
+
+      <div class="section-label">Analytics</div>
+      <div class="nav-item disabled" title="Coming soon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
+        ROI & Cost <span class="locked-tag">Soon</span>
+      </div>
+
+      <div class="section-label">Tools</div>
+      <div class="nav-item" data-view="pairs">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Pair Manager
+      </div>
+      <div class="nav-item" id="open-abbr-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h16"/></svg>
+        Abbreviation Library
+      </div>
+      <div class="nav-item" id="open-settings-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Settings
+      </div>
+
+      <div class="mt-auto pt-10 px-2 text-xs text-[#7a8697]">
+        <div>Local mode</div>
+        <div id="api-status" class="mt-1">Connecting…</div>
+      </div>
+    </aside>
+
+    <!-- ==================== Main ==================== -->
+    <main class="flex-1 overflow-hidden">
+
+      <!-- ===== View: CPG Verification ===== -->
+      <div id="view-cpg">
+        <header class="flex items-center justify-between bg-white border-b px-8 py-4" style="border-color: #eef0f4;">
+          <div>
+            <h1 class="text-xl font-semibold" style="color: var(--navy-800)">CPG Catalog Verification</h1>
+            <p class="text-sm" style="color: #6b7480;">Upload a vendor catalog and its Amazon data. The engine verifies every pre-matched ASIN.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="review-btn" class="btn btn-secondary" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/></svg>
+              Review Before Export
+            </button>
+            <button id="export-btn" class="btn btn-primary" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
+              Export to Excel
+            </button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+
+          <!-- Upload cards -->
+          <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            <!-- Catalog -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--teal-500)">Step 1</div>
+                  <div class="font-semibold" style="color: var(--navy-800)">Vendor Catalog</div>
+                  <div class="text-xs" style="color: #6b7480;">Columns: UPC/EAN, Item ID, Vendor Title, Brand, ASIN</div>
+                </div>
+                <!-- AI Extract toggle relocated HERE, to the right of the catalog upload card header -->
+                <button id="ai-toggle" class="btn btn-secondary ai-toggle-btn" title="Use GPT-4o for this run">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+                  AI Extract
+                </button>
+              </div>
+              <div class="card-body">
+                <div id="catalog-drop" class="drop-zone">
+                  <div class="icon-wrap mx-auto mb-3" style="width:44px;height:44px;border-radius:10px;background:#d8f0f1;color:#0a6f71;display:inline-flex;align-items:center;justify-content:center;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                  </div>
+                  <div class="text-sm"><span class="font-medium" style="color: var(--navy-800)">Click to upload</span> or drag &amp; drop</div>
+                  <div class="text-xs mt-1" style="color: #6b7480;">.xlsx file</div>
+                  <input type="file" id="catalog-input" accept=".xlsx" class="hidden" />
+                </div>
+              </div>
+            </div>
+
+            <!-- Amazon data -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: var(--teal-500)">Step 2</div>
+                  <div class="font-semibold" style="color: var(--navy-800)">Amazon Data</div>
+                  <div class="text-xs" style="color: #6b7480;">Pick the source type that matches your file</div>
+                </div>
+                <div class="toggle" id="amazon-source-toggle">
+                  <button class="active" data-source="keepa">Keepa</button>
+                  <button data-source="amazon">Amazon Export</button>
+                </div>
+              </div>
+              <div class="card-body">
+                <div id="amazon-drop" class="drop-zone">
+                  <div class="icon-wrap mx-auto mb-3" style="width:44px;height:44px;border-radius:10px;background:#d8f0f1;color:#0a6f71;display:inline-flex;align-items:center;justify-content:center;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                  </div>
+                  <div class="text-sm"><span class="font-medium" style="color: var(--navy-800)">Click to upload</span> or drag &amp; drop</div>
+                  <div class="text-xs mt-1" style="color: #6b7480;">.xlsx — Keepa or Amazon Seller Central export</div>
+                  <input type="file" id="amazon-input" accept=".xlsx" class="hidden" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Action row -->
+          <section class="flex items-center justify-between">
+            <div class="text-sm" style="color: #6b7480;">
+              <span id="status-hint">Sample CPG dataset pre-loaded — click <b>Run Verification</b> to see the engine in action.</span>
+            </div>
+            <div class="flex items-center gap-3">
+              <button id="reset-btn" class="btn btn-ghost">Reset</button>
+              <button id="load-sample-btn" class="btn btn-secondary">Load Sample</button>
+              <button id="run-btn" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Run Verification
+              </button>
+            </div>
+          </section>
+
+          <!-- Progress -->
+          <section id="progress-section" class="card hidden">
+            <div class="card-body">
+              <div class="flex items-center justify-between mb-2">
+                <div class="text-sm font-medium" style="color: var(--navy-800)" id="progress-label">Verifying…</div>
+                <div class="text-xs" style="color: #6b7480;" id="progress-count"></div>
+              </div>
+              <div class="progress"><div class="bar" id="progress-bar" style="width:0%"></div></div>
+            </div>
+          </section>
+
+          <!-- Summary -->
+          <section id="summary-section" class="hidden grid grid-cols-4 gap-4">
+            <div class="card"><div class="card-body">
+              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Total</div>
+              <div class="text-2xl font-semibold mt-1" id="sum-total" style="color: var(--navy-800);">0</div>
+            </div></div>
+            <div class="card"><div class="card-body">
+              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Verified</div>
+              <div class="text-2xl font-semibold mt-1" id="sum-verified" style="color: var(--green-500);">0</div>
+            </div></div>
+            <div class="card"><div class="card-body">
+              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Review</div>
+              <div class="text-2xl font-semibold mt-1" id="sum-review" style="color: var(--yellow-500);">0</div>
+            </div></div>
+            <div class="card"><div class="card-body">
+              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Not Approved</div>
+              <div class="text-2xl font-semibold mt-1" id="sum-not" style="color: var(--red-500);">0</div>
+            </div></div>
+          </section>
+
+          <!-- Results -->
+          <section id="results-section" class="card">
+            <div class="card-header">
+              <div class="flex items-center gap-4">
+                <div class="font-semibold" style="color: var(--navy-800);">Verification Results</div>
+                <div class="flex items-center gap-2">
+                  <label class="text-xs" style="color: #6b7480;">Filter:</label>
+                  <select id="verdict-filter" class="text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;">
+                    <option value="all">All</option>
+                    <option value="Verified">Verified ✅</option>
+                    <option value="Review">Review ⚠️</option>
+                    <option value="Not Approved">Not Approved ❌</option>
+                    <option value="Duplicate">Duplicate flagged</option>
+                  </select>
+                  <label class="text-xs ml-3" style="color: #6b7480;">Sort:</label>
+                  <select id="sort-by" class="text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;">
+                    <option value="conf-desc">Confidence ↓</option>
+                    <option value="conf-asc">Confidence ↑</option>
+                    <option value="verdict">Verdict</option>
+                    <option value="brand">Brand</option>
+                  </select>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <input id="search" placeholder="Search title, brand, ASIN…" class="text-sm rounded border px-3 py-1 w-64" style="border-color: #e2e6ec;" />
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div id="empty-state" class="empty-state">
+                <div class="icon-wrap">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 9v12"/></svg>
+                </div>
+                <div class="font-semibold" style="color: var(--navy-800)">No results yet</div>
+                <div class="text-sm mt-1" style="color: #6b7480;">Upload a catalog and Amazon data file, then click Run Verification.</div>
+              </div>
+
+              <div id="results-table-wrap" class="hidden overflow-auto" style="max-height: 68vh;">
+                <table class="results-table">
+                  <thead>
+                    <tr>
+                      <th>UPC/EAN</th>
+                      <th>Item ID</th>
+                      <th>Vendor Title</th>
+                      <th>Brand</th>
+                      <th>ASIN</th>
+                      <th>Confidence</th>
+                      <th>Verdict</th>
+                      <th>Review Status</th>
+                      <th>UPC</th>
+                      <th>Item ID</th>
+                      <th>Brand</th>
+                      <th>Title</th>
+                      <th>Pack</th>
+                      <th>Amz Pack</th>
+                      <th>Barcode DB</th>
+                      <th>Notes</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="results-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ===== View: Pair Manager ===== -->
+      <div id="view-pairs" class="hidden">
+        <header class="flex items-center justify-between bg-white border-b px-8 py-4" style="border-color: #eef0f4;">
+          <div>
+            <h1 class="text-xl font-semibold" style="color: var(--navy-800)">Pair Manager</h1>
+            <p class="text-sm" style="color: #6b7480;">Search the blacklist by UPC or ASIN. No bulk list — search-only.</p>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-4">
+          <div class="card">
+            <div class="card-body">
+              <div class="flex items-center gap-3">
+                <input id="pairs-search" placeholder="Enter a UPC or ASIN…" class="flex-1 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
+                <button id="pairs-search-btn" class="btn btn-primary">Search</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="pairs-empty" class="empty-state">
+            <div class="icon-wrap">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="font-semibold" style="color: var(--navy-800)">Search for a blacklisted pair</div>
+            <div class="text-sm mt-1" style="color: #6b7480;">Pairs appear on the blacklist when rejected during review or export.</div>
+          </div>
+
+          <div id="pairs-results" class="card hidden">
+            <div class="card-body p-0">
+              <table class="results-table">
+                <thead>
+                  <tr>
+                    <th>UPC</th><th>ASIN</th>
+                    <th>Confidence at Blacklist</th>
+                    <th>Signals that Failed</th>
+                    <th>Date Blacklisted</th>
+                    <th class="text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="pairs-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== Abbreviation side panel (categorised) ==================== -->
+  <div id="abbr-panel" class="side-panel">
+    <div class="side-panel-header">
+      <div>
+        <div class="font-semibold" style="color: var(--navy-800)">Abbreviation Library</div>
+        <div class="text-xs" style="color: #6b7480;">Categorised, persistent across sessions (SQLite).</div>
+      </div>
+      <button id="abbr-close" class="btn btn-ghost">Close</button>
+    </div>
+    <div class="p-5 overflow-auto flex-1">
+      <div class="grid grid-cols-1 gap-2 mb-4">
+        <div class="flex gap-2">
+          <select id="abbr-new-cat" class="text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;"></select>
+          <input id="abbr-new-key" class="text-sm rounded border px-3 py-2 flex-1" placeholder="Abbreviation" style="border-color: #e2e6ec;" />
+          <input id="abbr-new-val" class="text-sm rounded border px-3 py-2 flex-1" placeholder="Full form" style="border-color: #e2e6ec;" />
+          <button id="abbr-add" class="btn btn-primary">Add</button>
+        </div>
+      </div>
+      <div id="abbr-categories"></div>
+    </div>
+  </div>
+
+  <!-- ==================== Settings side panel ==================== -->
+  <div id="settings-panel" class="side-panel">
+    <div class="side-panel-header">
+      <div>
+        <div class="font-semibold" style="color: var(--navy-800)">Settings</div>
+        <div class="text-xs" style="color: #6b7480;">Adjust the verdict thresholds used by the engine.</div>
+      </div>
+      <button id="settings-close" class="btn btn-ghost">Close</button>
+    </div>
+    <div class="p-5 space-y-4">
+      <div>
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Verified ≥</label>
+        <div class="flex items-center gap-2 mt-1">
+          <input type="number" id="threshold-verified" min="0" max="100" step="0.5"
+                 class="w-28 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
+          <span class="text-xs" style="color: #6b7480;">%</span>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Review ≥</label>
+        <div class="flex items-center gap-2 mt-1">
+          <input type="number" id="threshold-review" min="0" max="100" step="0.5"
+                 class="w-28 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
+          <span class="text-xs" style="color: #6b7480;">%</span>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Below review → Not Approved</label>
+        <div class="text-sm mt-1" style="color: #6b7480;">The lower bound is always 0%.</div>
+      </div>
+      <button id="settings-save" class="btn btn-primary w-full">Save thresholds</button>
+      <div id="settings-feedback" class="text-xs" style="color: var(--green-500);"></div>
+    </div>
+  </div>
+
+  <!-- ==================== Review modal ==================== -->
+  <div id="review-modal" class="modal-backdrop hidden">
+    <div class="modal-shell">
+      <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color: #eef0f4;">
+        <div>
+          <div class="font-semibold text-lg" style="color: var(--navy-800)">Review Before Export</div>
+          <div class="text-xs" style="color: #6b7480;">Promote, reject, or approve rows per-tab. Actions differ by tab.</div>
+        </div>
+        <div class="flex gap-2">
+          <button id="review-close" class="btn btn-secondary">Cancel</button>
+          <button id="confirm-export" class="btn btn-primary">Confirm &amp; Export</button>
+        </div>
+      </div>
+      <div class="modal-tabs">
+        <div class="modal-tab active" data-review-tab="Verified">Approved <span id="count-Verified">0</span></div>
+        <div class="modal-tab" data-review-tab="Review">Review <span id="count-Review">0</span></div>
+        <div class="modal-tab" data-review-tab="Not Approved">Not Approved <span id="count-Not">0</span></div>
+      </div>
+      <div class="px-6 py-4 flex items-center justify-between" style="background: var(--grey-50);">
+        <div class="text-sm" id="review-summary" style="color: #6b7480;"></div>
+        <div class="flex gap-2">
+          <input id="review-search" class="text-sm rounded border px-3 py-1 w-64" placeholder="Filter rows…" style="border-color: #e2e6ec;" />
+          <button id="bulk-action" class="btn btn-secondary">Bulk action</button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-auto px-6 pb-6">
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th>Vendor Title</th><th>ASIN</th><th>Conf.</th><th>Verdict</th>
+              <th>UPC</th><th>Item</th><th>Brand</th><th>Title</th><th>Pack</th>
+              <th class="text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="review-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Pre-export warning modal ==================== -->
+  <div id="export-warn-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl w-[480px] p-6 shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start gap-3 mb-3">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background: #fef7e0; color: var(--yellow-500);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+        </div>
+        <div>
+          <div class="font-semibold" style="color: var(--navy-800)">Unreviewed items in Review</div>
+          <div class="text-sm mt-1" style="color: #6b7480;">
+            You have <b><span id="unreviewed-count">0</span></b> unreviewed items in the Review tab.
+            Are you sure you want to export?
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button id="warn-go-back"  class="btn btn-secondary">Go Back to Review</button>
+        <button id="warn-export"   class="btn btn-primary">Export Anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
