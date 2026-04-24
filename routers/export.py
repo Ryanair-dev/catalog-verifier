@@ -20,11 +20,11 @@ router = APIRouter()
 
 
 OUTPUT_COLUMNS = [
-    "UPC/EAN", "Item ID", "Vendor Title", "Brand", "ASIN",
+    "UPC/EAN", "Item ID", "Vendor Title", "Brand", "ASIN", "Amazon Title",
     "Confidence Score", "Verdict", "Review Status",
     "UPC Signal", "Item ID Signal", "Brand Signal", "Title Signal",
     "Pack Signal", "Amz Pack", "Barcode DB Match", "Duplicate Flag",
-    "Original Verdict", "Notes",
+    "Original Verdict", "Notes", "Reason",
 ]
 
 # Fill colours. Tuned for readability on a white sheet.
@@ -43,6 +43,37 @@ class ExportRow(BaseModel):
 class ExportPayload(BaseModel):
     results: list[dict[str, Any]]
     abbreviations: list[dict[str, Any]] = []
+
+
+def _build_reason(row: dict) -> str:
+    signals = row.get("signals") or {}
+    upc_sig = signals.get("upc") or {}
+    title_sig = signals.get("title") or {}
+    brand_sig = signals.get("brand") or {}
+    parts: list[str] = []
+
+    if not row.get("ASIN"):
+        return "No ASIN in catalog"
+    if upc_sig.get("detail") == "No Amazon row found":
+        return "ASIN not in Amazon file"
+    if upc_sig.get("no_data"):
+        parts.append("No UPC in Amazon export — scored on title")
+    elif not upc_sig.get("matched"):
+        parts.append("UPC mismatch")
+    title_score = title_sig.get("score") or 0
+    if title_score < 60:
+        parts.append(f"Low title similarity ({round(title_score)}%)")
+    if not brand_sig.get("matched"):
+        parts.append("Brand mismatch")
+    if row.get("duplicate"):
+        parts.append("Duplicate Item ID")
+    notes = row.get("notes") or ""
+    if notes:
+        parts.append(notes)
+    if not parts:
+        verdict = row.get("verdict") or ""
+        return "" if verdict == "Approved" else "Low confidence score"
+    return " · ".join(parts)
 
 
 def _signal_text(signal: dict | None) -> str:
@@ -66,7 +97,7 @@ def _row_fill(row: dict) -> PatternFill | None:
     if is_overridden and review_status in ("Manually Approved", "Manually Rejected"):
         return FILL_OVERRIDDEN
     verdict = row.get("verdict")
-    if verdict == "Verified":
+    if verdict == "Approved":
         return FILL_VERIFIED
     if verdict == "Review":
         return FILL_REVIEW
@@ -92,8 +123,8 @@ async def export(payload: ExportPayload) -> StreamingResponse:
     ws.row_dimensions[1].height = 26
     ws.freeze_panes = "A2"
 
-    # Column widths (18 columns now — Review Status added between Verdict and UPC Signal).
-    widths = [16, 14, 48, 18, 14, 14, 14, 18, 28, 28, 28, 36, 28, 10, 36, 14, 16, 36]
+    # Column widths (20 columns: added Amazon Title at col 6, Reason at col 20).
+    widths = [16, 14, 48, 18, 14, 48, 14, 14, 18, 28, 28, 28, 36, 28, 10, 36, 14, 16, 36, 52]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = width
 
@@ -113,6 +144,7 @@ async def export(payload: ExportPayload) -> StreamingResponse:
             row.get("Vendor Title"),
             row.get("Brand"),
             row.get("ASIN"),
+            row.get("AmzTitle") or "",
             row.get("confidence"),
             row.get("verdict"),
             row.get("review_status") or "",
@@ -126,6 +158,7 @@ async def export(payload: ExportPayload) -> StreamingResponse:
             "Duplicate" if row.get("duplicate") else "",
             row.get("original_verdict"),
             row.get("notes") or "",
+            _build_reason(row),
         ]
 
         fill = _row_fill(row)
@@ -133,10 +166,9 @@ async def export(payload: ExportPayload) -> StreamingResponse:
             cell = ws.cell(row=r_idx, column=c_idx, value=val)
             cell.font = body_font
             cell.alignment = Alignment(vertical="center", wrap_text=True)
-            # Duplicate flag cell specifically highlighted in yellow regardless
-            # of verdict fill — the overall row still gets the verdict fill.
-            # (Column 16 = "Duplicate Flag" in the new 18-column layout.)
-            if c_idx == 16 and row.get("duplicate"):
+            # Duplicate flag cell highlighted in yellow regardless of verdict fill.
+            # (Column 17 = "Duplicate Flag" in the 20-column layout.)
+            if c_idx == 17 and row.get("duplicate"):
                 cell.fill = FILL_DUPLICATE
             elif fill is not None:
                 cell.fill = fill

@@ -138,6 +138,8 @@ async def verify(
     results = []
     for row in catalog_rows:
         asin = str(row.get("ASIN") or "").strip().upper()
+        if not asin:
+            continue
         upc  = str(row.get("UPC/EAN") or "").strip()
         amz = amazon_index.get(asin)
 

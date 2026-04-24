@@ -27,3 +27,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# User data / uploads (Excel files, sample exports — not source)
+*.xlsx
+*.xls
+*.csv

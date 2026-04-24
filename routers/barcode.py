@@ -8,7 +8,7 @@ the server stays stateless.
 from __future__ import annotations
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from services.barcode_lookup import aligned_with, lookup_barcode
 
@@ -19,6 +19,11 @@ class BarcodeRequest(BaseModel):
     upc: str
     brand: str | None = None
     vendor_title: str | None = None
+
+    @field_validator("upc", mode="before")
+    @classmethod
+    def coerce_upc(cls, v):
+        return str(v) if v is not None else v
 
 
 @router.post("/barcode/lookup")

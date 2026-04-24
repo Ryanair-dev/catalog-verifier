@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import barcode, export, library, pairs, settings, verify
+from routers import analytics, barcode, export, library, pairs, scans, settings, verify
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -39,12 +39,14 @@ app.add_middleware(
 )
 
 # API routers.
+app.include_router(scans.router,    prefix="/api", tags=["scans"])
 app.include_router(verify.router,   prefix="/api", tags=["verify"])
 app.include_router(barcode.router,  prefix="/api", tags=["barcode"])
 app.include_router(export.router,   prefix="/api", tags=["export"])
 app.include_router(pairs.router,    prefix="/api", tags=["pairs"])
 app.include_router(library.router,  prefix="/api", tags=["library"])
 app.include_router(settings.router, prefix="/api", tags=["settings"])
+app.include_router(analytics.router, prefix="/api", tags=["analytics"])
 
 
 @app.on_event("startup")
@@ -69,8 +71,11 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 def root() -> FileResponse:
-    """Serve the SPA shell."""
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    """Serve the SPA shell — no-cache so the browser always revalidates JS/CSS."""
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 if __name__ == "__main__":

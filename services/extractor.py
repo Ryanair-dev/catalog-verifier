@@ -157,12 +157,11 @@ def _extract_variant(text: str) -> dict:
 
 def _extract_product_type(text: str) -> str | None:
     lower = text.lower()
-    for ptype in PRODUCT_TYPES:
+    for ptype in sorted(PRODUCT_TYPES, key=len, reverse=True):
         if re.search(r"\b" + re.escape(ptype) + r"\b", lower):
             return ptype
-    # Fallback: use the last meaningful word of the title.
-    tokens = [t for t in re.split(r"\s+", lower) if t and not t.isdigit()]
-    return tokens[-1] if tokens else None
+    # No fallback — a missing product type means no penalty, not a wrong one.
+    return None
 
 
 def rule_extract(title: str, abbreviations: Iterable[dict]) -> dict:
@@ -193,20 +192,147 @@ def rule_extract(title: str, abbreviations: Iterable[dict]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Amazon full-row extraction
+# --------------------------------------------------------------------------- #
+
+# All text-bearing fields across Keepa and standard Amazon exports.
+_AMZ_TEXT_FIELDS = [
+    # Keepa
+    "Title", "Size", "Variation Attributes",
+    "Description & Features: Feature 1", "Description & Features: Feature 2",
+    "Description & Features: Feature 3", "Description & Features: Feature 4",
+    "Description & Features: Feature 5", "Description & Features: Feature 6",
+    "Description & Features: Feature 7", "Description & Features: Feature 8",
+    "Description & Features: Feature 9", "Description & Features: Feature 10",
+    "Description & Features: Description",
+    # Standard export
+    "item_name", "size", "item_form", "product_benefit",
+    "bullet_points", "directions", "variation_theme",
+]
+
+_AMZ_COLOR_FIELDS  = ("Color",  "color")
+_AMZ_SCENT_FIELDS  = ("Scent",  "scent")
+_AMZ_FLAVOR_FIELDS = ("Flavor", "flavor")
+_AMZ_FORM_FIELDS   = ("item_form",)
+_AMZ_SIZE_FIELDS   = ("Size", "size", "liquid_volume")
+
+# "Unit Details: Unit Value" is the actual head/piece count in Keepa exports.
+# "Package: Quantity" is almost always 1 (means "sold as 1 package") so it
+# is intentionally excluded — the piece count comes from text or Unit Value.
+_AMZ_PACK_FIELDS = (
+    "Unit Details: Unit Value",
+    "Number of Items", "number_of_items",
+    "item_package_quantity", "unit_count",
+)
+
+
+def amz_extract(amz_row: dict, abbreviations: Iterable[dict]) -> dict:
+    """Extract attributes from a full Amazon row dict.
+
+    Combines all text fields (title, features, bullets, description) into one
+    blob for fuzzy matching, then overrides extracted attributes with the
+    dedicated column values (Color, Scent, Size, etc.) that Amazon provides
+    directly — so we never have to guess from text when the value is explicit.
+    """
+    parts: list[str] = []
+    for field in _AMZ_TEXT_FIELDS:
+        v = amz_row.get(field)
+        if v not in (None, ""):
+            parts.append(str(v).strip())
+    combined = " ".join(parts)
+
+    attrs = rule_extract(combined, abbreviations)
+
+    def _pick(*fields: str) -> str | None:
+        for f in fields:
+            v = amz_row.get(f)
+            if v not in (None, ""):
+                return str(v).strip().lower()
+        return None
+
+    color  = _pick(*_AMZ_COLOR_FIELDS)
+    scent  = _pick(*_AMZ_SCENT_FIELDS)
+    flavor = _pick(*_AMZ_FLAVOR_FIELDS)
+    form   = _pick(*_AMZ_FORM_FIELDS)
+
+    if color:
+        attrs["variant"]["color"] = color
+    if scent:
+        attrs["variant"]["scent"] = scent
+    if flavor:
+        attrs["variant"]["flavor"] = flavor
+    if form:
+        attrs["form"] = form
+        attrs["variant"].setdefault("form", form)
+
+    # Size: prefer dedicated column, fall back to text extraction.
+    for sf in _AMZ_SIZE_FIELDS:
+        raw = amz_row.get(sf)
+        if raw not in (None, ""):
+            parsed = _extract_size(str(raw))
+            if parsed:
+                attrs["size"] = parsed
+                break
+
+    # Pack count: prefer dedicated column when value > 1.
+    # A value of 1 is ambiguous ("1 package") — trust the text-extracted count
+    # (e.g. "2 Count" parsed from Size/title) in that case.
+    for pf in _AMZ_PACK_FIELDS:
+        raw = amz_row.get(pf)
+        if raw not in (None, ""):
+            try:
+                v = int(float(raw))
+                if v > 1:
+                    attrs["pack_count"] = v
+                    break
+            except (TypeError, ValueError):
+                continue
+
+    return attrs
+
+
+# --------------------------------------------------------------------------- #
 # AI extraction (GPT-4o)
 # --------------------------------------------------------------------------- #
 
 AI_SYSTEM_PROMPT = (
-    "You are an expert CPG product data extractor. Given a product title and "
-    "optional attributes, return a strict JSON object with the fields: "
-    "product_type (string), size (object with numeric 'value' and 'unit' or null), "
-    "pack_count (integer or null), variant (object with optional scent/color/flavor), "
-    "form (string or null). Respond with JSON only — no prose."
+    "You are an expert CPG / medical-supply catalog interpreter. Your PRIMARY job "
+    "is to unabbreviate terse vendor titles token-by-token, then extract attributes.\n\n"
+    "IMPORTANT RULES ABOUT ABBREVIATIONS:\n"
+    "• Abbreviations expand at the TOKEN level, not the phrase level. "
+    "For example, 'ADHSV' on its own means 'Adhesive', 'SPG' on its own means 'Sponge'. "
+    "The phrase 'ADHSV SPG' becomes 'Adhesive Sponge' because each token expands independently — "
+    "compound meaning falls out from adjacent tokens, not from multi-word lookups.\n"
+    "• You will be given a list of KNOWN abbreviations. Treat those as ground truth — "
+    "use them verbatim when the same tokens appear in the title.\n"
+    "• For tokens that are NOT in the known list but clearly look like an abbreviation "
+    "(short all-caps or tight letter runs, medical / CPG convention), propose an expansion "
+    "ONLY if you are confident — and propose the expansion of that single token, not of a phrase.\n"
+    "• Do not invent expansions for tokens that are already normal English words.\n\n"
+    "Return a strict JSON object with these fields:\n"
+    "  product_type: string or null\n"
+    "  size: object with numeric 'value' and 'unit' or null\n"
+    "  pack_count: integer or null\n"
+    "  variant: object with optional scent/color/flavor\n"
+    "  form: string or null\n"
+    "  expanded_title: the title rewritten with ALL abbreviation tokens (known + newly proposed) "
+    "expanded, preserving original word order and non-abbreviation tokens verbatim\n"
+    "  new_abbreviations: array of {abbr, full} for tokens you expanded that were NOT in the known list "
+    "(empty array if none). Each 'full' must be a single-word expansion, not a phrase.\n\n"
+    "Respond with JSON only — no prose."
 )
 
 
-def ai_extract(title: str, extra_context: str = "") -> dict:
-    """Call GPT-4o to extract the same shape as ``rule_extract``.
+def ai_extract(
+    title: str,
+    abbreviations: Iterable[dict] | None = None,
+    extra_context: str = "",
+) -> dict:
+    """Call GPT-4o to unabbreviate + extract attributes.
+
+    Returns the same shape as ``rule_extract`` plus ``expanded_title`` (the
+    title with every abbreviation resolved) and ``new_abbreviations`` (list of
+    {abbr, full} dicts the caller should log back to the library).
 
     Falls back to an empty dict with an error key if the API key is missing or
     the call fails. Callers should treat this as best-effort.
@@ -219,7 +345,18 @@ def ai_extract(title: str, extra_context: str = "") -> dict:
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
-        payload = f"Title: {title}\nContext: {extra_context}"
+        known = list(abbreviations or [])
+        # Compact known-abbrev list for the prompt; cap to keep the payload reasonable.
+        known_lines = "\n".join(
+            f"  {a['abbr']} -> {a.get('full','')}"
+            for a in known[:400] if a.get("abbr")
+        )
+        payload = (
+            f"Known abbreviations (token -> expansion):\n"
+            f"{known_lines or '  (none yet — propose carefully)'}\n\n"
+            f"Title: {title}\n"
+            f"Context: {extra_context}"
+        )
         resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -231,7 +368,13 @@ def ai_extract(title: str, extra_context: str = "") -> dict:
         )
         raw = resp.choices[0].message.content or "{}"
         parsed: dict[str, Any] = json.loads(raw)
-        parsed["normalised_title"] = title.lower()
+        # Guarantee the two unabbreviation fields exist so the scan loop can
+        # trust their shape without re-checking each call.
+        if not isinstance(parsed.get("new_abbreviations"), list):
+            parsed["new_abbreviations"] = []
+        if not isinstance(parsed.get("expanded_title"), str) or not parsed["expanded_title"].strip():
+            parsed["expanded_title"] = title
+        parsed["normalised_title"] = parsed["expanded_title"].lower()
         return parsed
     except Exception as exc:  # noqa: BLE001 — surface any extractor failure
         return {"error": f"AI extraction failed: {exc}"}

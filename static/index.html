@@ -26,7 +26,7 @@
     <!-- ==================== Sidebar ==================== -->
     <aside class="sidebar flex-shrink-0 px-4 py-6">
       <div class="flex items-center gap-3 mb-8 px-2">
-        <div class="w-9 h-9 rounded-lg flex items-center justify-center" style="background: var(--teal-500)">
+        <div class="brand-mark">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         </div>
         <div>
@@ -45,10 +45,16 @@
         Medical <span class="locked-tag">Locked</span>
       </div>
 
+      <div class="section-label">Scans</div>
+      <div class="nav-item" data-view="history">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-7 3L3 8"/><polyline points="3 3 3 8 8 8"/><polyline points="12 7 12 12 16 14"/></svg>
+        Verification History
+      </div>
+
       <div class="section-label">Analytics</div>
-      <div class="nav-item disabled" title="Coming soon">
+      <div class="nav-item" data-view="analytics">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
-        ROI & Cost <span class="locked-tag">Soon</span>
+        ROI &amp; Cost
       </div>
 
       <div class="section-label">Tools</div>
@@ -74,7 +80,7 @@
     <!-- ==================== Main ==================== -->
     <main class="flex-1 overflow-hidden">
 
-      <!-- ===== View: CPG Verification ===== -->
+      <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
         <header class="flex items-center justify-between bg-white border-b px-8 py-4" style="border-color: #eef0f4;">
           <div>
@@ -82,6 +88,10 @@
             <p class="text-sm" style="color: #6b7480;">Upload a vendor catalog and its Amazon data. The engine verifies every pre-matched ASIN.</p>
           </div>
           <div class="flex items-center gap-2">
+            <button id="ai-recheck-btn" class="btn btn-secondary hidden" disabled title="Run a second-pass OpenAI review on selected buckets">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+              AI Re-check
+            </button>
             <button id="review-btn" class="btn btn-secondary" disabled>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/></svg>
               Review Before Export
@@ -106,7 +116,6 @@
                   <div class="font-semibold" style="color: var(--navy-800)">Vendor Catalog</div>
                   <div class="text-xs" style="color: #6b7480;">Columns: UPC/EAN, Item ID, Vendor Title, Brand, ASIN</div>
                 </div>
-                <!-- AI Extract toggle relocated HERE, to the right of the catalog upload card header -->
                 <button id="ai-toggle" class="btn btn-secondary ai-toggle-btn" title="Use GPT-4o for this run">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
                   AI Extract
@@ -170,7 +179,10 @@
             <div class="card-body">
               <div class="flex items-center justify-between mb-2">
                 <div class="text-sm font-medium" style="color: var(--navy-800)" id="progress-label">Verifying…</div>
-                <div class="text-xs" style="color: #6b7480;" id="progress-count"></div>
+                <div class="flex items-center gap-3 text-xs" style="color: #6b7480;">
+                  <span id="progress-count"></span>
+                  <span id="progress-eta" style="font-variant-numeric: tabular-nums;"></span>
+                </div>
               </div>
               <div class="progress"><div class="bar" id="progress-bar" style="width:0%"></div></div>
             </div>
@@ -183,7 +195,7 @@
               <div class="text-2xl font-semibold mt-1" id="sum-total" style="color: var(--navy-800);">0</div>
             </div></div>
             <div class="card"><div class="card-body">
-              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Verified</div>
+              <div class="text-xs uppercase tracking-wider" style="color: #6b7480;">Approved</div>
               <div class="text-2xl font-semibold mt-1" id="sum-verified" style="color: var(--green-500);">0</div>
             </div></div>
             <div class="card"><div class="card-body">
@@ -205,9 +217,9 @@
                   <label class="text-xs" style="color: #6b7480;">Filter:</label>
                   <select id="verdict-filter" class="text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;">
                     <option value="all">All</option>
-                    <option value="Verified">Verified ✅</option>
-                    <option value="Review">Review ⚠️</option>
-                    <option value="Not Approved">Not Approved ❌</option>
+                    <option value="Approved">Approved</option>
+                    <option value="Review">Review</option>
+                    <option value="Not Approved">Not Approved</option>
                     <option value="Duplicate">Duplicate flagged</option>
                   </select>
                   <label class="text-xs ml-3" style="color: #6b7480;">Sort:</label>
@@ -239,11 +251,15 @@
                       <th>UPC/EAN</th>
                       <th>Item ID</th>
                       <th>Vendor Title</th>
+                      <th>Vendor Title (expanded)</th>
+                      <th>Amazon Title</th>
                       <th>Brand</th>
                       <th>ASIN</th>
                       <th>Confidence</th>
                       <th>Verdict</th>
                       <th>Review Status</th>
+                      <th>AI Suggestion</th>
+                      <th>Reason</th>
                       <th>UPC</th>
                       <th>Item ID</th>
                       <th>Brand</th>
@@ -251,11 +267,71 @@
                       <th>Pack</th>
                       <th>Amz Pack</th>
                       <th>Barcode DB</th>
-                      <th>Notes</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody id="results-body"></tbody>
+                </table>
+              </div>
+              <div id="results-pagination" class="hidden" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid #e2e6ec;background:#fafbfc;font-size:13px;color:#6b7480;"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ===== View: Verification History ===== -->
+      <div id="view-history" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Verification History</h1>
+            <p class="view-subtitle">Every catalog you've scanned — past, pending, and in-progress. Pick up where you left off.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="history-refresh-btn" class="btn btn-secondary" title="Refresh">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
+              Refresh
+            </button>
+            <button id="new-scan-btn" class="btn btn-primary" title="Go to CPG to create a new scan">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h14"/><polyline points="12 5 19 12 12 19"/></svg>
+              Go to CPG
+            </button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+          <!-- Stats strip -->
+          <section id="history-stats" class="grid grid-cols-4 gap-4">
+            <div class="stat-card"><div class="stat-label">Total Scans</div><div class="stat-value" id="hs-total">—</div></div>
+            <div class="stat-card"><div class="stat-label">To be reviewed</div><div class="stat-value" id="hs-pending" style="color: var(--yellow-500);">—</div></div>
+            <div class="stat-card"><div class="stat-label">Last 30 days</div><div class="stat-value" id="hs-ready" style="color: var(--blue-500);">—</div></div>
+            <div class="stat-card"><div class="stat-label">Reviewed</div><div class="stat-value" id="hs-done" style="color: var(--green-500);">—</div></div>
+          </section>
+
+          <section class="card">
+            <div class="card-body p-0">
+              <div id="history-empty" class="empty-state">
+                <div class="icon-wrap">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 9v12"/></svg>
+                </div>
+                <div class="font-semibold" style="color: var(--navy-800)">No scans yet</div>
+                <div class="text-sm mt-1" style="color: #6b7480;">Head to the <b>CPG</b> workspace, upload your catalog + Amazon data, and click <b>Run Verification</b> — it'll show up here.</div>
+              </div>
+              <div id="history-table-wrap" class="hidden overflow-auto">
+                <table class="history-table">
+                  <thead>
+                    <tr>
+                      <th>Scan Name</th>
+                      <th>Date Created</th>
+                      <th>Marketplace</th>
+                      <th class="num">Total</th>
+                      <th class="num">Verified</th>
+                      <th class="num">Review</th>
+                      <th class="num">Not Approved</th>
+                      <th>Status</th>
+                      <th class="text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-body"></tbody>
                 </table>
               </div>
             </div>
@@ -263,12 +339,163 @@
         </div>
       </div>
 
+      <!-- ===== View: Scan Detail ===== -->
+      <div id="view-scan" class="hidden">
+        <header class="view-header">
+          <div class="flex items-center gap-3">
+            <button id="scan-back-btn" class="btn btn-ghost" title="Back to history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <div>
+              <h1 class="view-title" id="scan-name">Scan</h1>
+              <p class="view-subtitle" id="scan-meta">&nbsp;</p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <div id="scan-ai-badge" class="hidden mr-1 flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium" style="background:#e0f2f1;color:#0a6f71;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+              AI mode
+            </div>
+            <button id="scan-ai-recheck-btn" class="btn btn-secondary hidden" disabled title="Run a second-pass OpenAI review on selected buckets">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+              AI Re-check
+            </button>
+            <button id="scan-review-btn" class="btn btn-secondary" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/></svg>
+              Review
+            </button>
+            <button id="scan-export-btn" class="btn btn-primary" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
+              Export to Excel
+            </button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+          <!-- Pending state banner (when Amazon data not yet attached) -->
+          <div id="scan-pending-banner" class="hidden banner-pending">
+            <div class="flex items-start gap-3">
+              <div class="badge-warning-round">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+              <div class="flex-1">
+                <div class="font-semibold" style="color: #854d0e;">Awaiting Amazon/Keepa export</div>
+                <div class="text-sm mt-0.5" style="color:#78350f;">
+                  This scan's catalog is ready. Upload the matching Amazon Seller Central or Keepa export to run verification.
+                </div>
+              </div>
+              <button id="scan-add-amazon-btn" class="btn btn-primary whitespace-nowrap">Add Amazon Data</button>
+            </div>
+          </div>
+
+          <!-- Ready banner -->
+          <div id="scan-ready-banner" class="hidden banner-ready">
+            <div class="flex items-center gap-3">
+              <div class="badge-info-round">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div class="flex-1">
+                <div class="font-semibold" style="color: #0c4a6e;">Ready to Verify</div>
+                <div class="text-sm" style="color:#075985;">Both catalog and Amazon data are attached. Run the engine to score every row.</div>
+              </div>
+              <button id="scan-run-btn" class="btn btn-primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                Run Verification
+              </button>
+            </div>
+          </div>
+
+          <!-- Progress -->
+          <section id="scan-progress-section" class="card hidden">
+            <div class="card-body">
+              <div class="flex items-center justify-between mb-2">
+                <div class="text-sm font-medium" style="color: var(--navy-800)" id="scan-progress-label">Verifying…</div>
+                <div class="flex items-center gap-3 text-xs" style="color: #6b7480;">
+                  <span id="scan-progress-count"></span>
+                  <span id="scan-progress-eta" style="font-variant-numeric: tabular-nums;"></span>
+                </div>
+              </div>
+              <div class="progress"><div class="bar" id="scan-progress-bar" style="width:0%"></div></div>
+            </div>
+          </section>
+
+          <!-- Summary -->
+          <section id="scan-summary-section" class="hidden grid grid-cols-4 gap-4">
+            <div class="stat-card"><div class="stat-label">Total</div><div class="stat-value" id="scan-sum-total">0</div></div>
+            <div class="stat-card"><div class="stat-label">Verified</div><div class="stat-value" id="scan-sum-verified" style="color: var(--green-500);">0</div></div>
+            <div class="stat-card"><div class="stat-label">Review</div><div class="stat-value" id="scan-sum-review" style="color: var(--yellow-500);">0</div></div>
+            <div class="stat-card"><div class="stat-label">Not Approved</div><div class="stat-value" id="scan-sum-not" style="color: var(--red-500);">0</div></div>
+          </section>
+
+          <!-- Results -->
+          <section id="scan-results-section" class="card hidden">
+            <div class="card-header">
+              <div class="flex items-center gap-4">
+                <div class="font-semibold" style="color: var(--navy-800);">Verification Results</div>
+                <div class="flex items-center gap-2">
+                  <label class="text-xs" style="color: #6b7480;">Filter:</label>
+                  <select id="scan-verdict-filter" class="text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;">
+                    <option value="all">All</option>
+                    <option value="Approved">Approved</option>
+                    <option value="Review">Review</option>
+                    <option value="Not Approved">Not Approved</option>
+                    <option value="Duplicate">Duplicate flagged</option>
+                  </select>
+                  <label class="text-xs ml-3" style="color: #6b7480;">Sort:</label>
+                  <select id="scan-sort-by" class="text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;">
+                    <option value="conf-desc">Confidence ↓</option>
+                    <option value="conf-asc">Confidence ↑</option>
+                    <option value="verdict">Verdict</option>
+                    <option value="brand">Brand</option>
+                  </select>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <input id="scan-search" placeholder="Search title, brand, ASIN…" class="text-sm rounded border px-3 py-1 w-64" style="border-color: #e2e6ec;" />
+              </div>
+            </div>
+            <div class="card-body p-0">
+              <div id="scan-results-wrap" class="overflow-auto" style="max-height: 68vh;">
+                <table class="results-table">
+                  <thead>
+                    <tr>
+                      <th>UPC/EAN</th>
+                      <th>Item ID</th>
+                      <th>Vendor Title</th>
+                      <th>Vendor Title (expanded)</th>
+                      <th>Amazon Title</th>
+                      <th>Brand</th>
+                      <th>ASIN</th>
+                      <th>Confidence</th>
+                      <th>Verdict</th>
+                      <th>Review Status</th>
+                      <th>AI Suggestion</th>
+                      <th>Reason</th>
+                      <th>UPC</th>
+                      <th>Item ID</th>
+                      <th>Brand</th>
+                      <th>Title</th>
+                      <th>Pack</th>
+                      <th>Amz Pack</th>
+                      <th>Barcode DB</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="scan-results-body"></tbody>
+                </table>
+              </div>
+              <div id="scan-results-pagination" class="hidden" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-top:1px solid #e2e6ec;background:#fafbfc;font-size:13px;color:#6b7480;"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+
       <!-- ===== View: Pair Manager ===== -->
       <div id="view-pairs" class="hidden">
-        <header class="flex items-center justify-between bg-white border-b px-8 py-4" style="border-color: #eef0f4;">
+        <header class="view-header">
           <div>
-            <h1 class="text-xl font-semibold" style="color: var(--navy-800)">Pair Manager</h1>
-            <p class="text-sm" style="color: #6b7480;">Search the blacklist by UPC or ASIN. No bulk list — search-only.</p>
+            <h1 class="view-title">Pair Manager</h1>
+            <p class="view-subtitle">Search the blacklist by UPC or ASIN. No bulk list — search-only.</p>
           </div>
         </header>
 
@@ -308,28 +535,234 @@
           </div>
         </div>
       </div>
+
+      <!-- ===== View: Analytics (ROI & Cost) ===== -->
+      <div id="view-analytics" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Analytics — ROI &amp; Cost</h1>
+            <p class="view-subtitle">Find &amp; vet Amazon candidates for a catalog, or vet an existing list of pre-matched ASINs.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="analytics-sp-api-pill" class="ms-pill hidden" title="SP-API credentials detected">
+              <span class="ms-pill-dot"></span> SP-API connected
+            </span>
+            <span id="analytics-sp-api-missing-pill" class="hidden text-xs px-2 py-1 rounded" style="background: #fef3c7; color: #92400e;">
+              SP-API credentials not configured
+            </span>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+
+          <!-- Single entry point — Find & Vet ASINs -->
+          <!-- Design intent: mirror the clean CPG-wizard step card. One clear
+               headline, one supporting line, one big CTA. All configuration
+               (search method / pages / AI cleaning) moves into wizard step 4
+               so the card stays a single decision: "start a new run". -->
+          <div class="card analytics-entry-card">
+            <div class="card-body" style="padding: 28px;">
+              <div class="flex items-start gap-4">
+                <div class="analytics-entry-icon">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </div>
+                <div class="flex-1">
+                  <div class="text-lg font-semibold" style="color: var(--purple-800)">Find &amp; Vet ASINs</div>
+                  <div class="text-sm mt-1" style="color: #6b7480; max-width: 520px;">
+                    Upload a vendor catalog — we'll search Amazon for every product,
+                    score the candidates, and give you a confidence-ranked list you
+                    can review and export.
+                  </div>
+                  <div class="flex items-center gap-2 mt-4">
+                    <button id="analytics-find-vet-btn" class="btn btn-primary">
+                      Start a new run
+                    </button>
+                    <span class="text-xs" style="color: #94a3b8;">
+                      You'll pick search methods in step 4 of the wizard.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Past Runs -->
+          <div class="card">
+            <div class="card-body">
+              <div class="flex items-center justify-between mb-3">
+                <div class="font-semibold" style="color: var(--purple-800)">Past Analytics Runs</div>
+                <button id="analytics-refresh-runs" class="btn btn-secondary text-xs">Refresh</button>
+              </div>
+              <div id="analytics-runs-body" class="text-sm">
+                <div class="empty-state" style="padding: 24px 12px;">
+                  <div class="text-sm" style="color: #6b7480;">No runs yet — kick one off above.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ==================== Analytics Run Detail ==================== -->
+      <div id="view-analytics-run" class="hidden">
+        <header class="view-header">
+          <div class="flex items-center gap-3">
+            <button id="analytics-run-back" class="icon-btn" title="Back to Analytics">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <div>
+              <h1 id="analytics-run-title" class="view-title">Run detail</h1>
+              <p id="analytics-run-subtitle" class="view-subtitle"></p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="analytics-run-status-pill" class="ms-pill">
+              <span class="ms-pill-dot"></span> <span id="analytics-run-status-text">—</span>
+            </span>
+            <button id="analytics-run-export" class="btn btn-secondary text-xs" disabled>Export CSV</button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+
+          <!-- Progress bar (visible while the run is Searching / Vetting) -->
+          <div id="analytics-run-progress-card" class="card hidden">
+            <div class="card-body">
+              <div class="flex items-center justify-between text-xs mb-2" style="color: #475569;">
+                <span id="analytics-run-progress-phase" class="font-medium">Searching…</span>
+                <span id="analytics-run-progress-counts" style="font-variant-numeric: tabular-nums;">0 / 0</span>
+              </div>
+              <div class="progress"><div class="bar" id="analytics-run-progress-bar" style="width:0%"></div></div>
+              <div class="text-xs mt-2" style="color: #94a3b8;">
+                We'll update this every few seconds. You can leave this page and come back — the run keeps going in the background.
+              </div>
+            </div>
+          </div>
+
+          <!-- Summary counts -->
+          <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div class="summary-stat"><div class="summary-stat-label">Catalog rows</div><div class="summary-stat-value" id="analytics-run-stat-catalog">0</div></div>
+            <div class="summary-stat"><div class="summary-stat-label">Candidates</div><div class="summary-stat-value" id="analytics-run-stat-candidates">0</div></div>
+            <div class="summary-stat"><div class="summary-stat-label" style="color: var(--green-600);">Verified</div><div class="summary-stat-value" id="analytics-run-stat-verified" style="color: var(--green-600);">0</div></div>
+            <div class="summary-stat"><div class="summary-stat-label" style="color: #b58100;">Review</div><div class="summary-stat-value" id="analytics-run-stat-review" style="color: #b58100;">0</div></div>
+            <div class="summary-stat"><div class="summary-stat-label" style="color: #b91c1c;">Rejected</div><div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div></div>
+          </div>
+
+          <!-- Candidates table -->
+          <div class="card">
+            <div class="card-body p-0">
+
+              <!-- Verdict tabs (mirror the vetting review modal) -->
+              <div class="run-tabs" role="tablist">
+                <button class="run-tab active" data-run-tab="Approved" role="tab">
+                  Approved <span class="run-tab-count" id="analytics-run-count-Approved">0</span>
+                </button>
+                <button class="run-tab" data-run-tab="Review" role="tab">
+                  Review <span class="run-tab-count" id="analytics-run-count-Review">0</span>
+                </button>
+                <button class="run-tab" data-run-tab="Not Approved" role="tab">
+                  Not Approved <span class="run-tab-count" id="analytics-run-count-Not">0</span>
+                </button>
+                <button class="run-tab" data-run-tab="All" role="tab">
+                  All <span class="run-tab-count" id="analytics-run-count-All">0</span>
+                </button>
+              </div>
+
+              <!-- Toolbar: search + bulk action + count -->
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color: #edf0f5;">
+                <div class="flex items-center gap-2 flex-1">
+                  <input id="analytics-run-search" type="text" class="input text-sm" placeholder="Search title, brand, ASIN, UPC…" style="max-width: 320px;" />
+                  <span id="analytics-run-candidates-summary" class="text-xs" style="color: #6b7480;">
+                    <span id="analytics-run-candidates-count">0</span> shown
+                  </span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button id="analytics-run-bulk" class="btn btn-secondary text-xs">Reject All</button>
+                </div>
+              </div>
+
+              <div id="analytics-run-candidates-wrap" class="overflow-auto" style="max-height: 62vh;">
+                <table class="results-table sortable-table">
+                  <thead>
+                    <tr id="analytics-run-thead-row">
+                      <th class="sortable" data-sort-key="row_idx">Row <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="upc">Source UPC / Item ID <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="title">Vendor Title <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="asin">ASIN <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="amz_title">Amazon Title <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="brand">Brand <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="sources">Sources <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="confidence">Confidence <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="verdict">Verdict <span class="sort-caret"></span></th>
+                      <th class="text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="analytics-run-candidates-body"></tbody>
+                </table>
+              </div>
+              <div id="analytics-run-candidates-empty" class="hidden empty-state" style="padding: 32px 12px;">
+                <div class="text-sm" style="color: #6b7480;">No candidates yet. This table fills up as the search finishes.</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
     </main>
   </div>
 
-  <!-- ==================== Abbreviation side panel (categorised) ==================== -->
-  <div id="abbr-panel" class="side-panel">
+  <!-- ==================== Abbreviation side panel (rework) ==================== -->
+  <div id="abbr-panel" class="side-panel side-panel-wide">
     <div class="side-panel-header">
       <div>
         <div class="font-semibold" style="color: var(--navy-800)">Abbreviation Library</div>
-        <div class="text-xs" style="color: #6b7480;">Categorised, persistent across sessions (SQLite).</div>
+        <div class="text-xs" style="color: #6b7480;">Categorised — persistent across sessions.</div>
       </div>
-      <button id="abbr-close" class="btn btn-ghost">Close</button>
+      <button id="abbr-close" class="icon-btn" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     </div>
-    <div class="p-5 overflow-auto flex-1">
-      <div class="grid grid-cols-1 gap-2 mb-4">
-        <div class="flex gap-2">
-          <select id="abbr-new-cat" class="text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;"></select>
-          <input id="abbr-new-key" class="text-sm rounded border px-3 py-2 flex-1" placeholder="Abbreviation" style="border-color: #e2e6ec;" />
-          <input id="abbr-new-val" class="text-sm rounded border px-3 py-2 flex-1" placeholder="Full form" style="border-color: #e2e6ec;" />
-          <button id="abbr-add" class="btn btn-primary">Add</button>
+
+    <!-- Category tabs -->
+    <div id="abbr-tabs" class="abbr-tabs" role="tablist"></div>
+
+    <div class="abbr-body">
+      <!-- Top: Add new entry -->
+      <div class="abbr-section">
+        <div class="abbr-section-title">Add new entry</div>
+        <div class="abbr-add-grid">
+          <div class="abbr-add-field">
+            <label class="abbr-label">Category</label>
+            <select id="abbr-new-cat" class="abbr-input"></select>
+          </div>
+          <div class="abbr-add-field">
+            <label class="abbr-label">Abbreviation</label>
+            <input id="abbr-new-key" class="abbr-input" placeholder="e.g. lrg" autocomplete="off" />
+          </div>
+          <div class="abbr-add-field">
+            <label class="abbr-label">Full form</label>
+            <input id="abbr-new-val" class="abbr-input" placeholder="e.g. Large" autocomplete="off" />
+          </div>
+          <div class="abbr-add-field abbr-add-btn-wrap">
+            <label class="abbr-label opacity-0 select-none">Action</label>
+            <button id="abbr-add" class="btn btn-primary w-full">Add</button>
+          </div>
         </div>
+        <div id="abbr-add-feedback" class="abbr-feedback"></div>
       </div>
-      <div id="abbr-categories"></div>
+
+      <!-- Bottom: Browse / search -->
+      <div class="abbr-section">
+        <div class="abbr-section-title">
+          <span>Browse &amp; search</span>
+          <span class="abbr-subtitle" id="abbr-browse-cat-label">Colors</span>
+        </div>
+        <div class="abbr-search-wrap">
+          <svg class="abbr-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="abbr-search" class="abbr-input abbr-search-input" placeholder="Search in Colors…" />
+        </div>
+        <div id="abbr-results" class="abbr-results"></div>
+        <div id="abbr-pagination" class="abbr-pagination hidden"></div>
+      </div>
     </div>
   </div>
 
@@ -340,11 +773,11 @@
         <div class="font-semibold" style="color: var(--navy-800)">Settings</div>
         <div class="text-xs" style="color: #6b7480;">Adjust the verdict thresholds used by the engine.</div>
       </div>
-      <button id="settings-close" class="btn btn-ghost">Close</button>
+      <button id="settings-close" class="icon-btn" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     </div>
     <div class="p-5 space-y-4">
       <div>
-        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Verified ≥</label>
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Approved ≥</label>
         <div class="flex items-center gap-2 mt-1">
           <input type="number" id="threshold-verified" min="0" max="100" step="0.5"
                  class="w-28 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
@@ -368,7 +801,300 @@
     </div>
   </div>
 
-  <!-- ==================== Review modal ==================== -->
+  <!-- ==================== Import Wizard (4-step) ==================== -->
+  <div id="import-modal" class="modal-backdrop hidden">
+    <div class="wizard-shell">
+      <div class="wizard-header">
+        <div>
+          <div class="wizard-kicker">New scan</div>
+          <div class="wizard-title">Import catalog</div>
+        </div>
+        <button class="icon-btn" id="wizard-close" title="Cancel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>
+
+      <div class="wizard-stepper">
+        <div class="step active" data-step-indicator="1"><span class="dot">1</span><span>File Upload</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-step-indicator="2"><span class="dot">2</span><span>Column Mapping</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-step-indicator="3"><span class="dot">3</span><span>Scan Detail</span></div>
+      </div>
+
+      <div class="wizard-body">
+        <!-- Step 1: File upload -->
+        <div class="wizard-step" data-step-panel="1">
+          <div class="wizard-step-title">Upload your catalog file</div>
+          <div class="wizard-step-hint">We'll preview the rows so you can skip any junk at the top and map the columns.</div>
+          <div id="wizard-drop" class="drop-zone-lg">
+            <div class="drop-zone-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </div>
+            <div class="drop-zone-primary">Click to select file or drag and drop</div>
+            <div class="drop-zone-secondary">Supports .xlsx and .csv</div>
+            <input type="file" id="wizard-file-input" accept=".xlsx,.csv" class="hidden" />
+          </div>
+          <div id="wizard-file-card" class="wizard-file-card hidden">
+            <div class="wizard-file-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+            </div>
+            <div class="flex-1">
+              <div class="wizard-file-name" id="wizard-file-name"></div>
+              <div class="wizard-file-size" id="wizard-file-size"></div>
+            </div>
+            <div class="wizard-file-check">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+          </div>
+          <div class="wizard-step-footer-link">
+            <a id="wizard-template-btn" href="/api/template" download="catalog-template.csv">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download template
+            </a>
+          </div>
+        </div>
+
+        <!-- Step 2: Column mapping -->
+        <div class="wizard-step hidden" data-step-panel="2">
+          <div class="wizard-step-title">Map your columns</div>
+          <div class="wizard-step-hint">Tell us which column is which so the engine knows how to score each row.</div>
+          <div class="mapping-grid">
+            <div class="mapping-row">
+              <div class="mapping-label">Brand</div>
+              <div class="mapping-control">
+                <input id="map-brand" class="wizard-input" placeholder="e.g. Tide (free text — same brand for the whole catalog)" />
+                <div class="mapping-note">Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.</div>
+              </div>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-label">UPC / EAN <span class="req">*</span></div>
+              <div class="mapping-control">
+                <select id="map-upc" class="wizard-input"></select>
+              </div>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-label">Item ID <span class="req">*</span></div>
+              <div class="mapping-control">
+                <select id="map-item-id" class="wizard-input"></select>
+              </div>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-label">Vendor Title <span class="req">*</span></div>
+              <div class="mapping-control">
+                <select id="map-title" class="wizard-input"></select>
+              </div>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-label">ASIN</div>
+              <div class="mapping-control">
+                <select id="map-asin" class="wizard-input"></select>
+              </div>
+            </div>
+            <div class="mapping-row">
+              <div class="mapping-label">Attributes</div>
+              <div class="mapping-control">
+                <div class="multiselect">
+                  <div class="multiselect-pills" id="map-attr-pills"></div>
+                  <select id="map-attr-select" class="wizard-input">
+                    <option value="">+ Add attribute column…</option>
+                  </select>
+                </div>
+                <div class="mapping-note">Optional. Pick multiple columns — size, color, scent, etc. They'll be surfaced alongside the title for scoring.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mapping-preview">
+            <div class="mapping-preview-label">Live preview — first 3 mapped rows</div>
+            <div class="mapping-preview-wrap">
+              <table class="wizard-preview-table" id="mapping-preview-table">
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Scan detail -->
+        <div class="wizard-step hidden" data-step-panel="3">
+          <div class="wizard-step-title">Name &amp; scope this scan</div>
+          <div class="wizard-step-hint">You'll come back to it from Verification History anytime.</div>
+
+          <div class="detail-grid">
+            <div class="detail-field">
+              <label class="detail-label">Scan Name</label>
+              <input id="detail-name" class="wizard-input" placeholder="e.g. P&G October Restock" />
+            </div>
+            <div class="detail-field">
+              <label class="detail-label">AI Extractor</label>
+              <div class="ai-mode-row">
+                <label class="toggle-pill">
+                  <input type="checkbox" id="detail-ai-mode" />
+                  <span class="slider"></span>
+                </label>
+                <span class="text-sm" style="color:#6b7480;">Use GPT-4o attribute extraction on this scan</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="detail-status">
+            <div class="status-badge status-pending">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              Next: add Amazon / Keepa data
+            </div>
+            <span class="detail-status-note">Saving will return you to the CPG workspace. Upload the matching Amazon or Keepa export, then click <b>Run Verification</b> to create the scan and add it to Verification History.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="wizard-footer">
+        <button class="btn btn-ghost" id="wizard-back">Back</button>
+        <div class="wizard-footer-progress">
+          <span id="wizard-step-label">Step 1 of 4</span>
+        </div>
+        <button class="btn btn-primary" id="wizard-next" disabled>Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Amazon attach modal ==================== -->
+  <div id="amazon-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-2xl w-[520px] shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 py-5 border-b" style="border-color:#eef0f4;">
+        <div class="font-semibold text-lg" style="color: var(--navy-800)">Add Amazon data</div>
+        <div class="text-sm mt-1" style="color: #6b7480;">Upload the Amazon Seller Central export or Keepa export for this scan.</div>
+      </div>
+      <div class="px-6 py-5 space-y-4">
+        <div>
+          <div class="text-xs uppercase tracking-wider mb-2" style="color:#6b7480;">Source</div>
+          <div class="toggle" id="amazon-modal-source">
+            <button class="active" data-source="keepa">Keepa</button>
+            <button data-source="amazon">Amazon Export</button>
+          </div>
+        </div>
+        <div id="amazon-modal-drop" class="drop-zone-lg">
+          <div class="drop-zone-icon">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="drop-zone-primary">Click to select file or drag and drop</div>
+          <div class="drop-zone-secondary">Supports .xlsx</div>
+          <input type="file" id="amazon-modal-input" accept=".xlsx" class="hidden" />
+        </div>
+        <div id="amazon-modal-file" class="wizard-file-card hidden">
+          <div class="wizard-file-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="wizard-file-name" id="amazon-modal-file-name"></div>
+            <div class="wizard-file-size" id="amazon-modal-file-size"></div>
+          </div>
+          <div class="wizard-file-check">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+        </div>
+      </div>
+      <div class="px-6 py-4 flex justify-end gap-2 border-t" style="border-color:#eef0f4;background:var(--grey-50);">
+        <button id="amazon-modal-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="amazon-modal-save" class="btn btn-primary" disabled>Attach &amp; continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Delete scan confirmation ==================== -->
+  <div id="delete-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl w-[440px] p-6 shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start gap-3 mb-3">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background: #fee2e2; color: var(--red-500);">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+        </div>
+        <div>
+          <div class="font-semibold" style="color: var(--navy-800)">Delete this scan?</div>
+          <div class="text-sm mt-1" style="color: #6b7480;">Are you sure you want to delete this scan? This cannot be undone.</div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button id="delete-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="delete-confirm" class="btn btn-danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== AI Re-check modal ==================== -->
+  <div id="ai-recheck-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl w-[540px] p-6 shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start gap-3 mb-4">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background: #e0f2f1; color: #0a6f71;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+        </div>
+        <div class="flex-1">
+          <div class="font-semibold" style="color: var(--navy-800)">AI Re-check with OpenAI</div>
+          <div class="text-xs mt-1" style="color: #6b7480;">
+            Ask GPT-4o-mini for a second opinion on whichever verdict buckets you pick.
+            New attribute tokens it spots will be added to the Abbreviation Library automatically.
+          </div>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Check which buckets?</label>
+        <div class="mt-2 space-y-2">
+          <label class="ai-bucket-row flex items-center gap-2 p-2 rounded border cursor-pointer" style="border-color: #e2e6ec;">
+            <input type="checkbox" class="ai-bucket-cb" value="Approved" />
+            <span class="text-sm flex-1" style="color: var(--navy-800);">Approved</span>
+            <span class="text-xs" style="color: #6b7480;"><span id="ai-count-Approved">0</span> rows</span>
+          </label>
+          <label class="ai-bucket-row flex items-center gap-2 p-2 rounded border cursor-pointer" style="border-color: #e2e6ec;">
+            <input type="checkbox" class="ai-bucket-cb" value="Review" checked />
+            <span class="text-sm flex-1" style="color: var(--navy-800);">Review</span>
+            <span class="text-xs" style="color: #6b7480;"><span id="ai-count-Review">0</span> rows</span>
+          </label>
+          <label class="ai-bucket-row flex items-center gap-2 p-2 rounded border cursor-pointer" style="border-color: #e2e6ec;">
+            <input type="checkbox" class="ai-bucket-cb" value="Not Approved" />
+            <span class="text-sm flex-1" style="color: var(--navy-800);">Not Approved</span>
+            <span class="text-xs" style="color: #6b7480;"><span id="ai-count-NotApproved">0</span> rows</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="mb-4">
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Model</label>
+        <select id="ai-recheck-model" class="w-full text-sm rounded border px-2 py-2 mt-1" style="border-color: #e2e6ec;">
+          <option value="gpt-4o-mini" selected>gpt-4o-mini  —  fast &amp; cheap (recommended)</option>
+          <option value="gpt-4o">gpt-4o  —  higher quality, ~17× cost</option>
+        </select>
+      </div>
+
+      <div id="ai-recheck-estimate" class="p-3 rounded-md mb-4" style="background: #f0fdfa; border: 1px solid #99f6e4;">
+        <div class="flex items-baseline justify-between">
+          <div class="text-xs uppercase tracking-wider" style="color: #0a6f71;">Estimate</div>
+          <div id="ai-recheck-cost" class="text-xl font-semibold" style="color: #0a6f71;">$0.0000</div>
+        </div>
+        <div class="text-xs mt-1" style="color: #4b5563;">
+          <span id="ai-recheck-rows">0 rows</span> · <span id="ai-recheck-duration">~0s</span>
+        </div>
+        <div id="ai-recheck-cap-warning" class="hidden text-xs mt-2 px-2 py-1 rounded" style="background: #fef3c7; color: #92400e;">
+          ⚠ Estimate exceeds $1 soft cap — you can still continue.
+        </div>
+        <div id="ai-recheck-key-warning" class="hidden text-xs mt-2 px-2 py-1 rounded" style="background: #fee2e2; color: #991b1b;">
+          OPENAI_API_KEY is not set on the server. Set it in the .env file and restart to use this feature.
+        </div>
+      </div>
+
+      <div id="ai-recheck-progress" class="hidden p-3 rounded-md mb-4" style="background: #f1f5f9; border: 1px solid #cbd5e1;">
+        <div class="flex items-center justify-between text-xs mb-1" style="color: #475569;">
+          <span id="ai-recheck-progress-label">Running…</span>
+          <span id="ai-recheck-progress-eta" style="font-variant-numeric: tabular-nums;"></span>
+        </div>
+        <div class="progress"><div class="bar" id="ai-recheck-progress-bar" style="width:0%"></div></div>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-4">
+        <button id="ai-recheck-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ai-recheck-run" class="btn btn-primary">Run AI Re-check</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Review modal (per-tab overrides) ==================== -->
   <div id="review-modal" class="modal-backdrop hidden">
     <div class="modal-shell">
       <div class="px-6 py-4 border-b flex items-center justify-between" style="border-color: #eef0f4;">
@@ -382,7 +1108,7 @@
         </div>
       </div>
       <div class="modal-tabs">
-        <div class="modal-tab active" data-review-tab="Verified">Approved <span id="count-Verified">0</span></div>
+        <div class="modal-tab active" data-review-tab="Approved">Approved <span id="count-Approved">0</span></div>
         <div class="modal-tab" data-review-tab="Review">Review <span id="count-Review">0</span></div>
         <div class="modal-tab" data-review-tab="Not Approved">Not Approved <span id="count-Not">0</span></div>
       </div>
@@ -426,6 +1152,169 @@
       <div class="flex justify-end gap-2 mt-4">
         <button id="warn-go-back"  class="btn btn-secondary">Go Back to Review</button>
         <button id="warn-export"   class="btn btn-primary">Export Anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== AI auto-add toast stack ==================== -->
+  <div id="toast-stack" class="toast-stack"></div>
+
+  <!-- ==================== Analytics import wizard ==================== -->
+  <!--
+    Dedicated wizard for the Analytics tab. Vendor files arrive with junk
+    header rows above the real data, so step 2 asks the user to click the
+    header row directly rather than assuming row 1. Step 3 maps columns;
+    ASIN is required only for "Vet Existing", optional for "Find & Vet".
+  -->
+  <div id="awiz-modal" class="modal-backdrop hidden">
+    <div class="wizard-shell">
+      <div class="wizard-header">
+        <div>
+          <div class="wizard-kicker" id="awiz-kicker">New analytics run</div>
+          <div class="wizard-title" id="awiz-title">Import vendor catalog</div>
+        </div>
+        <button class="icon-btn" id="awiz-close" title="Cancel">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="wizard-stepper">
+        <div class="step active" data-awiz-indicator="1"><span class="dot">1</span><span>Upload</span></div>
+        <div class="step-line"></div>
+        <div class="step"        data-awiz-indicator="2"><span class="dot">2</span><span>Header row</span></div>
+        <div class="step-line"></div>
+        <div class="step"        data-awiz-indicator="3"><span class="dot">3</span><span>Map columns</span></div>
+        <div class="step-line"></div>
+        <div class="step"        data-awiz-indicator="4"><span class="dot">4</span><span>Confirm</span></div>
+      </div>
+
+      <div class="wizard-body">
+
+        <!-- Step 1 — File drop -->
+        <div class="wizard-step" data-awiz-panel="1">
+          <div class="wizard-step-title">Upload the vendor file</div>
+          <div class="wizard-step-hint">Drop the file vendors sent you — .xlsx, .xls, .csv, or .tsv. You'll tell us which row holds the real headers next.</div>
+          <div id="awiz-drop" class="drop-zone-lg">
+            <div class="drop-zone-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </div>
+            <div class="drop-zone-primary">Click to select file or drag and drop</div>
+            <div class="drop-zone-secondary">Supports .xlsx, .xls, .csv, .tsv</div>
+          </div>
+          <input type="file" id="awiz-file-input" accept=".xlsx,.xls,.csv,.tsv" class="hidden" />
+          <div id="awiz-file-card" class="wizard-file-card hidden">
+            <div class="wizard-file-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div id="awiz-file-name" class="wizard-file-name"></div>
+              <div id="awiz-file-meta" class="wizard-file-meta"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2 — Pick the header row -->
+        <div class="wizard-step hidden" data-awiz-panel="2">
+          <div class="wizard-step-title">Which row holds the column headers?</div>
+          <div class="wizard-step-hint">Vendors often put company info or notes at the top. Click the row where your real headers live (UPC, Brand, Title, …). Everything above gets skipped.</div>
+          <div class="awiz-preview-wrap">
+            <table id="awiz-preview-table" class="awiz-preview-table">
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="text-xs mt-2" style="color: #6b7480;">
+            Showing the first <span id="awiz-preview-count">0</span> rows of <span id="awiz-preview-total">0</span>.
+          </div>
+        </div>
+
+        <!-- Step 3 — Map columns -->
+        <div class="wizard-step hidden" data-awiz-panel="3">
+          <div class="wizard-step-title">Map the columns</div>
+          <div class="wizard-step-hint" id="awiz-map-hint">Tell us which column is which. The UPC / EAN column is the one we'll search for on Amazon.</div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+            <div>
+              <label class="abbr-label">UPC / EAN <span style="color: var(--purple-700)">*</span></label>
+              <select id="awiz-map-upc" class="abbr-input"></select>
+            </div>
+            <div>
+              <label class="abbr-label">Item ID / Part Number</label>
+              <select id="awiz-map-itemid" class="abbr-input"></select>
+            </div>
+            <div>
+              <label class="abbr-label">Vendor Title <span style="color: var(--purple-700)">*</span></label>
+              <select id="awiz-map-title" class="abbr-input"></select>
+            </div>
+            <div>
+              <label class="abbr-label">Brand (type the brand for every row)</label>
+              <input id="awiz-map-brand" class="abbr-input" placeholder="e.g. Oral-B" autocomplete="off" />
+            </div>
+          </div>
+
+          <!-- Sample preview — 5 rows after the chosen header so the user can
+               eyeball whether their mapping is right before kicking off. -->
+          <div class="awiz-map-preview-label">Sample — your chosen header row + next 5 rows</div>
+          <div class="awiz-preview-wrap awiz-map-preview-wrap">
+            <table id="awiz-map-preview-table" class="awiz-preview-table">
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div id="awiz-map-feedback" class="text-xs mt-3" style="color: #b91c1c;"></div>
+        </div>
+
+        <!-- Step 4 — Search methods + name + confirm -->
+        <div class="wizard-step hidden" data-awiz-panel="4">
+          <div class="wizard-step-title">Pick how we search Amazon, then kick it off</div>
+          <div class="wizard-step-hint">Each search method is tried in order until a match is found. UPC is fastest and most precise; Title is broadest but noisier.</div>
+
+          <!-- Search method picker (was previously on the main Analytics card) -->
+          <div class="awiz-method-group">
+            <label class="awiz-method-row">
+              <input type="checkbox" id="awiz-search-upc" class="awiz-search-cb" checked />
+              <div>
+                <div class="awiz-method-title">Search by UPC / EAN</div>
+                <div class="awiz-method-desc">Exact identifier match. Used first — fastest and most accurate.</div>
+              </div>
+            </label>
+            <label class="awiz-method-row">
+              <input type="checkbox" id="awiz-search-itemid" class="awiz-search-cb" checked />
+              <div>
+                <div class="awiz-method-title">Search by Item ID / Part Number</div>
+                <div class="awiz-method-desc">Fallback when UPC is missing or unknown to Amazon.</div>
+              </div>
+            </label>
+            <label class="awiz-method-row">
+              <input type="checkbox" id="awiz-search-title" class="awiz-search-cb" />
+              <div>
+                <div class="awiz-method-title">Search by Title (keyword)</div>
+                <div class="awiz-method-desc">Last resort for catalog-only items. Noisier — set the page limit below.</div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Title-only options — only shown if Title is checked -->
+          <div id="awiz-title-opts" class="hidden awiz-title-opts">
+            <div class="flex items-center justify-between">
+              <label class="text-xs" style="color: #475569;">Pages per title (≈10 ASINs each)</label>
+              <input id="awiz-title-pages" type="number" min="1" max="10" value="5" class="w-16 text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;" />
+            </div>
+            <label class="flex items-center gap-2 text-xs cursor-pointer mt-2" style="color: #475569;">
+              <input type="checkbox" id="awiz-title-ai-clean" />
+              Use GPT-4o to clean vendor titles before searching (costs extra tokens)
+            </label>
+          </div>
+
+          <label class="abbr-label mt-4">Run name</label>
+          <input id="awiz-run-name" class="abbr-input mb-4" placeholder="e.g. Acme — April restock" />
+          <div id="awiz-summary" class="awiz-summary"></div>
+        </div>
+
+      </div>
+
+      <div class="wizard-footer">
+        <button id="awiz-back" class="btn btn-secondary">Back</button>
+        <div class="flex-1"></div>
+        <button id="awiz-next" class="btn btn-primary">Next</button>
       </div>
     </div>
   </div>

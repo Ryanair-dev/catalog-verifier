@@ -11,25 +11,29 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
-from .extractor import rule_extract
+from .extractor import amz_extract, rule_extract
 
 # Signal weights — must sum to 100.
+# UPC is the gold standard for CPG catalogs; brand matching is unreliable when
+# catalog lists a parent company (e.g. "Unilever") rather than sub-brands
+# (Degree, Dove, AXE), so brand weight is kept minimal.
 WEIGHTS = {
-    "upc": 25,
-    "item_id": 20,
-    "brand": 15,
+    "upc": 55,
+    "item_id": 10,
+    "brand": 5,
     "title": 25,
-    "pack": 15,
+    "pack": 5,
 }
 
 # Verdict thresholds — defaults, overridable via services.database.get_thresholds()
 # or by passing explicit ``thresholds`` through the scoring API.
-VERIFIED_MIN = 85
-REVIEW_MIN = 35
+# With UPC weight=55: a UPC match alone yields 55 pts, so Approved threshold=65
+# means UPC match + any reasonable title (~40%+) → Approved.
+# Items without a UPC match top out at ~45 pts → Not Approved.
+VERIFIED_MIN = 65
+REVIEW_MIN = 40
 
-# Stable verdict label — used everywhere in the app, including the UI and the
-# export. The rename from "Not Verified" → "Not Approved" is deliberate.
-VERDICT_VERIFIED = "Verified"
+VERDICT_VERIFIED = "Approved"
 VERDICT_REVIEW = "Review"
 VERDICT_NOT_APPROVED = "Not Approved"
 
@@ -65,7 +69,12 @@ def _split_ids(value: Any) -> list[str]:
 def score_upc(catalog_upc: Any, amz_upcs: list[Any]) -> dict:
     cat_norm = _digits_only(catalog_upc)
     if not cat_norm:
-        return {"score": 0, "detail": "No catalog UPC", "matched": False}
+        return {"score": 0, "detail": "No catalog UPC", "matched": False, "no_data": False}
+
+    # Check whether Amazon actually has any UPC data at all.
+    amz_has_data = any(_digits_only(v) for v in amz_upcs if v is not None)
+    if not amz_has_data:
+        return {"score": 0, "detail": "No UPC in Amazon record", "matched": False, "no_data": True}
 
     for value in amz_upcs:
         for piece in _split_ids(value):
@@ -76,8 +85,8 @@ def score_upc(catalog_upc: Any, amz_upcs: list[Any]) -> dict:
             if (cat_norm == piece_digits
                     or cat_norm.lstrip("0") == piece_digits.lstrip("0")
                     or cat_norm[-12:] == piece_digits[-12:]):
-                return {"score": 100, "detail": f"Match: {piece_digits}", "matched": True}
-    return {"score": 0, "detail": "UPC mismatch", "matched": False}
+                return {"score": 100, "detail": f"Match: {piece_digits}", "matched": True, "no_data": False}
+    return {"score": 0, "detail": "UPC mismatch", "matched": False, "no_data": False}
 
 
 def score_item_id(catalog_item_id: Any, amz_candidates: list[Any]) -> dict:
@@ -138,29 +147,38 @@ def score_brand(catalog_brand: Any, amz_brand: Any, amz_manufacturer: Any) -> di
 
 def score_title(
     catalog_title: Any,
-    amz_title: Any,
+    amz_row: dict | None,
     abbreviations: list[dict],
 ) -> dict:
     cat_raw = _norm(catalog_title)
-    amz_raw = _norm(amz_title)
-    if not cat_raw or not amz_raw:
+    if not cat_raw:
+        return {"score": 0, "detail": "Missing title", "matched": False}
+    if not amz_row:
+        return {"score": 0, "detail": "Missing title", "matched": False}
+
+    amz_title = amz_row.get("Title") or amz_row.get("item_name") or ""
+    if not _norm(amz_title):
         return {"score": 0, "detail": "Missing title", "matched": False}
 
     cat_attr = rule_extract(cat_raw, abbreviations)
-    amz_attr = rule_extract(amz_raw, abbreviations)
 
-    # Base fuzzy similarity across normalised titles.
+    # Use the full Amazon row — combined title + all feature/bullet fields,
+    # with dedicated attribute columns (Color, Scent, Size…) overriding
+    # anything extracted from text.
+    amz_attr = amz_extract(amz_row, abbreviations)
+
+    # Base fuzzy similarity: catalog normalised title vs combined Amazon text.
     base = fuzz.token_set_ratio(
         cat_attr["normalised_title"], amz_attr["normalised_title"]
     )
 
     penalties = 0
+    bonuses = 0
     notes: list[str] = []
 
-    # Product type mismatch is a serious penalty.
+    # Product type mismatch penalty.
     if cat_attr["product_type"] and amz_attr["product_type"]:
         if cat_attr["product_type"] != amz_attr["product_type"]:
-            # Partial credit via fuzzy overlap on just the type tokens.
             t_ratio = fuzz.partial_ratio(
                 cat_attr["product_type"], amz_attr["product_type"]
             )
@@ -170,26 +188,43 @@ def score_title(
                     f"type {cat_attr['product_type']} vs {amz_attr['product_type']}"
                 )
 
-    # Size mismatch penalty.
+    # Size comparison.
     if cat_attr["size"] and amz_attr["size"]:
         same_unit = cat_attr["size"]["unit"] == amz_attr["size"]["unit"]
         same_value = abs(cat_attr["size"]["value"] - amz_attr["size"]["value"]) < 0.05
-        if not (same_unit and same_value):
+        if same_unit and same_value:
+            bonuses += 10
+        else:
             penalties += 10
             notes.append(
                 f"size {cat_attr['size']['raw']} vs {amz_attr['size']['raw']}"
             )
 
-    # Variant mismatch penalty (scent, color, flavor).
+    # Pack count comparison.
+    cat_pack = cat_attr.get("pack_count")
+    amz_pack = amz_attr.get("pack_count")
+    if cat_pack and amz_pack:
+        if cat_pack == amz_pack:
+            bonuses += 20
+        else:
+            penalties += 10
+            notes.append(f"pack {cat_pack} vs {amz_pack}")
+
+    # Variant comparison (scent, color, flavor).
     for key in ("scent", "color", "flavor"):
         cv = cat_attr["variant"].get(key)
         av = amz_attr["variant"].get(key)
-        if cv and av and cv != av:
-            penalties += 8
-            notes.append(f"{key} {cv} vs {av}")
+        if cv and av:
+            if cv == av:
+                bonuses += 10
+            else:
+                penalties += 8
+                notes.append(f"{key} {cv} vs {av}")
 
-    score = max(0, base - penalties)
+    score = min(100, max(0, base - penalties + bonuses))
     detail = f"Similarity {base}%"
+    if bonuses:
+        detail += f" +{bonuses}pts attrs"
     if notes:
         detail += " — " + "; ".join(notes)
 
@@ -212,11 +247,12 @@ def score_pack(cat_attrs: dict, amz_row: dict) -> dict:
 
     amz_pack_candidates = []
     for key in (
-        "Package: Quantity",
+        "Unit Details: Unit Value",
         "Number of Items",
         "item_package_quantity",
         "unit_count",
         "number_of_items",
+        "Package: Quantity",
     ):
         if amz_row.get(key) not in (None, ""):
             try:
@@ -231,8 +267,8 @@ def score_pack(cat_attrs: dict, amz_row: dict) -> dict:
                 "amz_pack": None, "multiple": None}
 
     if cat_pack is None:
-        return {"score": 60, "detail": f"Amazon pack {amz_pack}, catalog unknown",
-                "matched": False, "amz_pack": amz_pack, "multiple": None}
+        return {"score": 100, "detail": f"Amazon pack {amz_pack}, catalog pack not specified",
+                "matched": True, "amz_pack": amz_pack, "multiple": None}
 
     if amz_pack is None:
         return {"score": 60, "detail": f"Catalog pack {cat_pack}, Amazon unknown",
@@ -310,12 +346,6 @@ def score_row(
         amazon_row.get("model_number"),
         amazon_row.get("part_number"),
     ]
-    amz_title = (
-        amazon_row.get("Title")
-        or amazon_row.get("item_name")
-        or ""
-    )
-
     upc = score_upc(catalog_row.get("UPC/EAN"), upc_candidates)
     item = score_item_id(catalog_row.get("Item ID"), item_candidates)
     brand = score_brand(
@@ -323,28 +353,54 @@ def score_row(
         amazon_row.get("Brand") or amazon_row.get("brand"),
         amazon_row.get("Manufacturer") or amazon_row.get("manufacturer"),
     )
-    title = score_title(catalog_row.get("Vendor Title"), amz_title, abbreviations)
+    title = score_title(catalog_row.get("Vendor Title"), amazon_row, abbreviations)
     pack = score_pack(title.get("cat_attrs"), amazon_row)
 
+    # When Amazon has no UPC data at all (e.g. Keepa Product Viewer export),
+    # redistribute the UPC weight to title so title similarity can still approve.
+    # Also use a lower approval threshold (50) since the max reachable score is ~83.
+    if upc.get("no_data"):
+        w_upc, w_title = 0, WEIGHTS["upc"] + WEIGHTS["title"]
+        effective_thresholds = {
+            "verified": min((thresholds or {}).get("verified", VERIFIED_MIN), 50),
+            "review": (thresholds or {}).get("review", REVIEW_MIN),
+        }
+    else:
+        w_upc, w_title = WEIGHTS["upc"], WEIGHTS["title"]
+        effective_thresholds = thresholds
+
     weighted = (
-        upc["score"] * WEIGHTS["upc"]
+        upc["score"] * w_upc
         + item["score"] * WEIGHTS["item_id"]
         + brand["score"] * WEIGHTS["brand"]
-        + title["score"] * WEIGHTS["title"]
+        + title["score"] * w_title
         + pack["score"] * WEIGHTS["pack"]
     ) / 100.0
 
     confidence = round(weighted, 1)
 
+    # When the catalog supplies an explicit ASIN that matched an Amazon record
+    # and the title similarity is ≥ 40%, the item identity is confirmed.
+    # Covers two cases:
+    #   1. UPC mismatch — typically a multi-pack bundle with a different bundle UPC.
+    #   2. no_data (Keepa export lacks UPC) — identity confirmed via ASIN + title.
+    catalog_asin = str(catalog_row.get("ASIN") or "").strip()
+    if catalog_asin and title["score"] >= 40:
+        if not upc["matched"]:  # covers both no_data=True and plain mismatch
+            asin_floor = (effective_thresholds or {}).get("verified", VERIFIED_MIN)
+            confidence = max(confidence, float(asin_floor))
+
     notes_bits = []
-    if not upc["matched"]:
+    if upc.get("no_data"):
+        notes_bits.append("No UPC in Amazon record — scored on title")
+    elif not upc["matched"]:
         notes_bits.append("UPC mismatch — reviewed")
     if pack.get("multiple") and pack["multiple"] != 1:
         notes_bits.append(f"Amazon pack {pack['multiple']}× catalog")
 
     return {
         "confidence": confidence,
-        "verdict": verdict_for(confidence, thresholds),
+        "verdict": verdict_for(confidence, effective_thresholds),
         "signals": {
             "upc": upc,
             "item_id": item,

@@ -4,15 +4,17 @@ Abbreviation library endpoints (categorised, SQLite-backed).
 Shape returned by ``GET /library``::
 
     {
-      "Colors":   [{"id": 1, "abbr": "white", "full": "white"}, ...],
-      "Sizes":    [...],
-      "UOMs":     [...],
-      ...
+      "categories": ["Colors", "Sizes", ...],
+      "library": {
+        "Colors":   [{"id":1,"abbr":"white","full":"white","added_by":"system"}, ...],
+        "Sizes":    [...],
+        ...
+      }
     }
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from services import database
@@ -24,6 +26,7 @@ class LibraryEntry(BaseModel):
     category: str
     abbr: str
     full: str
+    added_by: str | None = "user"
 
 
 class LibraryDelete(BaseModel):
@@ -40,10 +43,16 @@ async def get_library() -> dict:
 
 @router.post("/library")
 async def add_entry(body: LibraryEntry) -> dict:
-    ok = database.add_library_entry(body.category, body.abbr, body.full)
-    if not ok:
-        raise HTTPException(status_code=400, detail="Duplicate or empty entry")
-    return {"ok": True, "library": database.list_library()}
+    created, entry = database.add_library_entry(
+        body.category, body.abbr, body.full,
+        added_by=body.added_by or "user",
+    )
+    return {
+        "ok": created,
+        "duplicate": not created and entry is not None,
+        "entry": entry,
+        "library": database.list_library(),
+    }
 
 
 @router.post("/library/delete")
