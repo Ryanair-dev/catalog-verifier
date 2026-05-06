@@ -27,11 +27,19 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "catalog_verifier.db"
 _LOCK = threading.Lock()
+
+# In-memory cache for flat_library() — invalidated on any write to abbreviation_library.
+# TTL is a safety net so a server restart isn't needed to pick up external DB edits.
+_LIBRARY_CACHE: list[dict] | None = None
+_LIBRARY_CACHE_AT: float = 0.0
+_LIBRARY_CACHE_TTL = 300.0  # seconds
+_LIBRARY_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------- #
@@ -154,8 +162,12 @@ def init_db() -> None:
             PRIMARY KEY (scan_id, row_idx),
             FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_scan_results_scan  ON scan_results(scan_id);
-        CREATE INDEX IF NOT EXISTS idx_scans_created_at   ON scans(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_scan      ON scan_results(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_scans_created_at       ON scans(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_scan_catalog_rows_scan ON scan_catalog_rows(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_scan_amazon_rows_scan  ON scan_amazon_rows(scan_id);
+        CREATE INDEX IF NOT EXISTS idx_scan_results_upc_asin  ON scan_results(upc, asin);
+        CREATE INDEX IF NOT EXISTS idx_analytics_catalog_run  ON analytics_catalog_rows(run_id);
 
         -- Analytics tab (ROI & Cost) ---------------------------------------
         -- One row per run. search_methods is a JSON array like
@@ -214,6 +226,34 @@ def init_db() -> None:
                 "ALTER TABLE abbreviation_library "
                 "ADD COLUMN added_by TEXT DEFAULT 'system'"
             )
+
+        # additive migration — add sales_rank for rank-based filtering
+        if not _column_exists(conn, "analytics_candidates", "sales_rank"):
+            conn.execute(
+                "ALTER TABLE analytics_candidates ADD COLUMN sales_rank INTEGER"
+            )
+
+        # additive migration — max_rank / min_rank caps applied during run / rescore
+        if not _column_exists(conn, "analytics_runs", "max_rank"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN max_rank INTEGER DEFAULT 0"
+            )
+        if not _column_exists(conn, "analytics_runs", "min_rank"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN min_rank INTEGER DEFAULT 0"
+            )
+
+        # additive migration — analytics AI check results
+        if not _column_exists(conn, "analytics_candidates", "ai_verdict"):
+            conn.execute("ALTER TABLE analytics_candidates ADD COLUMN ai_verdict TEXT")
+        if not _column_exists(conn, "analytics_candidates", "ai_reasoning"):
+            conn.execute("ALTER TABLE analytics_candidates ADD COLUMN ai_reasoning TEXT")
+        if not _column_exists(conn, "analytics_runs", "ai_check_status"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_check_status TEXT")
+        if not _column_exists(conn, "analytics_runs", "ai_check_done"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_check_done INTEGER DEFAULT 0")
+        if not _column_exists(conn, "analytics_runs", "ai_check_total"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_check_total INTEGER DEFAULT 0")
 
         _seed_settings(conn)
         _seed_library(conn)
@@ -391,6 +431,13 @@ def is_blacklisted(upc: str, asin: str) -> bool:
     return bool(row)
 
 
+def load_blacklist_set() -> set[tuple[str, str]]:
+    """Return all blacklisted (upc, asin) pairs as a set for O(1) bulk lookup."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT upc, asin FROM blacklisted_pairs").fetchall()
+    return {(r["upc"], r["asin"].upper()) for r in rows}
+
+
 # --------------------------------------------------------------------------- #
 # Verified items (legacy / global)
 # --------------------------------------------------------------------------- #
@@ -489,12 +536,24 @@ def list_library() -> dict[str, list[dict]]:
 
 
 def flat_library() -> list[dict]:
-    """Flat list suitable for the rule-based extractor."""
-    flat: list[dict] = []
-    for entries in list_library().values():
-        for e in entries:
-            flat.append({"abbr": e["abbr"], "full": e["full"]})
-    return flat
+    """Flat list suitable for the rule-based extractor. Cached with TTL."""
+    global _LIBRARY_CACHE, _LIBRARY_CACHE_AT
+    with _LIBRARY_LOCK:
+        if _LIBRARY_CACHE is not None and (time.monotonic() - _LIBRARY_CACHE_AT) < _LIBRARY_CACHE_TTL:
+            return _LIBRARY_CACHE
+        flat: list[dict] = []
+        for entries in list_library().values():
+            for e in entries:
+                flat.append({"abbr": e["abbr"], "full": e["full"]})
+        _LIBRARY_CACHE = flat
+        _LIBRARY_CACHE_AT = time.monotonic()
+        return flat
+
+
+def _invalidate_library_cache() -> None:
+    global _LIBRARY_CACHE
+    with _LIBRARY_LOCK:
+        _LIBRARY_CACHE = None
 
 
 def add_library_entry(
@@ -530,6 +589,7 @@ def add_library_entry(
             (category, abbr, full, added_by),
         )
         new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    _invalidate_library_cache()
     return True, {
         "id": new_id, "abbr": abbr, "full": full,
         "added_by": added_by, "category": category,
@@ -541,16 +601,17 @@ def delete_library_entry(entry_id: int) -> int:
         cur = conn.execute(
             "DELETE FROM abbreviation_library WHERE id=?", (entry_id,),
         )
-        return cur.rowcount
+        rowcount = cur.rowcount
+    _invalidate_library_cache()
+    return rowcount
 
 
 def has_library_entry(abbr: str) -> bool:
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM abbreviation_library WHERE LOWER(abbr)=LOWER(?)",
-            ((abbr or "").strip(),),
-        ).fetchone()
-    return bool(row)
+    """Check against the in-memory cache — avoids a DB round-trip per call."""
+    token = (abbr or "").strip().lower()
+    if not token:
+        return False
+    return any(e["abbr"].lower() == token for e in flat_library())
 
 
 # --------------------------------------------------------------------------- #

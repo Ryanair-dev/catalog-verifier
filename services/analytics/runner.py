@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Iterable
 
@@ -44,11 +46,117 @@ log = logging.getLogger(__name__)
 UPC_BATCH_SIZE = 20            # SP-API hard cap on identifiers per call
 DEFAULT_TITLE_MAX_PAGES = 5    # what the wizard exposes (Analytics panel)
 PAGE_SLEEP = 0.6               # seconds between paged keyword calls (safety)
+AI_CLEAN_WORKERS = 3           # parallel GPT-4o-mini calls for title cleaning (Tier 1: 500 RPM)
 
 # Verdict thresholds (mirrors AmazonAsinResearch1 config defaults).
 MIN_CONFIDENCE = 30.0
 AUTO_APPROVE = 90.0
 REVIEW_FLOOR = 35.0
+
+
+# --------------------------------------------------------------------------- #
+# Run control — pause / stop flags
+# --------------------------------------------------------------------------- #
+
+# Maps run_id → "pause" | "stop"
+_RUN_CONTROL: dict[int, str] = {}
+_RUN_CONTROL_LOCK = threading.Lock()
+
+
+def request_pause(run_id: int) -> None:
+    with _RUN_CONTROL_LOCK:
+        _RUN_CONTROL[run_id] = "pause"
+
+
+def request_stop(run_id: int) -> None:
+    with _RUN_CONTROL_LOCK:
+        _RUN_CONTROL[run_id] = "stop"
+
+
+def clear_control(run_id: int) -> None:
+    with _RUN_CONTROL_LOCK:
+        _RUN_CONTROL.pop(run_id, None)
+
+
+def _check_control(run_id: int) -> str | None:
+    """Return 'pause', 'stop', or None. Clears the flag if stop."""
+    with _RUN_CONTROL_LOCK:
+        return _RUN_CONTROL.get(run_id)
+
+
+# --------------------------------------------------------------------------- #
+# AI title cleaning — GPT-4o-mini
+# --------------------------------------------------------------------------- #
+
+_AI_CLEAN_SYSTEM = (
+    "You are a product title cleaner. Given a vendor product title, return a "
+    "clean, concise, search-friendly version suitable for an Amazon keyword "
+    "search. Strip internal codes, excess punctuation, and all-caps formatting. "
+    "Return only the cleaned title — nothing else."
+)
+
+
+def _clean_one_title(title: str) -> str:
+    """Call GPT-4o-mini to clean a single vendor title. Returns original on error."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return title
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": _AI_CLEAN_SYSTEM},
+                {"role": "user",   "content": title},
+            ],
+            max_tokens=60,
+            temperature=0.0,
+        )
+        cleaned = (resp.choices[0].message.content or "").strip()
+        return cleaned if cleaned else title
+    except Exception as exc:
+        log.warning("AI title clean failed for %r: %s", title[:60], exc)
+        return title
+
+
+def clean_titles_parallel(
+    rows: list[SourceRow],
+    run_id: int,
+    workers: int = AI_CLEAN_WORKERS,
+) -> dict[int, str]:
+    """
+    Return {row_idx: cleaned_title} for every row that has a title.
+    Runs up to `workers` GPT-4o-mini calls in parallel.
+    Stops early if a pause/stop is requested.
+    """
+    result: dict[int, str] = {}
+    rows_with_titles = [(r.row_idx, r.title) for r in rows if r.title]
+    total = len(rows_with_titles)
+    done = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_clean_one_title, title): (idx, title)
+            for idx, title in rows_with_titles
+        }
+        for fut in as_completed(futures):
+            idx, orig = futures[fut]
+            try:
+                result[idx] = fut.result()
+            except Exception:
+                result[idx] = orig
+            done += 1
+            if done % 50 == 0 or done == total:
+                _update_progress(
+                    run_id,
+                    phase=f"Cleaning titles with AI ({done}/{total})",
+                )
+            if _check_control(run_id):
+                pool.shutdown(wait=False, cancel_futures=True)
+                break
+
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -64,6 +172,37 @@ def _first(items: list | None, key: str = "value") -> Any:
     if isinstance(first, dict):
         return first.get(key)
     return first
+
+
+def _extract_sales_rank(raw: dict) -> tuple[int | None, str, list[dict]]:
+    """
+    Parse salesRanks from a raw SP-API item.
+
+    Returns (best_rank, best_category, all_ranks) where:
+      best_rank      — lowest (best) rank number across all rank entries, or None
+      best_category  — category name for that best rank
+      all_ranks      — list of {"rank": int, "category": str} for every entry
+    """
+    all_ranks: list[dict] = []
+    best_rank: int | None = None
+    best_category = ""
+
+    for sr in (raw.get("salesRanks") or []):
+        for group_key in ("classificationRanks", "displayGroupRanks"):
+            for entry in (sr.get(group_key) or []):
+                try:
+                    r = int(entry.get("rank") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if r <= 0:
+                    continue
+                cat = str(entry.get("title") or "")
+                all_ranks.append({"rank": r, "category": cat})
+                if best_rank is None or r < best_rank:
+                    best_rank = r
+                    best_category = cat
+
+    return best_rank, best_category, all_ranks
 
 
 def normalize_amazon_item(raw: dict) -> dict:
@@ -100,6 +239,8 @@ def normalize_amazon_item(raw: dict) -> dict:
             bullets.append(str(bp["value"]).strip())
     description = _attr_str("product_description")
 
+    best_rank, best_rank_category, all_ranks = _extract_sales_rank(raw)
+
     return {
         "asin": asin,
         "title": summary.get("itemName") or _attr_str("item_name"),
@@ -117,6 +258,9 @@ def normalize_amazon_item(raw: dict) -> dict:
             "size": _attr_str("size"),
             "material": _attr_str("material"),
         },
+        "sales_rank": best_rank,
+        "sales_rank_category": best_rank_category,
+        "sales_ranks": all_ranks,
         # Preserve the original for later UI drill-down.
         "_raw": raw,
     }
@@ -138,20 +282,23 @@ def _create_run(
     pages_per_title: int,
     ai_clean_titles: bool,
     total_catalog_items: int,
+    max_rank: int = 0,
+    min_rank: int = 0,
 ) -> int:
     with database._LOCK, _with_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO analytics_runs
               (name, marketplace, search_methods, pages_per_title,
-               ai_clean_titles, total_catalog_items, status,
+               ai_clean_titles, total_catalog_items, max_rank, min_rank, status,
                progress_phase, progress_done, progress_total)
-            VALUES (?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
             """,
             (
                 name, marketplace, json.dumps(search_methods),
                 int(pages_per_title), 1 if ai_clean_titles else 0,
-                int(total_catalog_items), int(total_catalog_items),
+                int(total_catalog_items), int(max_rank), int(min_rank),
+                int(total_catalog_items),
             ),
         )
         return cur.lastrowid
@@ -204,34 +351,60 @@ def _upsert_candidate(
     normalized: dict,
     source: dict,
     sources: list[str],
+    max_rank: int = 0,
+    min_rank: int = 0,
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
     return the verdict string. If the ASIN already exists for this row
     from a prior tier, we keep the higher confidence and union the
     `sources` list.
+
+    max_rank: when > 0, ASINs whose sales_rank exceeds this are forced to not_approved.
+    min_rank: when > 0, ASINs whose sales_rank is below this are forced to not_approved.
+    Unknown/null rank is never penalised by either cap.
     """
     asin = (normalized.get("asin") or "").strip().upper()
     if not asin:
         return "skip"
 
-    scores = calculate_confidence(source, normalized)
+    scores = calculate_confidence(source, normalized, upc_search_hit="UPC" in sources)
     conf = scores["confidence_score"]
-    if conf >= AUTO_APPROVE or scores["upc_match"]:
+    hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
+    if hard_reject:
+        verdict = "not_approved"
+    elif conf >= AUTO_APPROVE:
         verdict = "verified"
-    elif conf >= REVIEW_FLOOR:
+    elif conf >= REVIEW_FLOOR or scores.get("pack_mismatch"):
         verdict = "review"
     elif conf >= MIN_CONFIDENCE:
         verdict = "review"
     else:
         verdict = "not_approved"
 
-    # amz_pack used by the UI for at-a-glance pack quantity differences.
-    amz_pack_raw = normalized.get("item_package_quantity") or normalized.get("number_of_items")
-    try:
-        amz_pack = int(float(amz_pack_raw)) if amz_pack_raw else None
-    except (TypeError, ValueError):
-        amz_pack = None
+    # amz_pack: use the scorer's effective_pack when available (accounts for
+    # vendor titles that already embed a count, e.g. "36 count crayons").
+    # Fall back to the raw SP-API attribute for non-UPC-matched candidates.
+    effective_pack = scores.get("effective_pack")
+    if effective_pack is not None:
+        amz_pack = effective_pack if effective_pack > 1 else None
+    else:
+        amz_pack_raw = normalized.get("item_package_quantity") or normalized.get("number_of_items")
+        try:
+            raw_int = int(float(amz_pack_raw)) if amz_pack_raw else None
+            amz_pack = raw_int if raw_int and raw_int > 1 else None
+        except (TypeError, ValueError):
+            amz_pack = None
+
+    sales_rank = normalized.get("sales_rank")  # int or None
+
+    # Apply rank window: ASINs outside [min_rank, max_rank] → not_approved.
+    # Both caps: unknown/null rank is always allowed through (we never penalise
+    # products whose BSR Amazon hasn't populated).
+    if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
+        verdict = "not_approved"
+    if min_rank > 0 and sales_rank is not None and int(sales_rank) < min_rank:
+        verdict = "not_approved"
 
     data_json = json.dumps({
         "asin": asin,
@@ -250,10 +423,10 @@ def _upsert_candidate(
         if existing is None:
             conn.execute(
                 "INSERT INTO analytics_candidates"
-                "(run_id, row_idx, asin, sources, confidence, verdict, amz_pack, data_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(run_id, row_idx, asin, sources, confidence, verdict, amz_pack, sales_rank, data_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, row_idx, asin, json.dumps(sources),
-                 conf, verdict, amz_pack, data_json),
+                 conf, verdict, amz_pack, sales_rank, data_json),
             )
         else:
             try:
@@ -262,11 +435,30 @@ def _upsert_candidate(
                 prev_sources = []
             merged = list(dict.fromkeys([*prev_sources, *sources]))  # dedupe, keep order
             new_conf = max(conf, float(existing["confidence"] or 0))
+            # Recompute verdict from the best confidence we've seen so a
+            # lower-scoring tier can't downgrade a UPC-confirmed "verified".
+            upc_confirmed = scores["upc_match"] and not scores.get("pack_mismatch") and not scores.get("upc_suspect")
+            if upc_confirmed:
+                verdict = "verified"
+            elif hard_reject:
+                verdict = "not_approved"
+            elif new_conf >= AUTO_APPROVE:
+                verdict = "verified"
+            elif new_conf >= REVIEW_FLOOR or scores.get("pack_mismatch"):
+                verdict = "review"
+            elif new_conf >= MIN_CONFIDENCE:
+                verdict = "review"
+            else:
+                verdict = "not_approved"
+            if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
+                verdict = "not_approved"
+            if min_rank > 0 and sales_rank is not None and int(sales_rank) < min_rank:
+                verdict = "not_approved"
             conn.execute(
                 "UPDATE analytics_candidates SET sources=?, confidence=?, "
-                "  verdict=?, amz_pack=?, data_json=? "
+                "  verdict=?, amz_pack=?, sales_rank=?, data_json=? "
                 "WHERE run_id=? AND row_idx=? AND asin=?",
-                (json.dumps(merged), new_conf, verdict, amz_pack, data_json,
+                (json.dumps(merged), new_conf, verdict, amz_pack, sales_rank, data_json,
                  run_id, row_idx, asin),
             )
 
@@ -306,43 +498,91 @@ def _chunks(seq: list, size: int) -> Iterable[list]:
         yield seq[i:i + size]
 
 
+def _normalize_upc(upc: str) -> str:
+    """Zero-pad 11-digit UPCs to 12 digits. UPC-A is always 12 digits;
+    vendor exports commonly strip the leading zero."""
+    if len(upc) == 11 and upc.isdigit():
+        return "0" + upc
+    return upc
+
+
 def _tier1_upc(
     api: CatalogAPI,
     rows: list[SourceRow],
+    run_id: int = 0,
 ) -> dict[int, list[dict]]:
-    """Batch up to 20 UPCs per SP-API call. Returns {row_idx: [normalized items]}."""
+    """
+    Batch UPC/EAN search via SP-API. Returns {row_idx: [normalized items]}.
+
+    Two-pass strategy:
+      Pass 1 — search as UPC-12 (id_type="UPC").
+      Pass 2 — for any UPC that got no hit, prepend 0 to make EAN-13 and
+               search again as id_type="EAN". Amazon indexes many CPG products
+               as EAN-13 even when the label shows a 12-digit UPC-A barcode.
+    """
     upc_to_rows: dict[str, list[int]] = {}
     for r in rows:
         if r.upc:
-            upc_to_rows.setdefault(r.upc, []).append(r.row_idx)
+            norm = _normalize_upc(r.upc)
+            upc_to_rows.setdefault(norm, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
-    upcs = list(upc_to_rows.keys())
-    if not upcs:
+    if not upc_to_rows:
         return out
 
-    for batch in _chunks(upcs, UPC_BATCH_SIZE):
-        try:
-            data = api.search_by_identifiers(batch, id_type="UPC")
-        except Exception as exc:
-            log.warning("UPC batch failed (%s): %s", len(batch), exc)
-            continue
-        items = data.get("items") or []
-        # SP-API returns items with no hint about which UPC they came from,
-        # so we look inside each item's identifiers for the match.
-        for raw in items:
-            normalized = normalize_amazon_item(raw)
-            hit_upcs = {normalized.get("upc"), normalized.get("ean")}
-            hit_upcs.discard(None); hit_upcs.discard("")
-            for upc in hit_upcs & set(upc_to_rows.keys()):
-                for ri in upc_to_rows[upc]:
-                    out.setdefault(ri, []).append(normalized)
+    def _run_batches(id_list: list[str], id_type: str, phase_offset: int = 0) -> set[str]:
+        """Send batches, populate `out`, return set of UPCs that got ≥1 hit."""
+        hit_set: set[str] = set()
+        batches = list(_chunks(id_list, UPC_BATCH_SIZE))
+        for i, batch in enumerate(batches):
+            if run_id and _check_control(run_id):
+                break
+            if run_id:
+                _update_progress(run_id, done=phase_offset + i, total=phase_offset + len(batches))
+            try:
+                data = api.search_by_identifiers(batch, id_type=id_type)
+            except Exception as exc:
+                log.warning("%s batch failed (%s): %s", id_type, len(batch), exc)
+                continue
+            for raw in (data.get("items") or []):
+                normalized = normalize_amazon_item(raw)
+                # Collect all identifiers this item carries (both UPC and EAN forms).
+                item_ids: set[str] = set()
+                for v in (normalized.get("upc"), normalized.get("ean")):
+                    if v:
+                        item_ids.add(v)
+                        # Also try stripping a leading 0 to match stored 12-digit UPC.
+                        if v.startswith("0") and len(v) == 13:
+                            item_ids.add(v[1:])
+                for uid in item_ids & set(upc_to_rows.keys()):
+                    hit_set.add(uid)
+                    for ri in upc_to_rows[uid]:
+                        out.setdefault(ri, []).append(normalized)
+        return hit_set
+
+    # Pass 1: search by UPC-12
+    upcs = list(upc_to_rows.keys())
+    hit_upcs = _run_batches(upcs, "UPC", phase_offset=0)
+
+    # Pass 2: search ALL 12-digit UPCs again as EAN-13 (prepend 0).
+    # Amazon indexes many CPG products under EAN-13 even when the physical
+    # label shows a 12-digit UPC-A. Running a full EAN pass finds additional
+    # listings that the UPC pass missed, and can also return extra ASINs for
+    # UPCs that already had UPC hits (multipack / variant listings).
+    ean_candidates = [u for u in upcs if u.isdigit() and len(u) == 12]
+    if ean_candidates:
+        log.info("UPC pass 2 (EAN-13): searching all %d UPCs as EAN", len(ean_candidates))
+        eans = ["0" + u for u in ean_candidates]
+        upc1_batches = (len(upcs) + UPC_BATCH_SIZE - 1) // UPC_BATCH_SIZE
+        _run_batches(eans, "EAN", phase_offset=upc1_batches)
+
     return out
 
 
 def _tier2_itemid(
     api: CatalogAPI,
     rows: list[SourceRow],
+    run_id: int = 0,
 ) -> dict[int, list[dict]]:
     """One keyword search per unique Item ID string."""
     term_to_rows: dict[str, list[int]] = {}
@@ -351,7 +591,13 @@ def _tier2_itemid(
             term_to_rows.setdefault(r.itemid, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
-    for term, row_idxs in term_to_rows.items():
+    terms = list(term_to_rows.items())
+    total_terms = len(terms)
+    for i, (term, row_idxs) in enumerate(terms):
+        if run_id and _check_control(run_id):
+            break
+        if run_id and (i % 5 == 0 or i == total_terms - 1):
+            _update_progress(run_id, done=i, total=total_terms)
         try:
             data = api.search_by_keywords(term, page_size=20)
         except Exception as exc:
@@ -368,6 +614,7 @@ def _tier3_title(
     api: CatalogAPI,
     rows: list[SourceRow],
     max_pages: int,
+    run_id: int = 0,
 ) -> dict[int, list[dict]]:
     """
     One paginated keyword search per unique title. Titles are used
@@ -375,13 +622,20 @@ def _tier3_title(
     """
     term_to_rows: dict[str, list[int]] = {}
     for r in rows:
-        if r.title:
+        if r.search_term:
+            # search_term returns search_title if set, else falls back to title.
             # Add brand prefix if we have it — dramatically improves relevance.
-            term = f"{r.brand} {r.title}".strip() if r.brand else r.title
+            term = f"{r.brand} {r.search_term}".strip() if r.brand else r.search_term
             term_to_rows.setdefault(term, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
-    for term, row_idxs in term_to_rows.items():
+    terms = list(term_to_rows.items())
+    total_terms = len(terms)
+    for i, (term, row_idxs) in enumerate(terms):
+        if run_id and _check_control(run_id):
+            break
+        if run_id and (i % 5 == 0 or i == total_terms - 1):
+            _update_progress(run_id, done=i, total=total_terms)
         page_token = None
         collected: list[dict] = []
         for page in range(max(1, int(max_pages))):
@@ -403,6 +657,254 @@ def _tier3_title(
 
 
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# Re-score pipeline (background)
+# --------------------------------------------------------------------------- #
+
+_RESCORE_BATCH = 200  # candidates scored + written per DB transaction
+
+
+def start_rescore(
+    run_id: int, title_col: str, brand_col: str = "", max_rank: int = 0,
+    min_rank: int = 0,
+) -> None:
+    """Kick off a background re-score thread for an existing run.
+
+    max_rank / min_rank: when >= 0, persist on the run row so future
+    rescores default to these values.  Pass 0 to clear the cap.
+    """
+    clear_control(run_id)
+    # Persist updated rank caps on the run row so they survive a server restart.
+    with database._LOCK, _with_conn() as conn:
+        conn.execute(
+            "UPDATE analytics_runs SET max_rank=?, min_rank=? WHERE id=?",
+            (int(max_rank), int(min_rank), run_id),
+        )
+    # Write "Rescoring" to the DB *before* launching the thread so that the
+    # very first fetchAnalyticsRunDetail call (which happens right after the
+    # endpoint returns) already sees an active status and starts polling.
+    _update_progress(run_id, status="Rescoring",
+                     phase="Re-scoring candidates…", done=0, total=0)
+    thread = threading.Thread(
+        target=_rescore_pipeline,
+        args=(run_id, title_col, brand_col, max_rank, min_rank),
+        daemon=True,
+    )
+    thread.start()
+
+
+def _rescore_pipeline(
+    run_id: int, title_col: str, brand_col: str = "", max_rank: int = 0,
+    min_rank: int = 0,
+) -> None:
+    """
+    Re-score every candidate in `run_id` using `title_col` from each row's
+    raw dict as the source title for the confidence scorer.
+
+    Also updates analytics_catalog_rows.data_json so the Vendor Title column
+    in the UI reflects the newly chosen title after rescoring.
+
+    max_rank / min_rank: enforce rank window — candidates outside the range
+    are forced to not_approved regardless of confidence.
+    """
+    try:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            cat_rows = conn.execute(
+                "SELECT row_idx, data_json FROM analytics_catalog_rows "
+                "WHERE run_id=? ORDER BY row_idx",
+                (run_id,),
+            ).fetchall()
+            cand_rows = conn.execute(
+                "SELECT row_idx, asin, sources, data_json "
+                "FROM analytics_candidates WHERE run_id=? ORDER BY row_idx",
+                (run_id,),
+            ).fetchall()
+
+        # Build row_idx → catalog data map, also resolve new title per row.
+        catalog_map: dict[int, dict] = {}
+        title_by_row: dict[int, str] = {}
+        for r in cat_rows:
+            try:
+                d = json.loads(r["data_json"] or "{}")
+            except (ValueError, TypeError):
+                d = {}
+            ri = int(r["row_idx"])
+            catalog_map[ri] = d
+            raw = d.get("raw", {})
+            if title_col and title_col in raw:
+                title_by_row[ri] = str(raw.get(title_col) or "").strip()
+            else:
+                title_by_row[ri] = d.get("title", "")
+
+        brand_by_row: dict[int, str] = {}
+        for r in cat_rows:
+            try:
+                d2 = json.loads(r["data_json"] or "{}")
+            except (ValueError, TypeError):
+                d2 = {}
+            ri2 = int(r["row_idx"])
+            raw2 = d2.get("raw", {})
+            if brand_col and brand_col in raw2:
+                brand_by_row[ri2] = str(raw2.get(brand_col) or "").strip()
+            else:
+                brand_by_row[ri2] = d2.get("brand", "")
+
+        total = len(cand_rows)
+        _update_progress(run_id, done=0, total=total)
+
+        cand_batch: list[tuple] = []
+        cat_batch:  list[tuple] = []   # (new_data_json, run_id, row_idx)
+        flushed_cat_rows: set[int] = set()
+
+        def _flush(final_done: int) -> None:
+            if cand_batch:
+                with database._LOCK, _with_conn() as conn:
+                    conn.executemany(
+                        "UPDATE analytics_candidates "
+                        "SET confidence=?, verdict=?, data_json=?, sales_rank=? "
+                        "WHERE run_id=? AND row_idx=? AND asin=?",
+                        cand_batch,
+                    )
+                cand_batch.clear()
+            if cat_batch:
+                with database._LOCK, _with_conn() as conn:
+                    conn.executemany(
+                        "UPDATE analytics_catalog_rows SET data_json=? "
+                        "WHERE run_id=? AND row_idx=?",
+                        cat_batch,
+                    )
+                cat_batch.clear()
+            _update_progress(run_id, done=final_done, total=total)
+
+        for i, c in enumerate(cand_rows):
+            if _check_control(run_id):
+                _flush(i)
+                _update_progress(run_id, status="Stopped",
+                                 phase="Stopped by user", done=i, total=total)
+                return
+
+            row_idx = int(c["row_idx"])
+            cat = catalog_map.get(row_idx, {})
+            new_title = title_by_row.get(row_idx, cat.get("title", ""))
+
+            try:
+                cand_data = json.loads(c["data_json"] or "{}")
+            except (ValueError, TypeError):
+                cand_data = {}
+
+            amazon_data = cand_data.get("amazon", {})
+            if not amazon_data:
+                continue
+
+            row_brand = brand_by_row.get(row_idx, cat.get("brand", ""))
+            source = {
+                "upc":          cat.get("upc", ""),
+                "mpn":          cat.get("itemid", ""),
+                "itemid":       cat.get("itemid", ""),
+                "title":        new_title,
+                "brand":        row_brand,
+                "manufacturer": row_brand,
+            }
+
+            try:
+                sources_list = json.loads(c["sources"] or "[]")
+            except (ValueError, TypeError):
+                sources_list = []
+
+            scores = calculate_confidence(
+                source, amazon_data, upc_search_hit="UPC" in sources_list
+            )
+            conf = scores["confidence_score"]
+            hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
+            upc_confirmed = scores["upc_match"] and not scores.get("pack_mismatch") and not scores.get("upc_suspect")
+            if upc_confirmed:
+                verdict = "verified"
+            elif hard_reject:
+                verdict = "not_approved"
+            elif conf >= 90:
+                verdict = "verified"
+            elif conf >= 35 or scores.get("pack_mismatch"):
+                verdict = "review"
+            else:
+                verdict = "not_approved"
+            # Re-extract sales_rank from the stored _raw SP-API payload when
+            # the normalized dict is missing it (runs created before rank
+            # extraction was added).  This backfills both the data_json and
+            # the DB column so max_rank logic and the BSR display work correctly.
+            cand_sales_rank = amazon_data.get("sales_rank")
+            if cand_sales_rank is None:
+                raw_sp = amazon_data.get("_raw") or {}
+                if raw_sp:
+                    cand_sales_rank, _, _ = _extract_sales_rank(raw_sp)
+                    if cand_sales_rank is not None:
+                        amazon_data["sales_rank"] = cand_sales_rank
+                        cand_data["amazon"] = amazon_data
+
+            # Apply rank window — overrides even a high-confidence verdict.
+            # Both caps: unknown/null rank is always allowed through.
+            if max_rank > 0 and cand_sales_rank is not None and int(cand_sales_rank) > max_rank:
+                verdict = "not_approved"
+            if min_rank > 0 and cand_sales_rank is not None and int(cand_sales_rank) < min_rank:
+                verdict = "not_approved"
+
+            scores["verdict"] = verdict
+            cand_data["scores"] = scores
+            cand_data["verdict"] = verdict
+
+            cand_batch.append((
+                float(conf), verdict, json.dumps(cand_data, default=str),
+                cand_sales_rank,   # write back to the sales_rank DB column
+                run_id, row_idx, str(c["asin"]),
+            ))
+
+            # Update the catalog row's title once per unique row_idx.
+            if row_idx not in flushed_cat_rows:
+                updated_cat = dict(cat)
+                updated_cat["title"] = new_title
+                cat_batch.append((
+                    json.dumps(updated_cat, default=str),
+                    run_id, row_idx,
+                ))
+                flushed_cat_rows.add(row_idx)
+
+            if len(cand_batch) >= _RESCORE_BATCH:
+                _flush(i + 1)
+
+        _flush(total)
+
+        # Recompute aggregate counts and restore "Complete" status.
+        with database._LOCK, database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            verdict_rows = conn.execute(
+                "SELECT verdict, COUNT(*) AS n FROM analytics_candidates "
+                "WHERE run_id=? GROUP BY verdict",
+                (run_id,),
+            ).fetchall()
+            verified = review = not_approved = total_c = 0
+            for r in verdict_rows:
+                v = (r["verdict"] or "").lower()
+                n = int(r["n"])
+                total_c += n
+                if v == "verified":    verified += n
+                elif v == "review":    review += n
+                elif v == "not_approved": not_approved += n
+            conn.execute(
+                "UPDATE analytics_runs SET "
+                "  total_candidates_found=?, verified_count=?, review_count=?, "
+                "  not_approved_count=?, status='Complete', "
+                "  progress_phase='Re-scoring complete', "
+                "  progress_done=?, progress_total=?, "
+                "  updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=?",
+                (total_c, verified, review, not_approved, total, total, run_id),
+            )
+    except Exception:
+        log.exception("Re-score pipeline failed for run %d", run_id)
+        _update_progress(run_id, status="Error", phase="Re-score failed")
+
+
+# --------------------------------------------------------------------------- #
 # Main entrypoint
 # --------------------------------------------------------------------------- #
 
@@ -415,16 +917,20 @@ def start_analytics_run(
     pages_per_title: int,
     ai_clean_titles: bool,
     source_rows: list[SourceRow],
+    max_rank: int = 0,
+    min_rank: int = 0,
 ) -> int:
     """
     Create an analytics_runs row, persist source rows, and kick off a
     background thread that runs the 3-tier search + scoring. Returns
     the new run id so the caller can redirect/poll.
+
+    max_rank / min_rank: enforce rank window at verdict time.
     """
     run_id = _create_run(
         name=name, marketplace=marketplace, search_methods=search_methods,
         pages_per_title=pages_per_title, ai_clean_titles=ai_clean_titles,
-        total_catalog_items=len(source_rows),
+        total_catalog_items=len(source_rows), max_rank=max_rank, min_rank=min_rank,
     )
     _save_catalog_rows(run_id, source_rows)
 
@@ -433,11 +939,78 @@ def start_analytics_run(
     # would swap this for a proper queue.
     thread = threading.Thread(
         target=_run_pipeline,
-        args=(run_id, marketplace, search_methods, pages_per_title, source_rows),
+        args=(run_id, marketplace, search_methods, pages_per_title,
+              ai_clean_titles, source_rows, False, max_rank, min_rank),
         daemon=True,
     )
     thread.start()
     return run_id
+
+
+def resume_run(run_id: int) -> bool:
+    """
+    Resume a Paused run. Reloads the source rows from the DB and restarts
+    the pipeline, skipping rows that already have candidates.
+    Returns False if the run isn't in a resumable state.
+    """
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT * FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run or run["status"] not in ("Paused", "Stopped"):
+            return False
+        run_d = dict(run)
+
+        cat_rows = conn.execute(
+            "SELECT row_idx, data_json FROM analytics_catalog_rows "
+            "WHERE run_id=? ORDER BY row_idx",
+            (run_id,),
+        ).fetchall()
+
+    # Rebuild SourceRow list from persisted data_json.
+    from services.analytics.parser import SourceRow
+    source_rows: list[SourceRow] = []
+    for r in cat_rows:
+        try:
+            d = json.loads(r["data_json"] or "{}")
+        except (ValueError, TypeError):
+            d = {}
+        sr = SourceRow(
+            row_idx=r["row_idx"],
+            upc=d.get("upc") or "",
+            itemid=d.get("itemid") or "",
+            title=d.get("title") or "",
+            search_title=d.get("search_title") or "",
+            brand=d.get("brand") or "",
+        )
+        source_rows.append(sr)
+
+    try:
+        search_methods = json.loads(run_d.get("search_methods") or "[]")
+    except (ValueError, TypeError):
+        search_methods = []
+
+    max_rank = int(run_d.get("max_rank") or 0)
+    min_rank = int(run_d.get("min_rank") or 0)
+
+    clear_control(run_id)
+    _update_progress(run_id, status="Searching", phase="Resuming…")
+
+    thread = threading.Thread(
+        target=_run_pipeline,
+        args=(run_id,
+              run_d.get("marketplace") or "US",
+              search_methods,
+              int(run_d.get("pages_per_title") or DEFAULT_TITLE_MAX_PAGES),
+              bool(run_d.get("ai_clean_titles")),
+              source_rows,
+              True,       # is_resume=True
+              max_rank, min_rank),
+        daemon=True,
+    )
+    thread.start()
+    return True
 
 
 def _run_pipeline(
@@ -445,7 +1018,11 @@ def _run_pipeline(
     marketplace: str,
     search_methods: list[str],
     pages_per_title: int,
+    ai_clean_titles: bool,
     source_rows: list[SourceRow],
+    is_resume: bool = False,
+    max_rank: int = 0,
+    min_rank: int = 0,
 ) -> None:
     """Do the work. All errors are caught and recorded on the run row."""
     try:
@@ -456,43 +1033,96 @@ def _run_pipeline(
             )
             return
 
+        # On resume, skip rows that already have at least one candidate.
+        if is_resume:
+            with database._connect() as conn:
+                done_idxs = {
+                    r["row_idx"] for r in conn.execute(
+                        "SELECT DISTINCT row_idx FROM analytics_candidates WHERE run_id=?",
+                        (run_id,),
+                    ).fetchall()
+                }
+            source_rows = [r for r in source_rows if r.row_idx not in done_idxs]
+            log.info("Resume run %s: %d rows remaining", run_id, len(source_rows))
+
         api = get_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)
 
-        candidates_by_row: dict[int, list[tuple[dict, str]]] = {i: [] for i in range(total)}
-        idx_to_row = {r.row_idx: r for r in source_rows}
+        candidates_by_row: dict[int, list[tuple[dict, str]]] = {}
+
+        # ------------------------------------------------------------------ #
+        # Helper: check for pause/stop after each major step
+        # ------------------------------------------------------------------ #
+        def _handle_control() -> bool:
+            """Return True if pipeline should stop (pause or stop)."""
+            ctrl = _check_control(run_id)
+            if ctrl == "stop":
+                _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                _recompute_run_counts(run_id)
+                return True
+            if ctrl == "pause":
+                _update_progress(run_id, status="Paused", phase="Paused by user")
+                _recompute_run_counts(run_id)
+                return True
+            return False
+
+        # --- AI title cleaning (before Tier 3, if enabled) ------------------
+        cleaned_titles: dict[int, str] = {}
+        if ai_clean_titles and "Title" in search_methods:
+            _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(total))
+            cleaned_titles = clean_titles_parallel(source_rows, run_id)
+            if _handle_control():
+                return
+
+        # Build a version of source_rows with cleaned titles for Tier 3.
+        def _rows_for_title_search() -> list[SourceRow]:
+            if not cleaned_titles:
+                return source_rows
+            out = []
+            for r in source_rows:
+                if r.row_idx in cleaned_titles:
+                    from dataclasses import replace
+                    out.append(replace(r, title=cleaned_titles[r.row_idx]))
+                else:
+                    out.append(r)
+            return out
 
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
-            tier1 = _tier1_upc(api, source_rows)
+            tier1 = _tier1_upc(api, source_rows, run_id=run_id)
             for ri, items in tier1.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "UPC"))
+            if _handle_control():
+                return
 
         # --- Tier 2: Item ID -------------------------------------------------
         if "ItemID" in search_methods:
             _update_progress(run_id, phase="Tier 2 / Item ID search")
-            tier2 = _tier2_itemid(api, source_rows)
+            tier2 = _tier2_itemid(api, source_rows, run_id=run_id)
             for ri, items in tier2.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "ItemID"))
+            if _handle_control():
+                return
 
         # --- Tier 3: Title ---------------------------------------------------
         if "Title" in search_methods:
             _update_progress(run_id, phase="Tier 3 / Title search")
-            tier3 = _tier3_title(api, source_rows, pages_per_title)
+            tier3 = _tier3_title(api, _rows_for_title_search(), pages_per_title, run_id=run_id)
             for ri, items in tier3.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "Title"))
+            if _handle_control():
+                return
 
         # --- Vetting: score every (row × ASIN) pair --------------------------
         _update_progress(run_id, phase="Vetting candidates", done=0, total=total)
         for r in source_rows:
             source_dict = r.as_source_dict()
-            # Merge duplicate ASINs across tiers first.
             by_asin: dict[str, tuple[dict, list[str]]] = {}
             for item, source_label in candidates_by_row.get(r.row_idx, []):
                 asin = (item.get("asin") or "").upper()
@@ -504,14 +1134,18 @@ def _run_pipeline(
                 else:
                     by_asin[asin] = (item, [source_label])
 
-            for asin, (item, sources) in by_asin.items():
-                _upsert_candidate(run_id, r.row_idx, item, source_dict, sources)
+            for asin, (item, srcs) in by_asin.items():
+                _upsert_candidate(run_id, r.row_idx, item, source_dict, srcs, max_rank, min_rank)
 
             done += 1
             if done % 10 == 0 or done == total:
                 _update_progress(run_id, done=done)
 
+            if done % 50 == 0 and _handle_control():
+                return
+
         _recompute_run_counts(run_id)
+        clear_control(run_id)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
 
     except Exception as exc:  # noqa: BLE001

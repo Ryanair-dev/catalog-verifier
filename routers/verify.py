@@ -20,12 +20,12 @@ import json as _json
 from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from services import database
 from services.confidence import score_row
 from services.extractor import ai_extract, rule_extract
+from services.file_parser import parse_file
 
 router = APIRouter()
 
@@ -37,21 +37,13 @@ router = APIRouter()
 CATALOG_COLUMNS = ["UPC/EAN", "Item ID", "Vendor Title", "Brand", "ASIN"]
 
 
-def _workbook_to_rows(data: bytes) -> list[dict]:
-    wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        headers = [str(h).strip() if h is not None else "" for h in next(rows_iter)]
-    except StopIteration:
-        return []
-    result: list[dict] = []
-    for row in rows_iter:
-        if row is None or all(v in (None, "") for v in row):
-            continue
-        record = {headers[i]: row[i] if i < len(row) else None for i in range(len(headers))}
-        result.append(record)
-    return result
+def _rows_to_dicts(data: bytes) -> list[dict]:
+    """Parse an Excel/CSV file and return rows as dicts keyed by header."""
+    headers, rows = parse_file("file.xlsx", data)
+    return [
+        {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
+        for row in rows
+    ]
 
 
 def _index_amazon(rows: list[dict], source: str) -> dict[str, dict]:
@@ -73,15 +65,6 @@ def _find_duplicates(rows: list[dict], column: str) -> set[Any]:
         key = str(value).strip()
         seen[key] = seen.get(key, 0) + 1
     return {k for k, v in seen.items() if v > 1}
-
-
-def _failed_signals(signals: dict) -> list[str]:
-    labels = {
-        "upc": "UPC", "item_id": "Item ID", "brand": "Brand",
-        "title": "Title", "pack": "Pack",
-    }
-    return [labels[k] for k, v in signals.items()
-            if isinstance(v, dict) and not v.get("matched")]
 
 
 # --------------------------------------------------------------------------- #
@@ -117,11 +100,11 @@ async def verify(
     amazon_bytes = await amazon_file.read()
 
     try:
-        catalog_rows = _workbook_to_rows(catalog_bytes)
+        catalog_rows = _rows_to_dicts(catalog_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Catalog parse failed: {exc}")
     try:
-        amazon_rows = _workbook_to_rows(amazon_bytes)
+        amazon_rows = _rows_to_dicts(amazon_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Amazon parse failed: {exc}")
 

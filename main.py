@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +29,9 @@ app = FastAPI(
     description="Automated vetting of CPG catalog products against Amazon listings.",
     version="1.0.0",
 )
+
+# Compress JSON/text responses ≥ 1 KB — big win for large scan result payloads.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Permissive CORS — this app is intended to run locally for now.
 app.add_middleware(

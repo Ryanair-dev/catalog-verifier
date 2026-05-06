@@ -1817,7 +1817,7 @@
     const body = $("#review-body");
     body.innerHTML = "";
     if (rows.length === 0) {
-      body.innerHTML = `<tr><td colspan="10" class="text-center py-10" style="color: #6b7480;">No rows in this tab.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="11" class="text-center py-10" style="color: #6b7480;">No rows in this tab.</td></tr>`;
       return;
     }
 
@@ -1844,6 +1844,7 @@
           ${tagHtml}
         </td>
         <td class="font-mono text-xs">${escapeHtml(row.ASIN)}</td>
+        <td style="max-width: 300px;"><div class="text-xs" style="color:#475569;">${escapeHtml(row.AmzTitle || "")}</div></td>
         <td class="font-semibold">${fmtConfidence(row.Confidence)}</td>
         <td><span class="badge ${badgeClass(row.Verdict)}">${row.Verdict}</span></td>
         <td class="text-xs">${s.upc ? s.upc.score + "%" : ""}</td>
@@ -2567,14 +2568,38 @@
   // The rest of the pipeline endpoints stream in behind the Upload buttons
   // which re-use the existing 4-step import wizard — wired in a later pass.
 
+  // AI title-clean cost estimator.
+  // gpt-4o-mini pricing: $0.15/1M input tokens, $0.60/1M output tokens.
+  // Each title call: ~100 tokens in (system prompt + title) + ~20 tokens out.
+  function _updateAiCostHint() {
+    const hint = $("#awiz-ai-cost-hint");
+    if (!hint) return;
+    const checked = !!$("#awiz-title-ai-clean")?.checked;
+    if (!checked) { hint.style.display = "none"; return; }
+    const total   = state.awiz?.preview?.total_rows || 0;
+    const header  = (state.awiz?.headerRowIdx ?? 0) + 1;
+    const rows    = Math.max(0, total - header);
+    if (rows === 0) { hint.style.display = "none"; return; }
+    const inputCost  = rows * 100 * (0.15  / 1_000_000);
+    const outputCost = rows * 20  * (0.60  / 1_000_000);
+    const total_usd  = inputCost + outputCost;
+    const label = total_usd < 0.01
+      ? "< $0.01"
+      : `~$${total_usd.toFixed(2)}`;
+    hint.textContent = `est. ${label} for ${rows.toLocaleString()} rows`;
+    hint.style.display = "inline";
+  }
+
   // Title-only options panel toggle — now lives inside wizard step 4.
   const _titleCb   = $("#awiz-search-title");
   const _titleOpts = $("#awiz-title-opts");
   if (_titleCb && _titleOpts) {
     _titleCb.addEventListener("change", () => {
       _titleOpts.classList.toggle("hidden", !_titleCb.checked);
+      _updateAiCostHint();
     });
   }
+  $("#awiz-title-ai-clean")?.addEventListener("change", _updateAiCostHint);
 
   // Probe SP-API credentials so the header pill matches reality.
   async function probeSPAPIStatus() {
@@ -2601,7 +2626,7 @@
 
   function _runIsActive(r) {
     const s = (r.status || "").toLowerCase();
-    return s === "searching" || s === "vetting" || s === "pending";
+    return s === "searching" || s === "vetting" || s === "pending" || s === "rescoring";
   }
 
   async function loadAnalyticsRuns() {
@@ -2702,10 +2727,17 @@
     id: null,
     data: null,
     poll: null,
-    tab: "Approved",            // "Approved" | "Review" | "Not Approved" | "All"
+    tab: "Approved",
     search: "",
-    sortKey: "row_idx",         // matches data-sort-key on the <th>
-    sortDir: "asc",             // "asc" | "desc"
+    sortKey: "row_idx",
+    sortDir: "asc",
+    page: 1,
+    pageSize: 50,
+    progressHistory: [],
+    lastPhase: null,
+    rankMin: 0,
+    rankMax: 0,
+    skipNullRank: false,
   };
 
   function _clearAnalyticsRunPoll() {
@@ -2721,9 +2753,16 @@
     // don't bleed into the next one.
     state.analyticsRun.tab = "Approved";
     state.analyticsRun.search = "";
-    state.analyticsRun.sortKey = "row_idx";
-    state.analyticsRun.sortDir = "asc";
+    state.analyticsRun.sortKey = "confidence";
+    state.analyticsRun.sortDir = "desc";
+    state.analyticsRun.page = 1;
+    state.analyticsRun.rankMin = 0;
+    state.analyticsRun.rankMax = 0;
+    state.analyticsRun.skipNullRank = false;
     const sb = $("#analytics-run-search"); if (sb) sb.value = "";
+    const rrMin = $("#analytics-run-rank-min"); if (rrMin) rrMin.value = "";
+    const rrMax = $("#analytics-run-rank-max"); if (rrMax) rrMax.value = "";
+    const rrSkip = $("#analytics-run-rank-skip-null"); if (rrSkip) rrSkip.checked = false;
     state.currentView = "analytics-run";
 
     // Hide all other views, show ours. We don't touch the sidebar selection —
@@ -2745,13 +2784,32 @@
     const id = state.analyticsRun.id;
     if (!id) return;
     try {
-      const j = await api(`/api/analytics/runs/${id}`);
+      const j = await api(`/api/analytics/runs/${id}?limit=5000`);
       state.analyticsRun.data = j;
+      // If status just changed (e.g. rescore finished), clear per-tab cache.
+      const prevStatus = state.analyticsRun._lastStatus;
+      if (prevStatus && prevStatus !== j.run?.status) {
+        state.analyticsRun.tabPageData = {};
+      }
+      state.analyticsRun._lastStatus = j.run?.status;
       renderAnalyticsRunDetail(j);
 
-      // Poll while active.
+      // Auto-fetch current verdict tab if page data isn't loaded yet.
+      // This covers: initial open, and the moment a run/rescore finishes
+      // (status change clears tabPageData above, so next poll refills it).
+      const currentTab = state.analyticsRun.tab;
+      if (currentTab !== "All" && !((state.analyticsRun.tabPageData || {})[currentTab])) {
+        await _fetchVerdictPage(currentTab, 1);
+      }
+
+      // Poll while active or while AI check is running.
       _clearAnalyticsRunPoll();
-      if (_runIsActive(j.run || {})) {
+      const aiRunning2 = (j.run?.ai_check_status || "").toLowerCase() === "running";
+      // _aiCheckJustStarted keeps polling for a few cycles after the user
+      // clicks Start AI Check, giving the background thread time to set "Running".
+      const aiPending = (state.analyticsRun._aiCheckJustStarted || 0) > 0;
+      if (aiPending) state.analyticsRun._aiCheckJustStarted = Math.max(0, (state.analyticsRun._aiCheckJustStarted || 0) - 1);
+      if (_runIsActive(j.run || {}) || aiRunning2 || aiPending) {
         state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
       }
     } catch (e) {
@@ -2778,6 +2836,42 @@
     "not_approved": "Not Approved",
   };
 
+  // Build a short human-readable reason explaining the verdict.
+  function _verdictReason(c) {
+    const sc = (c.data && c.data.scores) || {};
+    const v  = (c.verdict || "").toLowerCase();
+    const conf = c.confidence || 0;
+
+    // Hard-reject signals (checked before confidence)
+    if (sc.size_mismatch)   return "Size mismatch";
+    if (sc.gender_mismatch) return "Gender mismatch";
+    if (sc.color_mismatch)  return "Color mismatch";
+
+    // Pack mismatch → capped at 80 → review
+    if (sc.pack_mismatch) {
+      const p = sc.effective_pack;
+      return p > 1 ? `Pack ×${p} on Amazon` : "Pack mismatch";
+    }
+
+    // Rank-forced not_approved: confidence was high enough to pass but rank cap overrode it
+    if (v === "not_approved" && conf >= 35) {
+      const rank = c.sales_rank;
+      return rank != null ? `BSR ${Number(rank).toLocaleString()} > max` : "Rank cap";
+    }
+
+    // UPC match contributed to score
+    if (sc.upc_match) {
+      return v === "verified" ? "UPC confirmed" : "UPC match";
+    }
+
+    // Pure confidence-based
+    if (v === "not_approved") return "Low confidence";
+    if (v === "review")       return `Score ${Math.round(conf)}%`;
+    if (v === "verified")     return conf >= 90 ? "High confidence" : "Above threshold";
+
+    return "";
+  }
+
   // Pull the sortable value for a candidate row, cheap enough to recompute.
   function _candSortValue(c, src, key) {
     const amz = (c.data && c.data.amazon) || {};
@@ -2789,10 +2883,45 @@
       case "amz_title":  return (amz.title || "").toString().toLowerCase();
       case "brand":      return (amz.brand || amz.manufacturer || src.brand || "").toString().toLowerCase();
       case "sources":    return (Array.isArray(c.sources) ? c.sources.join(",") : "").toLowerCase();
+      case "amz_pack":   return Number(c.amz_pack ?? 0);
+      case "sales_rank": return c.sales_rank != null ? Number(c.sales_rank) : Infinity;
       case "confidence": return Number(c.confidence || 0);
       case "verdict":    return (c.verdict || "").toString().toLowerCase();
       default:           return "";
     }
+  }
+
+  function _progressSubLabel(phase, done, total) {
+    const p = (phase || "").toLowerCase();
+    const d = done.toLocaleString(), t = total.toLocaleString();
+    if (p.includes("upc"))                          return `${d} of ${t} UPC batches`;
+    if (p.includes("item id"))                      return `${d} of ${t} Item ID lookups`;
+    if (p.includes("title search") || p.includes("tier 3")) return `${d} of ${t} title searches`;
+    if (p.includes("cleaning") || p.includes("ai")) return `${d} of ${t} titles cleaned`;
+    if (p.includes("vetting"))                      return `${d} of ${t} rows vetted`;
+    if (p.includes("re-scor") || p.includes("rescor")) return `${d} of ${t} candidates rescored`;
+    return `${d} of ${t}`;
+  }
+
+  function _calcEta(history, total) {
+    if (!history || history.length < 3) return null;
+    const oldest = history[0], newest = history[history.length - 1];
+    const elapsed = (newest.t - oldest.t) / 1000;
+    const delta = newest.done - oldest.done;
+    if (delta <= 0 || elapsed <= 0) return null;
+    const rate = delta / elapsed;
+    const remaining = total - newest.done;
+    if (remaining <= 0) return 0;
+    return remaining / rate;
+  }
+
+  function _fmtEta(sec) {
+    if (sec < 5)  return "< 5s";
+    if (sec < 60) return `~${Math.ceil(sec)}s`;
+    const m = Math.floor(sec / 60), s = Math.ceil(sec % 60);
+    if (m < 60)   return `~${m}m ${s}s`;
+    const h = Math.floor(m / 60), rm = m % 60;
+    return `~${h}h ${rm}m`;
   }
 
   function renderAnalyticsRunDetail(j) {
@@ -2812,24 +2941,76 @@
     const pill = $("#analytics-run-status-pill");
     if (statusText && pill) {
       statusText.textContent = run.status || "—";
+      const s = (run.status || "").toLowerCase();
       const active = _runIsActive(run);
       pill.style.background = active ? "#ede9fe"
-                           : (run.status || "").toLowerCase() === "error" ? "#fee2e2"
+                           : s === "error"   ? "#fee2e2"
+                           : s === "paused"  ? "#fef3c7"
+                           : s === "stopped" ? "#f1f5f9"
                            : "#dcfce7";
       pill.style.color      = active ? "#5b21b6"
-                           : (run.status || "").toLowerCase() === "error" ? "#991b1b"
+                           : s === "error"   ? "#991b1b"
+                           : s === "paused"  ? "#92400e"
+                           : s === "stopped" ? "#475569"
                            : "#166534";
     }
+    _updateRunControlButtons(run.status);
 
     // Progress card
     const progCard = $("#analytics-run-progress-card");
-    if (_runIsActive(run)) {
+    const s_prog = (run.status || "").toLowerCase();
+    const showProg = _runIsActive(run) || s_prog === "paused" || s_prog === "stopped";
+    if (showProg) {
       progCard?.classList.remove("hidden");
+      // Status-aware card styling
+      ["is-paused","is-stopped","is-error","is-complete"].forEach(c => progCard?.classList.remove(c));
+      if (s_prog === "paused")        progCard?.classList.add("is-paused");
+      else if (s_prog === "stopped")  progCard?.classList.add("is-stopped");
+      else if (s_prog === "error")    progCard?.classList.add("is-error");
+      // Dot
+      const dot = $("#analytics-run-progress-dot");
+      if (dot) {
+        dot.className = "rp-dot";
+        if (_runIsActive(run))         dot.classList.add("is-active");
+        else if (s_prog === "paused")  dot.classList.add("is-paused");
+        else if (s_prog === "stopped") dot.classList.add("is-stopped");
+        else if (s_prog === "error")   dot.classList.add("is-error");
+      }
       const done = run.progress_done || 0, total = run.progress_total || 0;
       const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
-      $("#analytics-run-progress-phase").textContent = run.progress_phase || run.status || "Working…";
-      $("#analytics-run-progress-counts").textContent = `${done} / ${total}`;
+      const phase = run.progress_phase || run.status || "";
+      const phaseLabel = s_prog === "paused"  ? "Paused"
+                       : s_prog === "stopped" ? "Stopped by user"
+                       : phase || "Working…";
+      $("#analytics-run-progress-phase").textContent = phaseLabel;
+      // Sub-label: contextual description of done/total
+      const subEl = $("#analytics-run-progress-sub");
+      if (subEl && total > 0 && _runIsActive(run)) {
+        subEl.textContent = _progressSubLabel(phase, done, total);
+      } else if (subEl) {
+        subEl.textContent = "";
+      }
+      // Counts
+      $("#analytics-run-progress-counts").textContent =
+        total > 0 ? `${done.toLocaleString()} / ${total.toLocaleString()}` : "";
       $("#analytics-run-progress-bar").style.width = pct + "%";
+      // ETA — track history per phase, reset when phase changes
+      const ph = state.analyticsRun;
+      if (ph.lastPhase !== phase) { ph.lastPhase = phase; ph.progressHistory = []; }
+      if (_runIsActive(run) && total > 0 && done > 0) {
+        ph.progressHistory.push({ t: Date.now(), done });
+        if (ph.progressHistory.length > 12) ph.progressHistory.shift();
+      }
+      const etaEl = $("#analytics-run-progress-eta");
+      if (etaEl) {
+        const etaSec = _calcEta(ph.progressHistory, total);
+        if (etaSec !== null && _runIsActive(run)) {
+          etaEl.textContent = "ETA " + _fmtEta(etaSec);
+          etaEl.classList.remove("hidden");
+        } else {
+          etaEl.classList.add("hidden");
+        }
+      }
     } else {
       progCard?.classList.add("hidden");
     }
@@ -2841,40 +3022,147 @@
     $("#analytics-run-stat-review").textContent     = run.review_count || 0;
     $("#analytics-run-stat-rejected").textContent   = run.not_approved_count || 0;
 
-    // Tab counts (driven by the live candidate list, not the run row,
-    // so manual promote/reject is reflected instantly even before the
-    // next poll).
-    const tabCounts = { "Approved": 0, "Review": 0, "Not Approved": 0 };
-    cand.forEach(c => {
-      const lbl = _VERDICT_TO_TAB[(c.verdict || "").toLowerCase()];
-      if (lbl) tabCounts[lbl] += 1;
-    });
-    $("#analytics-run-count-Approved").textContent = tabCounts["Approved"];
-    $("#analytics-run-count-Review").textContent   = tabCounts["Review"];
-    $("#analytics-run-count-Not").textContent      = tabCounts["Not Approved"];
-    $("#analytics-run-count-All").textContent      = cand.length;
+    // Tab badge counts — use the run-level totals from the DB so they're
+    // accurate even when only a subset of candidates is loaded.
+    $("#analytics-run-count-Approved").textContent = run.verified_count     ?? 0;
+    $("#analytics-run-count-Review").textContent   = run.review_count       ?? 0;
+    $("#analytics-run-count-Not").textContent      = run.not_approved_count ?? 0;
+    $("#analytics-run-count-All").textContent      = run.total_candidates_found ?? cand.length;
 
     renderAnalyticsRunCandidates();
 
     // Export button — enabled once we have candidates.
     const exp = $("#analytics-run-export");
     if (exp) exp.disabled = cand.length === 0;
+
+    // AI Check button — visible when run is done/paused/stopped and not currently checking.
+    const aiBtn = $("#analytics-run-ai-check");
+    if (aiBtn) {
+      const s2 = (run.status || "").toLowerCase();
+      const canAi = s2 === "complete" || s2 === "paused" || s2 === "stopped" || s2 === "error";
+      const aiStatus = (run.ai_check_status || "").toLowerCase();
+      const aiRunning = aiStatus === "running";
+      const aiDone = aiStatus === "done";
+      const aiErr = aiStatus.startsWith("error");
+
+      aiBtn.classList.toggle("hidden", !canAi);
+      if (aiRunning) {
+        const aiDoneN = run.ai_check_done || 0;
+        const aiTotalN = run.ai_check_total || 0;
+        aiBtn.textContent = aiTotalN > 0
+          ? `Checking ${aiDoneN.toLocaleString()}/${aiTotalN.toLocaleString()}…`
+          : "Checking…";
+        aiBtn.disabled = true;
+        aiBtn.style.opacity = "0.7";
+        // Keep polling while AI check is running
+        if (!_runIsActive(run)) {
+          _clearAnalyticsRunPoll();
+          state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
+        }
+      } else {
+        aiBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg> ${aiDone ? "Re-check AI" : aiErr ? "Retry AI Check" : "AI Check"}`;
+        aiBtn.disabled = false;
+        aiBtn.style.opacity = "1";
+      }
+    }
+  }
+
+  function _renderPagination(page, totalPages, totalRows) {
+    const el = $("#analytics-run-pagination");
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    const pageSize = state.analyticsRun.pageSize || 50;
+    const from = (page - 1) * pageSize + 1;
+    const to   = Math.min(page * pageSize, totalRows);
+
+    // Build page number buttons with ellipsis for large ranges.
+    const pages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+        pages.push(p);
+      } else if (pages[pages.length - 1] !== "…") {
+        pages.push("…");
+      }
+    }
+    const btns = pages.map(p =>
+      p === "…"
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-btn${p === page ? " active" : ""}" data-pg="${p}">${p}</button>`
+    ).join("");
+
+    el.innerHTML = `
+      <span class="pg-info">Showing ${from}–${to} of ${totalRows}</span>
+      <button class="pg-btn" data-pg="${page - 1}" ${page <= 1 ? "disabled" : ""}>&#8249;</button>
+      ${btns}
+      <button class="pg-btn" data-pg="${page + 1}" ${page >= totalPages ? "disabled" : ""}>&#8250;</button>`;
+
+    el.querySelectorAll("button[data-pg]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.pg);
+        if (isNaN(p) || p < 1 || p > totalPages) return;
+        _onPageClick(p);
+      });
+    });
+  }
+
+  // Navigate to page p — fetches from server when on a verdict tab.
+  async function _onPageClick(p) {
+    state.analyticsRun.page = p;
+    const tab = state.analyticsRun.tab;
+    if (tab !== "All") {
+      await _fetchVerdictPage(tab, p);
+    }
+    renderAnalyticsRunCandidates();
+    $("#analytics-run-candidates-body")?.closest(".overflow-auto")?.scrollTo(0, 0);
+  }
+
+  // Fetch one page of verdict-filtered candidates from the server and store
+  // in tabPageData. Shows "Loading…" immediately while the request is in flight.
+  async function _fetchVerdictPage(tab, page) {
+    const verdict = _TAB_TO_VERDICT[tab];
+    if (!verdict) return;
+    const id = state.analyticsRun.id;
+    const pageSize = state.analyticsRun.pageSize || 50;
+    const offset = (page - 1) * pageSize;
+    state.analyticsRun.tabLoading = tab;
+    renderAnalyticsRunCandidates();
+    try {
+      const url = `/api/analytics/runs/${id}?verdict=${encodeURIComponent(verdict)}&limit=${pageSize}&offset=${offset}`;
+      const j = await api(url);
+      if (!state.analyticsRun.tabPageData) state.analyticsRun.tabPageData = {};
+      state.analyticsRun.tabPageData[tab] = { serverPage: page, candidates: j.candidates || [] };
+    } catch (e) {
+      console.warn("[tab fetch]", e);
+    } finally {
+      state.analyticsRun.tabLoading = null;
+    }
   }
 
   // Re-render just the table (tab switch, search, sort all go through here
   // — no need to re-fetch from the server).
   function renderAnalyticsRunCandidates() {
     const j = state.analyticsRun.data;
-    if (!j) return;
-    const cand = Array.isArray(j.candidates) ? j.candidates : [];
-    const srcByIdx = {};
-    (j.catalog_rows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
-
-    // ---- filter by tab + search ---------------------------------------
     const tab = state.analyticsRun.tab;
+    const isVerdictTab = tab !== "All";
+    const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
+    const isLoading = state.analyticsRun.tabLoading === tab;
+
+    // Need main data for "All", or a server page / loading state for verdict tabs.
+    if (!isVerdictTab && !j) return;
+    if (isVerdictTab && !tabPageEntry && !isLoading) return;
+
+    const cand = isVerdictTab
+      ? (tabPageEntry?.candidates || [])
+      : (Array.isArray(j?.candidates) ? j.candidates : []);
+
+    const srcByIdx = {};
+    ((j?.catalog_rows) || state.analyticsRun._catalogRows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
+
+    // ---- filter by search (verdict already filtered server-side for verdict tabs) --
     const q = (state.analyticsRun.search || "").toLowerCase().trim();
     const matches = (c) => {
-      if (tab !== "All") {
+      // "All" tab: also filter by verdict if not truly all
+      if (!isVerdictTab && tab !== "All") {
         const wanted = _TAB_TO_VERDICT[tab];
         if ((c.verdict || "").toLowerCase() !== wanted) return false;
       }
@@ -2889,6 +3177,20 @@
     };
     let rows = cand.filter(matches);
 
+    // ---- filter by BSR range (client-side display filter) -------------
+    const _rankMin = state.analyticsRun.rankMin || 0;
+    const _rankMax = state.analyticsRun.rankMax || 0;
+    const _skipNull = state.analyticsRun.skipNullRank || false;
+    if (_skipNull || _rankMin > 0 || _rankMax > 0) {
+      rows = rows.filter(c => {
+        const rank = c.sales_rank;
+        if (rank == null) return !_skipNull;
+        if (_rankMin > 0 && rank < _rankMin) return false;
+        if (_rankMax > 0 && rank > _rankMax) return false;
+        return true;
+      });
+    }
+
     // ---- sort ---------------------------------------------------------
     const sortKey = state.analyticsRun.sortKey;
     const dir = state.analyticsRun.sortDir === "desc" ? -1 : 1;
@@ -2896,7 +3198,7 @@
       const av = _candSortValue(a, srcByIdx[a.row_idx] || {}, sortKey);
       const bv = _candSortValue(b, srcByIdx[b.row_idx] || {}, sortKey);
       if (typeof av === "number" && typeof bv === "number") {
-        if (av === bv) return (a.row_idx - b.row_idx); // stable tiebreak
+        if (av === bv) return (a.row_idx - b.row_idx);
         return (av - bv) * dir;
       }
       const as = String(av), bs = String(bv);
@@ -2930,18 +3232,45 @@
       bulkBtn.style.pointerEvents = bulkBtn.disabled ? "none" : "auto";
     }
 
+    // ---- pagination ---------------------------------------------------
+    // For verdict tabs the server sends exactly one page; use DB counts for
+    // the total so page buttons cover the full dataset.
+    const pageSize = state.analyticsRun.pageSize || 50;
+    const page     = state.analyticsRun.page;
+    let totalRows, totalPages, pageRows;
+    if (isVerdictTab) {
+      const run = j?.run || {};
+      const dbTotal = tab === "Approved"     ? (run.verified_count     ?? 0)
+                    : tab === "Review"        ? (run.review_count       ?? 0)
+                    : tab === "Not Approved"  ? (run.not_approved_count ?? 0)
+                    : cand.length;
+      totalRows  = dbTotal;
+      totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+      pageRows   = rows; // server already sent the right page
+    } else {
+      totalRows  = rows.length;
+      totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+      if (state.analyticsRun.page > totalPages) state.analyticsRun.page = totalPages;
+      pageRows   = rows.slice((page - 1) * pageSize, page * pageSize);
+    }
+
     // ---- render rows --------------------------------------------------
     const body  = $("#analytics-run-candidates-body");
     const empty = $("#analytics-run-candidates-empty");
     const count = $("#analytics-run-candidates-count");
-    if (count) count.textContent = rows.length;
+    if (count) count.textContent = totalRows;
 
-    if (rows.length === 0) {
+    if (totalRows === 0) {
       body.innerHTML = "";
       empty.classList.remove("hidden");
-      empty.querySelector(".text-sm").textContent = cand.length === 0
-        ? "No candidates yet. This table fills up as the search finishes."
-        : (q ? `Nothing matches "${q}" in ${tab}.` : `No items in ${tab}.`);
+      if (state.analyticsRun.tabLoading === tab) {
+        empty.querySelector(".text-sm").textContent = "Loading…";
+      } else {
+        empty.querySelector(".text-sm").textContent = cand.length === 0
+          ? "No candidates yet. This table fills up as the search finishes."
+          : (q ? `Nothing matches "${q}" in ${tab}.` : `No items in ${tab}.`);
+      }
+      _renderPagination(0, 0, 0);
       return;
     }
     empty.classList.add("hidden");
@@ -2950,18 +3279,18 @@
       const key = `${c.row_idx}|${c.asin}`;
       const v = (c.verdict || "").toLowerCase();
       if (v === "verified") {
-        return `<button class="row-action-btn reject" data-run-action="reject" data-run-key="${escapeHtml(key)}">Reject</button>`;
+        return `<div class="run-action-cell"><button class="row-action-btn reject" data-run-action="reject" data-run-key="${escapeHtml(key)}">Reject</button></div>`;
       }
       if (v === "not_approved") {
-        return `<button class="row-action-btn promote" data-run-action="promote" data-run-key="${escapeHtml(key)}">Promote</button>`;
+        return `<div class="run-action-cell"><button class="row-action-btn promote" data-run-action="promote" data-run-key="${escapeHtml(key)}">Promote</button></div>`;
       }
-      // Review — offer both directions
-      return `
-        <button class="row-action-btn approve mr-1" data-run-action="approve" data-run-key="${escapeHtml(key)}">Approve</button>
-        <button class="row-action-btn discard" data-run-action="discard" data-run-key="${escapeHtml(key)}">Discard</button>`;
+      return `<div class="run-action-cell">
+        <button class="row-action-btn approve" data-run-action="approve" data-run-key="${escapeHtml(key)}">Approve</button>
+        <button class="row-action-btn discard" data-run-action="discard" data-run-key="${escapeHtml(key)}">Discard</button>
+      </div>`;
     };
 
-    body.innerHTML = rows.map(c => {
+    body.innerHTML = pageRows.map(c => {
       const src = srcByIdx[c.row_idx] || {};
       const conf = Math.round((c.confidence || 0) * 10) / 10;
       const confCls = conf >= 90 ? "hi" : conf >= 35 ? "mid" : "lo";
@@ -2973,7 +3302,8 @@
       const amzTitle = amz.title || "";
       const amzBrand = amz.brand || amz.manufacturer || "";
       const sources = Array.isArray(c.sources) ? c.sources.join(", ") : "";
-      const label = _VERDICT_LABEL[v] || (c.verdict || "");
+      const label  = _VERDICT_LABEL[v] || (c.verdict || "");
+      const reason = _verdictReason(c);
       return `
         <tr>
           <td class="text-xs">${escapeHtml(String(c.row_idx + 1))}</td>
@@ -2991,8 +3321,14 @@
           </td>
           <td class="text-xs">${escapeHtml(amzBrand)}</td>
           <td class="text-xs">${escapeHtml(sources)}</td>
+          <td class="text-xs text-center">${c.amz_pack != null ? escapeHtml(String(c.amz_pack)) : "1"}</td>
+          <td class="text-xs text-right" style="color:#64748b;">${c.sales_rank != null ? Number(c.sales_rank).toLocaleString() : "—"}</td>
           <td><span class="conf-pill ${confCls}">${conf}%</span></td>
-          <td><span class="badge ${verdictCls}">${escapeHtml(label)}</span></td>
+          <td>
+            <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
+            ${c.ai_verdict ? `<span class="ai-badge ai-badge-${escapeHtml(c.ai_verdict)}" title="${escapeHtml(c.ai_reasoning || "")}">${c.ai_verdict === "approve" ? "✓ AI" : c.ai_verdict === "reject" ? "✗ AI" : "? AI"}</span>` : ""}
+          </td>
+          <td class="text-xs" style="color:#64748b; white-space:nowrap;">${escapeHtml(reason)}</td>
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
@@ -3000,6 +3336,8 @@
     body.querySelectorAll("[data-run-action]").forEach(btn => {
       btn.addEventListener("click", handleAnalyticsRunAction);
     });
+
+    _renderPagination(page, totalPages, totalRows);
   }
 
   // ---- verdict-transition POST + local state update ------------------
@@ -3057,46 +3395,162 @@
       btn.style.opacity = "1";
       return;
     }
+
+    // Remove the item from the current verdict tab's page cache so it
+    // disappears immediately without waiting for a server round-trip.
+    const tab = state.analyticsRun.tab;
+    const tabEntry = (state.analyticsRun.tabPageData || {})[tab];
+    if (tab !== "All" && tabEntry) {
+      tabEntry.candidates = tabEntry.candidates.filter(
+        x => !(x.row_idx === row_idx && x.asin === asin)
+      );
+    }
+
     // Full re-render so counts + tab contents + summary tiles all refresh.
     renderAnalyticsRunDetail(state.analyticsRun.data);
   }
 
   function exportAnalyticsRunCsv() {
-    const j = state.analyticsRun.data;
-    if (!j) return;
-    const run = j.run || {};
-    const cand = Array.isArray(j.candidates) ? j.candidates : [];
-    if (cand.length === 0) return;
-    const srcByIdx = {};
-    (j.catalog_rows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
-
-    const header = [
-      "row", "source_upc", "source_item_id", "source_title", "source_brand",
-      "asin", "amazon_title", "amazon_brand", "sources", "confidence", "verdict",
-    ];
-    const lines = [header.join(",")];
-    const csvCell = (v) => {
-      const s = (v == null ? "" : String(v));
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    for (const c of cand) {
-      const src = srcByIdx[c.row_idx] || {};
-      const amz = (c.data && c.data.amazon) || {};
-      lines.push([
-        c.row_idx + 1, src.upc || "", src.itemid || "", src.title || "", src.brand || "",
-        c.asin || "", amz.title || "", amz.brand || amz.manufacturer || "",
-        (c.sources || []).join("|"), c.confidence || 0, c.verdict || "",
-      ].map(csvCell).join(","));
-    }
-    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const url  = URL.createObjectURL(blob);
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const params = new URLSearchParams();
+    const rm = state.analyticsRun.rankMin || 0;
+    const rx = state.analyticsRun.rankMax || 0;
+    const sn = state.analyticsRun.skipNullRank || false;
+    if (rm > 0) params.set("min_rank", rm);
+    if (rx > 0) params.set("max_rank", rx);
+    if (sn)     params.set("skip_null_rank", "true");
+    const qs = params.toString();
     const a = document.createElement("a");
-    const safe = (run.name || "analytics-run").replace(/[^a-z0-9-_]+/gi, "-");
-    a.href = url;
-    a.download = `${safe}.csv`;
+    a.href = `/api/analytics/runs/${id}/export${qs ? "?" + qs : ""}`;
+    a.download = "";
     document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+
+  function _updateRunControlButtons(status) {
+    const s = (status || "").toLowerCase();
+    const pauseBtn   = $("#analytics-run-pause");
+    const stopBtn    = $("#analytics-run-stop");
+    const resumeBtn  = $("#analytics-run-resume");
+    const rescoreBtn = $("#analytics-run-rescore");
+    if (!pauseBtn) return;
+    const searching = s === "searching" || s === "vetting";
+    const paused    = s === "paused";
+    const stopped   = s === "stopped";
+    const rescoring = s === "rescoring";
+    const done      = s === "complete" || s === "error";
+    pauseBtn.classList.toggle("hidden",   !searching);
+    stopBtn.classList.toggle("hidden",    !(searching || paused));
+    resumeBtn.classList.toggle("hidden",  !(paused || stopped));
+    rescoreBtn?.classList.toggle("hidden", !(done || paused || stopped) || rescoring);
+  }
+
+  async function _sendRunControl(action) {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    try {
+      await api(`/api/analytics/runs/${id}/control`, { method: "POST", body: { action } });
+      await fetchAnalyticsRunDetail();
+    } catch (e) {
+      alert("Control action failed: " + (e.message || e));
+    }
+  }
+
+  async function _deleteRun() {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    try {
+      await api(`/api/analytics/runs/${id}`, { method: "DELETE" });
+      _clearAnalyticsRunPoll();
+      state.analyticsRun.id = null;
+      state.analyticsRun.data = null;
+      state.currentView = "analytics";
+      $$("main > div").forEach(el => el.classList.add("hidden"));
+      document.getElementById("view-analytics")?.classList.remove("hidden");
+      await loadAnalyticsRuns();
+    } catch (e) {
+      alert("Could not delete run: " + (e.message || e));
+    }
+  }
+
+  // Stop & Delete modal
+  const _stopModal = $("#analytics-stop-modal");
+  $("#analytics-run-stop")?.addEventListener("click", () => {
+    _stopModal?.classList.remove("hidden");
+  });
+  $("#analytics-stop-cancel")?.addEventListener("click", () => {
+    _stopModal?.classList.add("hidden");
+  });
+  $("#analytics-stop-confirm")?.addEventListener("click", async () => {
+    _stopModal?.classList.add("hidden");
+    await _deleteRun();
+  });
+  _stopModal?.addEventListener("click", (e) => {
+    if (e.target === _stopModal) _stopModal.classList.add("hidden");
+  });
+
+  // Re-score modal
+  const _rescoreModal = $("#analytics-rescore-modal");
+  $("#analytics-run-rescore")?.addEventListener("click", () => {
+    // Populate dropdown from the raw column keys of the first catalog row.
+    const catRows = state.analyticsRun?.data?.catalog_rows || [];
+    const firstRow = catRows[0] || {};
+    const raw = firstRow.raw || {};
+    // Always include the stored title/search_title fields as options,
+    // then append any extra raw columns that aren't already covered.
+    const builtins = [
+      { key: "title", label: "Vendor Title (mapped at wizard)" },
+      ...(firstRow.search_title !== undefined
+        ? [{ key: "search_title", label: "Search Title (mapped at wizard)" }] : []),
+    ];
+    const rawCols = Object.keys(raw).filter(k => k !== "title" && k !== "search_title");
+    const colOpts = [
+      ...builtins.map(b => `<option value="${escapeHtml(b.key)}">${escapeHtml(b.label)}</option>`),
+      ...rawCols.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`),
+    ].join("") || `<option value="">— no columns found —</option>`;
+    const sel = $("#analytics-rescore-col");
+    if (sel) sel.innerHTML = colOpts;
+    const brandSel = $("#analytics-rescore-brand-col");
+    if (brandSel) brandSel.innerHTML = `<option value="">— none (use wizard brand) —</option>` + colOpts;
+    // Pre-populate min/max rank from the run's stored values.
+    const storedMinRank = state.analyticsRun?.data?.run?.min_rank || 0;
+    const storedMaxRank = state.analyticsRun?.data?.run?.max_rank || 0;
+    const mrMinInput = $("#analytics-rescore-min-rank");
+    if (mrMinInput) mrMinInput.value = storedMinRank > 0 ? String(storedMinRank) : "";
+    const mrInput = $("#analytics-rescore-max-rank");
+    if (mrInput) mrInput.value = storedMaxRank > 0 ? String(storedMaxRank) : "";
+    _rescoreModal?.classList.remove("hidden");
+  });
+  $("#analytics-rescore-cancel")?.addEventListener("click", () => {
+    _rescoreModal?.classList.add("hidden");
+  });
+  _rescoreModal?.addEventListener("click", (e) => {
+    if (e.target === _rescoreModal) _rescoreModal.classList.add("hidden");
+  });
+  $("#analytics-rescore-confirm")?.addEventListener("click", async () => {
+    const col = $("#analytics-rescore-col")?.value || "";
+    _rescoreModal?.classList.add("hidden");
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    try {
+      const brandCol = $("#analytics-rescore-brand-col")?.value || "";
+      const minRankRescore = Math.max(0, parseInt($("#analytics-rescore-min-rank")?.value || "0", 10) || 0);
+      const maxRankRescore = Math.max(0, parseInt($("#analytics-rescore-max-rank")?.value || "0", 10) || 0);
+      await api(`/api/analytics/runs/${id}/rescore`, {
+        method: "POST",
+        body: { title_col: col, brand_col: brandCol, min_rank: minRankRescore, max_rank: maxRankRescore },
+      });
+      // Clear per-tab cache so next tab visit re-fetches with updated scores.
+      state.analyticsRun.tabPageData = {};
+      // Kick an immediate poll so the progress card appears without waiting 2s.
+      await fetchAnalyticsRunDetail();
+    } catch (e) {
+      alert("Re-score failed: " + (e.message || e));
+    }
+  });
+
+  $("#analytics-run-pause")?.addEventListener("click",  () => _sendRunControl("pause"));
+  $("#analytics-run-resume")?.addEventListener("click", () => _sendRunControl("resume"));
 
   $("#analytics-run-back")?.addEventListener("click", () => {
     _clearAnalyticsRunPoll();
@@ -3107,10 +3561,17 @@
   });
   $("#analytics-run-export")?.addEventListener("click", exportAnalyticsRunCsv);
 
-  // Verdict tabs — switch which rows the table shows.
+  // Verdict tabs — fetch page 1 from server on every tab switch.
+  // Subsequent page navigation also fetches from the server (50 rows/page),
+  // so every item in every tab is reachable regardless of total count.
   $$("#view-analytics-run .run-tab").forEach(t => {
-    t.addEventListener("click", () => {
-      state.analyticsRun.tab = t.dataset.runTab || "Approved";
+    t.addEventListener("click", async () => {
+      const tab = t.dataset.runTab || "Approved";
+      state.analyticsRun.tab = tab;
+      state.analyticsRun.page = 1;
+      if (tab !== "All") {
+        await _fetchVerdictPage(tab, 1);
+      }
       renderAnalyticsRunCandidates();
     });
   });
@@ -3118,8 +3579,21 @@
   // Search box — local filter, no round-trip.
   $("#analytics-run-search")?.addEventListener("input", (e) => {
     state.analyticsRun.search = e.target.value || "";
+    state.analyticsRun.page = 1;
     renderAnalyticsRunCandidates();
   });
+
+  // BSR range filter — client-side display filter, no round-trip.
+  function _applyRankFilter() {
+    state.analyticsRun.rankMin = Math.max(0, parseInt($("#analytics-run-rank-min")?.value || "0", 10) || 0);
+    state.analyticsRun.rankMax = Math.max(0, parseInt($("#analytics-run-rank-max")?.value || "0", 10) || 0);
+    state.analyticsRun.skipNullRank = !!($("#analytics-run-rank-skip-null")?.checked);
+    state.analyticsRun.page = 1;
+    renderAnalyticsRunCandidates();
+  }
+  $("#analytics-run-rank-min")?.addEventListener("change", _applyRankFilter);
+  $("#analytics-run-rank-max")?.addEventListener("change", _applyRankFilter);
+  $("#analytics-run-rank-skip-null")?.addEventListener("change", _applyRankFilter);
 
   // Sortable header clicks — toggle asc / desc on the current column, or
   // switch to a new column (default asc, except confidence which makes
@@ -3134,6 +3608,7 @@
         state.analyticsRun.sortKey = key;
         state.analyticsRun.sortDir = (key === "confidence") ? "desc" : "asc";
       }
+      state.analyticsRun.page = 1;
       renderAnalyticsRunCandidates();
     });
   });
@@ -3209,6 +3684,67 @@
   });
 
   // ==========================================================================
+  //  AI Check modal
+  // ==========================================================================
+  const _aiCheckModal = $("#analytics-ai-check-modal");
+
+  async function _fetchAiCheckEstimate() {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const verdict = $("#ai-check-verdict-filter")?.value || "review";
+    const el = $("#ai-check-estimate");
+    if (el) el.textContent = "Loading estimate…";
+    try {
+      const j = await api(`/api/analytics/runs/${id}/ai_check/estimate?verdict=${encodeURIComponent(verdict)}`);
+      if (el) {
+        const cnt = (j.candidate_count ?? 0).toLocaleString();
+        const cost = (j.cost_usd_est ?? 0).toFixed(4);
+        const secs = Math.ceil((j.duration_ms_est ?? 0) / 1000);
+        el.innerHTML = `<strong>${cnt}</strong> candidate${j.candidate_count === 1 ? "" : "s"} · est. <strong>$${cost}</strong> · ~${secs}s`;
+      }
+    } catch (e) {
+      if (el) el.textContent = "Could not load estimate: " + (e.message || e);
+    }
+  }
+
+  $("#analytics-run-ai-check")?.addEventListener("click", () => {
+    _aiCheckModal?.classList.remove("hidden");
+    // Reset to default filter
+    const vf = $("#ai-check-verdict-filter");
+    if (vf) vf.value = "review";
+    _fetchAiCheckEstimate();
+  });
+
+  $("#ai-check-verdict-filter")?.addEventListener("change", _fetchAiCheckEstimate);
+
+  $("#ai-check-cancel")?.addEventListener("click", () => {
+    _aiCheckModal?.classList.add("hidden");
+  });
+  _aiCheckModal?.addEventListener("click", (e) => {
+    if (e.target === _aiCheckModal) _aiCheckModal.classList.add("hidden");
+  });
+
+  $("#ai-check-confirm")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const verdict = $("#ai-check-verdict-filter")?.value || "review";
+    _aiCheckModal?.classList.add("hidden");
+    try {
+      await api(`/api/analytics/runs/${id}/ai_check`, {
+        method: "POST",
+        body: { verdict },
+      });
+      // Poll for up to 15 cycles even if the DB status hasn't flipped to
+      // "Running" yet — the background thread takes a moment to start.
+      state.analyticsRun._aiCheckJustStarted = 15;
+      _clearAnalyticsRunPoll();
+      state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
+    } catch (e) {
+      alert("AI Check failed to start: " + (e.message || e));
+    }
+  });
+
+  // ==========================================================================
   //  Analytics wizard (#awiz-modal)
   // ==========================================================================
   // Dedicated 4-step wizard for the Analytics tab. This is NOT the CPG
@@ -3243,10 +3779,14 @@
     previewCount:$("#awiz-preview-count"),
     previewTotal:$("#awiz-preview-total"),
     mapHint:     $("#awiz-map-hint"),
-    mapUpc:      $("#awiz-map-upc"),
-    mapItemId:   $("#awiz-map-itemid"),
-    mapTitle:    $("#awiz-map-title"),
-    mapBrand:    $("#awiz-map-brand"),
+    mapUpc:         $("#awiz-map-upc"),
+    mapItemId:      $("#awiz-map-itemid"),
+    mapTitle:       $("#awiz-map-title"),
+    mapSearchTitle: $("#awiz-map-search-title"),
+    mapBrand:       $("#awiz-map-brand"),
+    mapBrandCol:    $("#awiz-map-brand-col"),
+    brandModeBtn:   $("#awiz-brand-mode-btn"),
+    brandModeLabel: $("#awiz-brand-mode-label"),
     mapPreview:  $("#awiz-map-preview-table"),
     mapFeedback: $("#awiz-map-feedback"),
     runName:     $("#awiz-run-name"),
@@ -3262,9 +3802,10 @@
       headerRowIdx: null,      // 0-based index into preview.rows
       headers: [],             // cells of the chosen header row (strings)
       mapping: {
-        upc: "", itemid: "", title: "",
+        upc: "", itemid: "", title: "", search_title: "",
       },
-      brandName: "",           // free-text, applies to every row
+      brandName: "",           // free-text, applies to every row (text mode)
+      brandMode: "text",       // "text" | "col"
       runName: "",
     };
 
@@ -3489,24 +4030,53 @@
         `<option value="${i}">${escapeHtml(h)}</option>`))
       .join("");
 
-    [awizEl.mapUpc, awizEl.mapItemId, awizEl.mapTitle]
+    [awizEl.mapUpc, awizEl.mapItemId, awizEl.mapTitle, awizEl.mapSearchTitle]
       .forEach(sel => { sel.innerHTML = opts; });
+    awizEl.mapBrandCol.innerHTML = opts;
 
     // Restore values from state.awiz.mapping (set by _bestGuessMapping or prior Back)
-    awizEl.mapUpc.value    = state.awiz.mapping.upc;
-    awizEl.mapItemId.value = state.awiz.mapping.itemid;
-    awizEl.mapTitle.value  = state.awiz.mapping.title;
-    awizEl.mapBrand.value  = state.awiz.brandName || "";
+    awizEl.mapUpc.value         = state.awiz.mapping.upc;
+    awizEl.mapItemId.value      = state.awiz.mapping.itemid;
+    awizEl.mapTitle.value       = state.awiz.mapping.title;
+    awizEl.mapSearchTitle.value = state.awiz.mapping.search_title;
+    awizEl.mapBrandCol.value    = state.awiz.mapping.brand || "";
+    awizEl.mapBrand.value       = state.awiz.brandName || "";
+
+    // Apply the current brand mode to show/hide the right input.
+    function _applyBrandMode(mode) {
+      state.awiz.brandMode = mode;
+      const isCol = mode === "col";
+      awizEl.mapBrand.classList.toggle("hidden", isCol);
+      awizEl.mapBrandCol.classList.toggle("hidden", !isCol);
+      awizEl.brandModeBtn.textContent = isCol ? "type a brand instead" : "use a column instead";
+    }
+    _applyBrandMode(state.awiz.brandMode);
+
+    awizEl.brandModeBtn.onclick = () => {
+      const next = state.awiz.brandMode === "text" ? "col" : "text";
+      if (next === "col") {
+        // Switching to column — clear typed brand from mapping
+        delete state.awiz.mapping.brand;
+      } else {
+        // Switching to text — clear column mapping
+        delete state.awiz.mapping.brand;
+        awizEl.mapBrandCol.value = "";
+      }
+      _applyBrandMode(next);
+      renderAwizMappingPreview();
+    };
 
     const wireSelect = (sel, key) => {
       sel.onchange = () => {
         state.awiz.mapping[key] = sel.value;
-        renderAwizMappingPreview();  // re-tint columns as user changes the mapping
+        renderAwizMappingPreview();
       };
     };
-    wireSelect(awizEl.mapUpc,    "upc");
-    wireSelect(awizEl.mapItemId, "itemid");
-    wireSelect(awizEl.mapTitle,  "title");
+    wireSelect(awizEl.mapUpc,         "upc");
+    wireSelect(awizEl.mapItemId,      "itemid");
+    wireSelect(awizEl.mapTitle,       "title");
+    wireSelect(awizEl.mapSearchTitle, "search_title");
+    wireSelect(awizEl.mapBrandCol,    "brand");
 
     awizEl.mapBrand.oninput = () => {
       state.awiz.brandName = awizEl.mapBrand.value;
@@ -3535,9 +4105,10 @@
 
     const classFor = (colIdx) => {
       const m = state.awiz.mapping;
-      if (String(colIdx) === String(m.upc))    return "awiz-col-mapped-upc";
-      if (String(colIdx) === String(m.itemid)) return "awiz-col-mapped-itemid";
-      if (String(colIdx) === String(m.title))  return "awiz-col-mapped-title";
+      if (String(colIdx) === String(m.upc))          return "awiz-col-mapped-upc";
+      if (String(colIdx) === String(m.itemid))       return "awiz-col-mapped-itemid";
+      if (String(colIdx) === String(m.title))        return "awiz-col-mapped-title";
+      if (m.search_title && String(colIdx) === String(m.search_title)) return "awiz-col-mapped-search-title";
       return "";
     };
 
@@ -3568,6 +4139,14 @@
     if (!m.upc)    m.upc    = hit(/^(upc|ean|gtin|barcode)/);
     if (!m.itemid) m.itemid = hit(/(itemid|itemnum|partnum|partno|sku|manuf|mpn|model)/);
     if (!m.title)  m.title  = hit(/(title|desc|product|name)/);
+    // Auto-select brand column and switch to column mode if header found.
+    if (!m.brand) {
+      const brandHit = hit(/^brand$/);
+      if (brandHit) {
+        m.brand = brandHit;
+        state.awiz.brandMode = "col";
+      }
+    }
   }
 
   function _validateMapping() {
@@ -3579,6 +4158,7 @@
 
   // ---- Step 4: summary card ---------------------------------------------
   function renderAwizSummary() {
+    _updateAiCostHint();
     if (!awizEl.runName.value) awizEl.runName.value = state.awiz.runName || "";
     awizEl.runName.oninput = () => { state.awiz.runName = awizEl.runName.value; };
 
@@ -3594,7 +4174,8 @@
       ["Marketplace", "US"],
       ["UPC / EAN column", colName(state.awiz.mapping.upc)],
       ["Item ID column", colName(state.awiz.mapping.itemid)],
-      ["Title column", colName(state.awiz.mapping.title)],
+      ["Title column (scoring)", colName(state.awiz.mapping.title)],
+      ...(state.awiz.mapping.search_title ? [["Search Title column (Amazon search)", colName(state.awiz.mapping.search_title)]] : []),
       ["Brand (applied to every row)", state.awiz.brandName?.trim() || "—"],
     ];
 
@@ -3628,7 +4209,7 @@
       alert("Pick at least one search method (UPC / Item ID / Title).");
       return;
     }
-    const pagesPerTitle = Math.max(1, Math.min(10, parseInt($("#awiz-title-pages")?.value || "5", 10)));
+    const pagesPerTitle = Math.max(1, Math.min(10, parseInt($("#awiz-title-pages")?.value || "1", 10)));
     const aiCleanTitles = !!$("#awiz-title-ai-clean")?.checked;
 
     const fd = new FormData();
@@ -3637,10 +4218,16 @@
     fd.append("marketplace", "US");
     fd.append("header_row", String(state.awiz.headerRowIdx ?? 0));
     fd.append("mapping", JSON.stringify(state.awiz.mapping || {}));
-    fd.append("brand", (state.awiz.brandName || "").trim());
+    // In col mode the brand column index is already in mapping.brand;
+    // send empty string for the free-text brand field.
+    fd.append("brand", state.awiz.brandMode === "col" ? "" : (state.awiz.brandName || "").trim());
     fd.append("search_methods", JSON.stringify(methods));
     fd.append("pages_per_title", String(pagesPerTitle));
     fd.append("ai_clean_titles", aiCleanTitles ? "true" : "false");
+    const minRankWiz = Math.max(0, parseInt($("#awiz-min-rank")?.value || "0", 10) || 0);
+    const maxRankWiz = Math.max(0, parseInt($("#awiz-max-rank")?.value || "0", 10) || 0);
+    fd.append("min_rank", String(minRankWiz));
+    fd.append("max_rank", String(maxRankWiz));
 
     awizEl.next.disabled = true;
     awizEl.next.textContent = "Starting…";

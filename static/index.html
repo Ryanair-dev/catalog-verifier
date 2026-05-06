@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=7" />
 </head>
 <body class="min-h-screen">
 
@@ -620,33 +620,93 @@
             <span id="analytics-run-status-pill" class="ms-pill">
               <span class="ms-pill-dot"></span> <span id="analytics-run-status-text">—</span>
             </span>
-            <button id="analytics-run-export" class="btn btn-secondary text-xs" disabled>Export CSV</button>
+            <button id="analytics-run-pause" class="btn btn-warning text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              Pause
+            </button>
+            <button id="analytics-run-resume" class="btn btn-success text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Resume
+            </button>
+            <button id="analytics-run-stop" class="btn btn-danger text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              Stop &amp; Delete
+            </button>
+            <button id="analytics-run-rescore" class="btn btn-secondary text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              Re-score
+            </button>
+            <button id="analytics-run-ai-check" class="btn btn-secondary text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+              AI Check
+            </button>
+            <button id="analytics-run-export" class="btn btn-secondary text-xs" disabled>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export CSV
+            </button>
           </div>
         </header>
 
         <div class="px-8 py-6 space-y-6">
 
-          <!-- Progress bar (visible while the run is Searching / Vetting) -->
-          <div id="analytics-run-progress-card" class="card hidden">
-            <div class="card-body">
-              <div class="flex items-center justify-between text-xs mb-2" style="color: #475569;">
-                <span id="analytics-run-progress-phase" class="font-medium">Searching…</span>
-                <span id="analytics-run-progress-counts" style="font-variant-numeric: tabular-nums;">0 / 0</span>
+          <!-- Progress card (visible while active / paused / stopped) -->
+          <div id="analytics-run-progress-card" class="run-progress-card hidden">
+            <div class="rp-header">
+              <div class="rp-left">
+                <span id="analytics-run-progress-dot" class="rp-dot"></span>
+                <div>
+                  <div id="analytics-run-progress-phase" class="rp-phase">Searching…</div>
+                  <div id="analytics-run-progress-sub" class="rp-sub"></div>
+                </div>
               </div>
-              <div class="progress"><div class="bar" id="analytics-run-progress-bar" style="width:0%"></div></div>
-              <div class="text-xs mt-2" style="color: #94a3b8;">
-                We'll update this every few seconds. You can leave this page and come back — the run keeps going in the background.
+              <div class="rp-right">
+                <div id="analytics-run-progress-eta" class="rp-eta hidden"></div>
+                <div id="analytics-run-progress-counts" class="rp-counts">0 / 0</div>
               </div>
             </div>
+            <div class="rp-track">
+              <div class="rp-fill" id="analytics-run-progress-bar" style="width:0%"></div>
+            </div>
+            <div class="rp-hint">Updates every few seconds — you can leave this page and come back.</div>
           </div>
 
           <!-- Summary counts -->
-          <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div class="summary-stat"><div class="summary-stat-label">Catalog rows</div><div class="summary-stat-value" id="analytics-run-stat-catalog">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label">Candidates</div><div class="summary-stat-value" id="analytics-run-stat-candidates">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: var(--green-600);">Verified</div><div class="summary-stat-value" id="analytics-run-stat-verified" style="color: var(--green-600);">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: #b58100;">Review</div><div class="summary-stat-value" id="analytics-run-stat-review" style="color: #b58100;">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: #b91c1c;">Rejected</div><div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div></div>
+          <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-neutral">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              </div>
+              <div class="summary-stat-label">Catalog rows</div>
+              <div class="summary-stat-value" id="analytics-run-stat-catalog">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-purple">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </div>
+              <div class="summary-stat-label">Candidates</div>
+              <div class="summary-stat-value" id="analytics-run-stat-candidates">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-green">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: var(--green-600);">Verified</div>
+              <div class="summary-stat-value" id="analytics-run-stat-verified" style="color: var(--green-600);">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-amber">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: #b45309;">Review</div>
+              <div class="summary-stat-value" id="analytics-run-stat-review" style="color: #b45309;">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-red">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: #b91c1c;">Rejected</div>
+              <div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div>
+            </div>
           </div>
 
           <!-- Candidates table -->
@@ -670,10 +730,23 @@
               </div>
 
               <!-- Toolbar: search + bulk action + count -->
-              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color: #edf0f5;">
-                <div class="flex items-center gap-2 flex-1">
-                  <input id="analytics-run-search" type="text" class="input text-sm" placeholder="Search title, brand, ASIN, UPC…" style="max-width: 320px;" />
-                  <span id="analytics-run-candidates-summary" class="text-xs" style="color: #6b7480;">
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color: #edf0f5; background: #fafbfc;">
+                <div class="flex items-center gap-3 flex-1">
+                  <div class="search-wrap" style="max-width: 260px; flex: 1;">
+                    <svg class="si" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input id="analytics-run-search" type="text" class="input text-sm w-full" placeholder="Search title, brand, ASIN, UPC…" />
+                  </div>
+                  <div class="flex items-center gap-2" style="flex-shrink:0; border-left:1px solid #e2e8f0; padding-left:10px;">
+                    <span class="text-xs" style="color:#64748b; white-space:nowrap;">BSR</span>
+                    <input id="analytics-run-rank-min" type="number" min="0" step="10000" class="input text-xs" style="width:80px;" placeholder="Min" />
+                    <span class="text-xs" style="color:#94a3b8;">–</span>
+                    <input id="analytics-run-rank-max" type="number" min="0" step="10000" class="input text-xs" style="width:80px;" placeholder="Max" />
+                    <label class="flex items-center gap-1 text-xs" style="color:#64748b; white-space:nowrap; cursor:pointer;">
+                      <input type="checkbox" id="analytics-run-rank-skip-null" />
+                      hide unranked
+                    </label>
+                  </div>
+                  <span id="analytics-run-candidates-summary" class="text-xs whitespace-nowrap" style="color: #94a3b8;">
                     <span id="analytics-run-candidates-count">0</span> shown
                   </span>
                 </div>
@@ -693,14 +766,18 @@
                       <th class="sortable" data-sort-key="amz_title">Amazon Title <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="brand">Brand <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="sources">Sources <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="amz_pack">AMZ Pack <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="sales_rank">BSR <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="confidence">Confidence <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="verdict">Verdict <span class="sort-caret"></span></th>
+                      <th>Reason</th>
                       <th class="text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="analytics-run-candidates-body"></tbody>
                 </table>
               </div>
+              <div id="analytics-run-pagination" style="display:flex;align-items:center;gap:4px;padding:10px 4px;flex-wrap:wrap;"></div>
               <div id="analytics-run-candidates-empty" class="hidden empty-state" style="padding: 32px 12px;">
                 <div class="text-sm" style="color: #6b7480;">No candidates yet. This table fills up as the search finishes.</div>
               </div>
@@ -1018,6 +1095,109 @@
     </div>
   </div>
 
+  <!-- ==================== Analytics AI Check modal ==================== -->
+  <div id="analytics-ai-check-modal" class="modal-backdrop hidden" style="align-items:center; justify-content:center; padding:0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width:440px; box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background:#ede9fe; color:var(--purple-700);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold text-base" style="color:#1e293b;">AI Check candidates</div>
+            <div class="text-xs mt-1" style="color:#64748b;">GPT-4o-mini reviews each candidate against the vendor item and adds an Approve / Reject / Uncertain badge. Your scored verdicts are not changed.</div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <label class="abbr-label">Which candidates to check</label>
+          <select id="ai-check-verdict-filter" class="abbr-input mt-1">
+            <option value="review">Review only (recommended)</option>
+            <option value="all">All candidates</option>
+          </select>
+        </div>
+        <div id="ai-check-estimate" class="mt-3 rounded-lg px-4 py-3 text-xs" style="background:#f8fafc; border:1px solid #e2e8f0; color:#475569; line-height:1.6;">
+          Loading estimate…
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-2 rounded-b-xl" style="border-top:1px solid var(--grey-100); background:var(--grey-50);">
+        <button id="ai-check-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ai-check-confirm" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Start AI Check
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Stop & Delete analytics run confirmation ==================== -->
+  <div id="analytics-stop-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width: 420px; box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background: #fee2e2; color: var(--red-500);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold text-base" style="color: var(--navy-800);">Stop &amp; delete this run?</div>
+            <div class="text-sm mt-1 leading-relaxed" style="color: #6b7480;">
+              This will immediately stop the search and permanently delete the run along with all candidates found so far.<br>
+              <span class="font-medium" style="color: var(--red-600);">This cannot be undone.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-2 rounded-b-xl" style="border-top: 1px solid var(--grey-100); background: var(--grey-50);">
+        <button id="analytics-stop-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="analytics-stop-confirm" class="btn btn-danger">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          Yes, stop &amp; delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Re-score modal ==================== -->
+  <div id="analytics-rescore-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width: 440px; box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background: #ede9fe; color: var(--purple-700);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="font-semibold text-base" style="color: var(--navy-800);">Re-score candidates</div>
+            <div class="text-sm mt-1 leading-relaxed" style="color: #6b7480;">
+              Pick which column to use for title comparison. Amazon search results won't change — only the confidence scores are recalculated.
+            </div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <label class="abbr-label">Title column for scoring</label>
+          <select id="analytics-rescore-col" class="abbr-input mt-1"></select>
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label">Brand column <span class="mapping-note-inline">optional — worth up to 70 pts in scoring</span></label>
+          <select id="analytics-rescore-brand-col" class="abbr-input mt-1"></select>
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label">Min BSR <span class="mapping-note-inline">ASINs more popular than this rank → Not Approved (0 = no floor)</span></label>
+          <input id="analytics-rescore-min-rank" type="number" min="0" step="1000" class="abbr-input mt-1" placeholder="e.g. 1000 (0 = no floor)" />
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label">Max BSR <span class="mapping-note-inline">ASINs above this rank → Not Approved (0 = no ceiling)</span></label>
+          <input id="analytics-rescore-max-rank" type="number" min="0" step="10000" class="abbr-input mt-1" placeholder="e.g. 500000 (0 = no ceiling)" />
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-3 rounded-b-xl" style="border-top: 1px solid var(--grey-100); background: var(--grey-50);">
+        <button id="analytics-rescore-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="analytics-rescore-confirm" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Re-score
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ==================== AI Re-check modal ==================== -->
   <div id="ai-recheck-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
     <div class="bg-white rounded-xl w-[540px] p-6 shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
@@ -1123,7 +1303,7 @@
         <table class="results-table">
           <thead>
             <tr>
-              <th>Vendor Title</th><th>ASIN</th><th>Conf.</th><th>Verdict</th>
+              <th>Vendor Title</th><th>ASIN</th><th>Amazon Title</th><th>Conf.</th><th>Verdict</th>
               <th>UPC</th><th>Item</th><th>Brand</th><th>Title</th><th>Pack</th>
               <th class="text-right">Action</th>
             </tr>
@@ -1245,8 +1425,16 @@
               <select id="awiz-map-title" class="abbr-input"></select>
             </div>
             <div>
-              <label class="abbr-label">Brand (type the brand for every row)</label>
+              <label class="abbr-label">Search Title <span class="mapping-note-inline">optional — used only for Amazon keyword search, not for scoring</span></label>
+              <select id="awiz-map-search-title" class="abbr-input"></select>
+            </div>
+            <div>
+              <label class="abbr-label" style="display:flex; align-items:center; justify-content:space-between;">
+                <span id="awiz-brand-mode-label">Brand <span class="mapping-note-inline">(type one brand for every row)</span></span>
+                <button type="button" id="awiz-brand-mode-btn" class="mapping-note-inline" style="cursor:pointer; color:var(--purple-700); background:none; border:none; padding:0; font:inherit; text-decoration:underline; white-space:nowrap;">use a column instead</button>
+              </label>
               <input id="awiz-map-brand" class="abbr-input" placeholder="e.g. Oral-B" autocomplete="off" />
+              <select id="awiz-map-brand-col" class="abbr-input hidden"></select>
             </div>
           </div>
 
@@ -1294,18 +1482,35 @@
 
           <!-- Title-only options — only shown if Title is checked -->
           <div id="awiz-title-opts" class="hidden awiz-title-opts">
-            <div class="flex items-center justify-between">
-              <label class="text-xs" style="color: #475569;">Pages per title (≈10 ASINs each)</label>
-              <input id="awiz-title-pages" type="number" min="1" max="10" value="5" class="w-16 text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;" />
+            <div class="flex items-center gap-3 mt-1">
+              <div class="flex-1">
+                <div class="text-xs font-semibold mb-1" style="color:#334155;">Pages per title</div>
+                <div class="flex items-center gap-2">
+                  <input id="awiz-title-pages" type="number" min="1" max="10" value="1" class="abbr-input" style="width:70px;" />
+                  <span class="text-xs" style="color:#64748b;">× 20 results = candidates per title</span>
+                </div>
+                <div class="text-xs mt-1" style="color:#94a3b8;">Page 1 almost always contains the best match. Extra pages add noise and slow the run significantly.</div>
+              </div>
             </div>
-            <label class="flex items-center gap-2 text-xs cursor-pointer mt-2" style="color: #475569;">
+            <label class="flex items-center gap-2 text-xs cursor-pointer mt-3" style="color: #475569;">
               <input type="checkbox" id="awiz-title-ai-clean" />
-              Use GPT-4o to clean vendor titles before searching (costs extra tokens)
+              Use GPT-4o-mini to clean vendor titles before searching
+              <span id="awiz-ai-cost-hint" style="display:none; margin-left:6px; padding:2px 8px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span>
             </label>
           </div>
 
           <label class="abbr-label mt-4">Run name</label>
-          <input id="awiz-run-name" class="abbr-input mb-4" placeholder="e.g. Acme — April restock" />
+          <input id="awiz-run-name" class="abbr-input mb-2" placeholder="e.g. Acme — April restock" />
+          <div class="flex items-center gap-3 mb-2">
+            <label class="abbr-label" style="margin-bottom:0; white-space:nowrap;" for="awiz-min-rank">Min BSR</label>
+            <input id="awiz-min-rank" type="number" min="0" step="1000" class="abbr-input" style="width:150px;" placeholder="e.g. 1000 (0 = no limit)" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs more popular than this rank → Not Approved</span>
+          </div>
+          <div class="flex items-center gap-3 mb-4">
+            <label class="abbr-label" style="margin-bottom:0; white-space:nowrap;" for="awiz-max-rank">Max BSR</label>
+            <input id="awiz-max-rank" type="number" min="0" step="10000" class="abbr-input" style="width:150px;" placeholder="e.g. 500000 (0 = no limit)" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs above this rank → Not Approved</span>
+          </div>
           <div id="awiz-summary" class="awiz-summary"></div>
         </div>
 
@@ -1319,6 +1524,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

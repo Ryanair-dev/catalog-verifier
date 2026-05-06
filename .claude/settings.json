@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"c:/Users/RaianNair/Desktop/vetter/catalog-verifier/.claude/update_claude_md.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

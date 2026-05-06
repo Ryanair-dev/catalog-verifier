@@ -41,9 +41,12 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from services import ai_recheck, database
 from services.confidence import score_row
 from services.extractor import ai_extract, apply_abbreviations, rule_extract
+from services.file_parser import parse_file
 
 router = APIRouter()
 
@@ -52,42 +55,6 @@ router = APIRouter()
 # File parsing helpers
 # --------------------------------------------------------------------------- #
 
-def _parse_workbook(data: bytes) -> tuple[list[str], list[list[Any]]]:
-    """Return (headers, rows) from an Excel file. Headers come from row 0."""
-    wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        first = next(rows_iter)
-    except StopIteration:
-        return [], []
-    headers = [str(h).strip() if h is not None else f"Column {i+1}"
-               for i, h in enumerate(first)]
-    body: list[list[Any]] = []
-    for row in rows_iter:
-        if row is None or all(v in (None, "") for v in row):
-            continue
-        body.append(list(row))
-    return headers, body
-
-
-def _parse_csv(data: bytes) -> tuple[list[str], list[list[Any]]]:
-    import csv
-    text = data.decode("utf-8-sig", errors="replace")
-    reader = csv.reader(io.StringIO(text))
-    try:
-        headers = [h.strip() for h in next(reader)]
-    except StopIteration:
-        return [], []
-    body = [list(r) for r in reader if any((c or "").strip() for c in r)]
-    return headers, body
-
-
-def _parse_file(filename: str, data: bytes) -> tuple[list[str], list[list[Any]]]:
-    name = (filename or "").lower()
-    if name.endswith(".csv") or name.endswith(".tsv"):
-        return _parse_csv(data)
-    return _parse_workbook(data)
 
 
 def _apply_mapping(
@@ -217,7 +184,7 @@ async def scan_preview(catalog_file: UploadFile = File(...)) -> dict:
     """Return the first 10 rows + detected headers for the import wizard."""
     try:
         data = await catalog_file.read()
-        headers, rows = _parse_file(catalog_file.filename or "", data)
+        headers, rows = parse_file(catalog_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
     if not headers:
@@ -260,7 +227,7 @@ async def create_scan(
 
     data = await catalog_file.read()
     try:
-        headers, rows = _parse_file(catalog_file.filename or "", data)
+        headers, rows = parse_file(catalog_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
@@ -338,7 +305,7 @@ async def attach_amazon(
 
     data = await amazon_file.read()
     try:
-        headers, rows = _parse_file(amazon_file.filename or "", data)
+        headers, rows = parse_file(amazon_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
@@ -383,57 +350,78 @@ async def run_verify(scan_id: int) -> dict:
     use_ai = bool(scan.get("ai_mode"))
 
     dupes = _find_duplicates(catalog_rows, "Item ID")
+    # Load blacklist once — avoids one DB query per catalog row.
+    blacklist_set = database.load_blacklist_set()
+    # Build a token set from the library for O(1) membership checks instead of
+    # per-token DB queries inside the AI learning loop.
+    known_tokens: set[str] = {e["abbr"].lower() for e in abbr_list}
     ai_added: list[dict] = []
 
+    # ------------------------------------------------------------------ #
+    # AI extraction (optional) — parallelised across rows with a thread
+    # pool so the event loop isn't blocked for each OpenAI call.
+    # ------------------------------------------------------------------ #
+    ai_results: dict[int, dict] = {}
+    if use_ai:
+        def _ai_one(idx: int, row: dict, amz: dict | None) -> tuple[int, dict]:
+            return idx, ai_extract(
+                row.get("Vendor Title") or "",
+                abbreviations=abbr_list,
+                extra_context=_safe_amz_context(amz),
+            )
+
+        workers = min(6, max(1, len(catalog_rows)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _ai_one, i, r,
+                    amazon_index.get(str(r.get("ASIN") or "").strip().upper()),
+                ): i
+                for i, r in enumerate(catalog_rows)
+            }
+            for fut in as_completed(futs):
+                try:
+                    idx, res = fut.result()
+                    ai_results[idx] = res
+                except Exception:  # noqa: BLE001
+                    pass
+
     results = []
-    for row in catalog_rows:
+    for i, row in enumerate(catalog_rows):
         asin = str(row.get("ASIN") or "").strip().upper()
         upc = str(row.get("UPC/EAN") or "").strip()
         amz = amazon_index.get(asin)
         score = score_row(row, amz, abbr_list, thresholds=thresholds)
 
-        # Always run the library-based token expansion for display. This uses
-        # the same substitution that already powers the fuzzy scorer but keeps
-        # original casing so the UI shows e.g. "Adhesive Sponge 4x4" instead
-        # of the lowercased version the scorer uses internally.
         raw_title = row.get("Vendor Title") or ""
         title_expanded = apply_abbreviations(raw_title, abbr_list)
 
         try:
             attrs = rule_extract(raw_title, abbr_list)
             if use_ai:
-                ai_result = ai_extract(
-                    raw_title,
-                    abbreviations=abbr_list,
-                    extra_context=_safe_amz_context(amz),
-                )
+                ai_result = ai_results.get(i) or {}
                 if isinstance(ai_result, dict) and "error" not in ai_result:
                     attrs.update({k: v for k, v in ai_result.items() if v})
-                    # GPT is asked to expand *any* remaining unknown abbreviation
-                    # tokens. Prefer its expanded title over the rule-only one
-                    # when it actually added something.
                     ai_expanded = ai_result.get("expanded_title")
                     if isinstance(ai_expanded, str) and ai_expanded.strip() \
                             and ai_expanded.strip().lower() != title_expanded.strip().lower():
                         title_expanded = ai_expanded.strip()
-                    # Auto-learn unknown product types / forms into "Product Attributes".
+                    # Auto-learn unknown product types / forms — use in-memory
+                    # set to skip DB round-trips for already-known tokens.
                     for key in ("form", "product_type"):
                         val = ai_result.get(key)
                         if isinstance(val, str) and val.strip() \
-                                and not database.has_library_entry(val.strip()):
+                                and val.strip().lower() not in known_tokens:
                             created, entry = database.add_library_entry(
                                 "Product Attributes", val.strip(), val.strip(),
                                 added_by="ai",
                             )
                             if created and entry:
+                                known_tokens.add(val.strip().lower())
                                 ai_added.append({
                                     "abbr": entry["abbr"], "full": entry["full"],
                                     "category": "Product Attributes",
                                 })
-                    # Log any brand-new abbreviations GPT expanded into the
-                    # library so future runs hit them deterministically. We
-                    # guess a reasonable category per token, falling back to
-                    # "Product Attributes" so the row isn't silently dropped.
                     for na in ai_result.get("new_abbreviations") or []:
                         if not isinstance(na, dict):
                             continue
@@ -441,13 +429,14 @@ async def run_verify(scan_id: int) -> dict:
                         full = str(na.get("full") or "").strip()
                         if not abbr or not full or abbr.lower() == full.lower():
                             continue
-                        if database.has_library_entry(abbr):
+                        if abbr.lower() in known_tokens:
                             continue
                         category = _guess_abbr_category(full)
                         created, entry = database.add_library_entry(
                             category, abbr, full, added_by="ai",
                         )
                         if created and entry:
+                            known_tokens.add(abbr.lower())
                             ai_added.append({
                                 "abbr": entry["abbr"], "full": entry["full"],
                                 "category": category,
@@ -460,17 +449,12 @@ async def run_verify(scan_id: int) -> dict:
         except Exception:  # noqa: BLE001
             pass
 
-        # Resolve the matching Amazon title so the UI's "Amazon Title" column
-        # and the AI re-check feature don't need a second lookup. Falls through
-        # common key names across Amazon / Keepa exports.
         amz_title = ""
         if amz:
             for k in ("Title", "item_name", "Item Name", "Product Title"):
                 if amz.get(k):
                     amz_title = str(amz[k]); break
 
-        # Only surface the expanded title when it actually differs from the
-        # original — otherwise the UI gets a redundant duplicate column.
         title_expanded_out = (
             title_expanded.strip()
             if title_expanded and title_expanded.strip().lower() != raw_title.strip().lower()
@@ -492,14 +476,13 @@ async def run_verify(scan_id: int) -> dict:
             "signals": score["signals"],
             "amz_pack": score["amz_pack"],
             "duplicate": str(row.get("Item ID") or "").strip() in dupes,
-            "blacklisted": database.is_blacklisted(upc, asin),
+            "blacklisted": (upc, asin) in blacklist_set,
             "notes": score["notes"],
             "_attributes": row.get("_attributes") or {},
-            # AI re-check fields — populated on demand by /ai-recheck.
-            "ai_suggestion": None,   # "Approved" | "Review" | "Not Approved" | "keep" | null
-            "ai_reason": None,       # short string
-            "ai_model": None,        # e.g. "gpt-4o-mini"
-            "ai_checked_at": None,   # ISO timestamp
+            "ai_suggestion": None,
+            "ai_reason": None,
+            "ai_model": None,
+            "ai_checked_at": None,
         })
 
     database.save_scan_results(scan_id, results)

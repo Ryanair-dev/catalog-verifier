@@ -21,17 +21,22 @@ just the HTTP glue.
 """
 from __future__ import annotations
 
-import csv
 import io
 import json
 import sqlite3
 from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
-from openpyxl import load_workbook
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.cell import WriteOnlyCell
 
 from services import database
+from services.file_parser import parse_raw_rows as _parse_raw_rows_shared
 from services.analytics import parse_source_rows, start_analytics_run
+from services.analytics.runner import request_pause, request_stop, resume_run, start_rescore
+from services.analytics.ai_check import start_ai_check, is_running as ai_check_running, estimate_cost as ai_check_cost
 from services.spapi import sp_api_configured
 
 router = APIRouter(prefix="/analytics")
@@ -45,14 +50,7 @@ _PREVIEW_LIMIT = 25
 
 
 def _parse_raw_rows(filename: str, data: bytes) -> list[list[Any]]:
-    name = (filename or "").lower()
-    if name.endswith(".csv") or name.endswith(".tsv"):
-        text = data.decode("utf-8-sig", errors="replace")
-        reader = csv.reader(io.StringIO(text))
-        return [list(r) for r in reader]
-    wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
-    return [list(r) for r in ws.iter_rows(values_only=True)]
+    return _parse_raw_rows_shared(filename, data)
 
 
 @router.post("/preview")
@@ -122,6 +120,8 @@ def list_analytics_runs() -> list[dict[str, Any]]:
                    ai_clean_titles, total_catalog_items, total_candidates_found,
                    verified_count, review_count, not_approved_count,
                    status, progress_phase, progress_done, progress_total,
+                   max_rank, min_rank,
+                   ai_check_status, ai_check_done, ai_check_total,
                    created_at, updated_at
             FROM analytics_runs
             ORDER BY created_at DESC
@@ -137,10 +137,18 @@ def list_analytics_runs() -> list[dict[str, Any]]:
 
 
 @router.get("/runs/{run_id}")
-def get_run_detail(run_id: int, limit: int = 200, offset: int = 0) -> dict[str, Any]:
+def get_run_detail(
+    run_id: int,
+    limit: int = 200,
+    offset: int = 0,
+    verdict: str = "",
+    max_rank: int = 0,
+) -> dict[str, Any]:
     """
-    Return a single run row + up to `limit` candidates. The UI can use
-    `offset` + `limit` to page through result sets on runs with many rows.
+    Return a single run row + up to `limit` candidates.
+
+    max_rank: when > 0, only return candidates whose sales_rank <= max_rank
+              (or whose rank is unknown/null). Pass 0 to disable.
     """
     with database._connect() as conn:
         conn.row_factory = sqlite3.Row
@@ -152,21 +160,53 @@ def get_run_detail(run_id: int, limit: int = 200, offset: int = 0) -> dict[str, 
         run_d = dict(run)
         run_d["search_methods"] = _decode_search_methods(run_d.get("search_methods"))
 
-        rows = conn.execute(
-            "SELECT row_idx, data_json FROM analytics_catalog_rows "
-            "WHERE run_id=? ORDER BY row_idx",
-            (run_id,),
-        ).fetchall()
-        catalog_rows = [json.loads(r["data_json"]) for r in rows]
+        # Catalog rows are only needed for the initial full-data load.
+        # Verdict-filtered fetches skip them — the client already has them.
+        if not verdict:
+            rows = conn.execute(
+                "SELECT row_idx, data_json FROM analytics_catalog_rows "
+                "WHERE run_id=? ORDER BY row_idx",
+                (run_id,),
+            ).fetchall()
+            catalog_rows = [json.loads(r["data_json"]) for r in rows]
+        else:
+            catalog_rows = []
 
-        cand_rows = conn.execute(
-            "SELECT row_idx, asin, sources, confidence, verdict, amz_pack, "
-            "       review_status, data_json "
-            "FROM analytics_candidates WHERE run_id=? "
-            "ORDER BY row_idx, confidence DESC "
-            "LIMIT ? OFFSET ?",
-            (run_id, int(limit), int(offset)),
-        ).fetchall()
+        rank_clause = "AND (sales_rank IS NULL OR sales_rank <= ?)" if max_rank > 0 else ""
+        select_cols = (
+            "row_idx, asin, sources, confidence, verdict, amz_pack, "
+            "sales_rank, review_status, ai_verdict, ai_reasoning, data_json"
+        )
+
+        if verdict:
+            base_params: list = [run_id, str(verdict)]
+            if max_rank > 0:
+                base_params.append(int(max_rank))
+            if limit > 0:
+                cand_rows = conn.execute(
+                    f"SELECT {select_cols} FROM analytics_candidates "
+                    f"WHERE run_id=? AND verdict=? {rank_clause} "
+                    f"ORDER BY confidence DESC, row_idx, asin LIMIT ? OFFSET ?",
+                    base_params + [int(limit), int(offset)],
+                ).fetchall()
+            else:
+                cand_rows = conn.execute(
+                    f"SELECT {select_cols} FROM analytics_candidates "
+                    f"WHERE run_id=? AND verdict=? {rank_clause} "
+                    f"ORDER BY confidence DESC, row_idx, asin",
+                    base_params,
+                ).fetchall()
+        else:
+            base_params = [run_id]
+            if max_rank > 0:
+                base_params.append(int(max_rank))
+            cand_rows = conn.execute(
+                f"SELECT {select_cols} FROM analytics_candidates "
+                f"WHERE run_id=? {rank_clause} "
+                f"ORDER BY confidence DESC, row_idx, asin "
+                f"LIMIT ? OFFSET ?",
+                base_params + [int(limit), int(offset)],
+            ).fetchall()
 
     candidates: list[dict] = []
     for c in cand_rows:
@@ -179,6 +219,13 @@ def get_run_detail(run_id: int, limit: int = 200, offset: int = 0) -> dict[str, 
             d["data"] = json.loads(d.pop("data_json") or "{}")
         except (ValueError, TypeError):
             d["data"] = {}
+        # Expose sales_rank at the top level for the UI; also pull from
+        # data.amazon.sales_rank for rows that predate the column migration.
+        if d.get("sales_rank") is None:
+            amz = (d.get("data") or {}).get("amazon") or {}
+            sr = amz.get("sales_rank")
+            if sr is not None:
+                d["sales_rank"] = sr
         candidates.append(d)
 
     return {
@@ -213,6 +260,8 @@ async def create_analytics_run(
     search_methods: str = Form(...),    # JSON-encoded list
     pages_per_title: int = Form(5),
     ai_clean_titles: bool = Form(False),
+    max_rank: int = Form(0),
+    min_rank: int = Form(0),
 ) -> dict[str, Any]:
     """
     Create a new Analytics run.
@@ -264,6 +313,8 @@ async def create_analytics_run(
         pages_per_title=int(pages_per_title),
         ai_clean_titles=bool(ai_clean_titles),
         source_rows=rows,
+        max_rank=int(max_rank),
+        min_rank=int(min_rank),
     )
 
     return {
@@ -448,3 +499,309 @@ def bulk_update_candidate_verdict(
         "review_status": review_status,
         "counts": counts,
     }
+
+
+# --------------------------------------------------------------------------- #
+# POST /runs/{run_id}/rescore — re-score candidates with a different title col
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/runs/{run_id}/rescore")
+def rescore_run(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """
+    Kick off a background re-score for an existing run using a different title
+    column from the original catalog's raw data.
+
+    Body: {"title_col": "Full Product Title"}
+      - title_col: column header name from the raw dict stored in
+        analytics_catalog_rows.data_json.raw.  Pass "" to use the
+        originally-mapped title field.
+
+    Returns immediately; progress is tracked via the run's progress_done/total
+    fields (same mechanism as the search pipeline).
+    """
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT id FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    title_col = (body.get("title_col") or "").strip()
+    brand_col = (body.get("brand_col") or "").strip()
+    max_rank  = int(body.get("max_rank") or 0)
+    min_rank  = int(body.get("min_rank") or 0)
+    start_rescore(int(run_id), title_col, brand_col, max_rank, min_rank)
+    return {"ok": True, "started": True}
+
+
+# --------------------------------------------------------------------------- #
+# POST /runs/{run_id}/control — pause / stop / resume
+# --------------------------------------------------------------------------- #
+
+_ACTIVE_STATUSES   = {"Searching", "Pending", "Vetting"}
+_PAUSABLE_STATUSES = {"Searching", "Vetting"}
+_RESUMABLE_STATUSES = {"Paused", "Stopped"}
+_STOPPABLE_STATUSES = _PAUSABLE_STATUSES | _RESUMABLE_STATUSES | {"Pending"}
+
+
+@router.post("/runs/{run_id}/control")
+def control_analytics_run(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """
+    Body: {"action": "pause" | "stop" | "resume"}
+
+    pause  — signals the running pipeline to pause after its current step.
+    stop   — signals the pipeline to stop and mark the run as Stopped.
+    resume — restarts a Paused/Stopped run from where it left off.
+    """
+    action = (body.get("action") or "").lower().strip()
+    if action not in ("pause", "stop", "resume"):
+        raise HTTPException(status_code=400, detail="action must be pause, stop, or resume")
+
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT status FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    status = run["status"] or ""
+
+    if action == "pause":
+        if status not in _PAUSABLE_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Run is {status} — can only pause a running run")
+        request_pause(run_id)
+        # Write immediately so the UI reflects it even if the thread hasn't
+        # reached its next control-check point yet.
+        with database._LOCK, database._connect() as conn:
+            conn.execute(
+                "UPDATE analytics_runs SET status='Paused', "
+                "progress_phase='Paused by user', updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND status NOT IN ('Complete', 'Error', 'Stopped')",
+                (run_id,),
+            )
+        return {"ok": True, "action": "pause", "run_id": run_id}
+
+    if action == "stop":
+        if status not in _STOPPABLE_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Run is {status} — nothing to stop")
+        request_stop(run_id)
+        # Write Stopped immediately so the UI reflects it even when the
+        # background thread has died (e.g. after a server restart).
+        with database._LOCK, database._connect() as conn:
+            conn.execute(
+                "UPDATE analytics_runs SET status='Stopped', "
+                "progress_phase='Stopped by user', updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND status NOT IN ('Complete', 'Error')",
+                (run_id,),
+            )
+        return {"ok": True, "action": "stop", "run_id": run_id}
+
+    if action == "resume":
+        if status not in _RESUMABLE_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Run is {status} — can only resume a Paused or Stopped run")
+        ok = resume_run(run_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail="Could not resume run")
+        return {"ok": True, "action": "resume", "run_id": run_id}
+
+
+# --------------------------------------------------------------------------- #
+# DELETE /runs/{run_id} — permanently remove a run and all its data
+# --------------------------------------------------------------------------- #
+
+@router.delete("/runs/{run_id}")
+def delete_analytics_run(run_id: int) -> dict[str, Any]:
+    request_stop(run_id)
+    with database._LOCK, database._connect() as conn:
+        run = conn.execute(
+            "SELECT id FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        conn.execute("DELETE FROM analytics_runs WHERE id=?", (run_id,))
+    return {"ok": True, "deleted": run_id}
+
+
+# --------------------------------------------------------------------------- #
+# AI check endpoints
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/runs/{run_id}/ai_check/estimate")
+def ai_check_estimate(run_id: int, verdict: str = "review") -> dict[str, Any]:
+    """Return cost/time estimate for running AI check on candidates of this run."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM analytics_candidates "
+            "WHERE run_id=?" + (" AND verdict=?" if verdict else ""),
+            (run_id, verdict) if verdict else (run_id,),
+        ).fetchone()
+    count = row["cnt"] if row else 0
+    est   = ai_check_cost(count)
+    est["already_running"] = ai_check_running(run_id)
+    return est
+
+
+@router.post("/runs/{run_id}/ai_check")
+def start_ai_check_endpoint(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """Start AI check for candidates of this run in a background thread."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT id FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if ai_check_running(run_id):
+        return {"ok": True, "already_running": True}
+
+    verdict_filter = (body.get("verdict") or "review").lower()
+    if verdict_filter == "all":
+        verdict_filter = ""
+    start_ai_check(run_id, verdict_filter)
+    return {"ok": True, "started": True}
+
+
+# --------------------------------------------------------------------------- #
+# GET /runs/{run_id}/export — multi-sheet Excel download
+# --------------------------------------------------------------------------- #
+
+_HDR_FONT = Font(bold=True)
+
+
+def _hdr_row(ws, titles: list[str]) -> list[WriteOnlyCell]:
+    cells = []
+    for t in titles:
+        c = WriteOnlyCell(ws, value=t)
+        c.font = _HDR_FONT
+        cells.append(c)
+    return cells
+
+
+@router.get("/runs/{run_id}/export")
+def export_analytics_run(
+    run_id: int,
+    min_rank: int = 0,
+    max_rank: int = 0,
+    skip_null_rank: bool = False,
+):
+    """
+    Return a four-sheet Excel workbook filtered by the caller's rank window:
+      Sheet 1 "Approved"     — verified candidates
+      Sheet 2 "Review"       — review candidates
+      Sheet 3 "Not Approved" — not_approved candidates
+      Sheet 4 "Not Found"    — catalog rows with no Amazon match
+    """
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT * FROM analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        run_d = dict(run)
+
+        cat_rows = conn.execute(
+            "SELECT row_idx, data_json FROM analytics_catalog_rows "
+            "WHERE run_id=? ORDER BY row_idx",
+            (run_id,),
+        ).fetchall()
+
+        cand_rows = conn.execute(
+            "SELECT row_idx, asin, confidence, verdict, amz_pack, "
+            "sales_rank, data_json "
+            "FROM analytics_candidates WHERE run_id=? ORDER BY confidence DESC",
+            (run_id,),
+        ).fetchall()
+
+    src_by_idx: dict[int, dict] = {}
+    for r in cat_rows:
+        try:
+            src_by_idx[r["row_idx"]] = json.loads(r["data_json"] or "{}")
+        except (ValueError, TypeError):
+            src_by_idx[r["row_idx"]] = {}
+
+    found_idxs = {c["row_idx"] for c in cand_rows}
+
+    def _rank_passes(sales_rank) -> bool:
+        if sales_rank is None:
+            return not skip_null_rank and max_rank == 0
+        r = int(sales_rank)
+        if min_rank > 0 and r < min_rank:
+            return False
+        if max_rank > 0 and r > max_rank:
+            return False
+        return True
+
+    cand_hdr = [
+        "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
+        "ASIN", "Amazon Title", "Amazon Brand", "BSR", "Confidence",
+    ]
+
+    buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
+    for c in cand_rows:
+        if not _rank_passes(c["sales_rank"]):
+            continue
+        src = src_by_idx.get(c["row_idx"], {})
+        try:
+            amz = (json.loads(c["data_json"] or "{}")).get("amazon") or {}
+        except (ValueError, TypeError):
+            amz = {}
+        row = [
+            (c["row_idx"] or 0) + 1,
+            src.get("upc") or "",
+            src.get("itemid") or "",
+            src.get("title") or "",
+            src.get("brand") or "",
+            c["asin"] or "",
+            amz.get("title") or "",
+            amz.get("brand") or amz.get("manufacturer") or "",
+            c["sales_rank"] if c["sales_rank"] is not None else "",
+            round(float(c["confidence"] or 0), 1),
+        ]
+        buckets.get((c["verdict"] or "").lower(), buckets["not_approved"]).append(row)
+
+    wb = Workbook(write_only=True)
+
+    for sheet_name, verdict_key in [
+        ("Approved", "verified"),
+        ("Review", "review"),
+        ("Not Approved", "not_approved"),
+    ]:
+        ws = wb.create_sheet(sheet_name)
+        ws.append(_hdr_row(ws, cand_hdr))
+        for row in buckets[verdict_key]:
+            ws.append(row)
+
+    # Not Found sheet — unaffected by rank filter
+    ws_nf = wb.create_sheet("Not Found")
+    ws_nf.append(_hdr_row(ws_nf, [
+        "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
+    ]))
+    for idx in sorted(src_by_idx.keys()):
+        if idx in found_idxs:
+            continue
+        src = src_by_idx[idx]
+        ws_nf.append([
+            idx + 1,
+            src.get("upc") or "",
+            src.get("itemid") or "",
+            src.get("title") or "",
+            src.get("brand") or "",
+        ])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = (run_d.get("name") or f"run-{run_id}").replace(" ", "_")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}_analytics.xlsx"'},
+    )

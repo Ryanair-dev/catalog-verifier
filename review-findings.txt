@@ -1,0 +1,251 @@
+Catalog Verifier Review Findings
+Generated from project review on 2026-05-06
+
+Scope
+-----
+Project reviewed: catalog-verifier
+Goal: capture bugs, slowness risks, unused code, and optimization targets so they can be tackled later.
+
+
+P0 Correctness
+--------------
+1. Fresh DB creation can fail.
+   File: services/database.py
+   Issue: idx_analytics_catalog_run is created before analytics_catalog_rows exists.
+   Fix: move that CREATE INDEX after the analytics_catalog_rows table creation.
+
+2. Verification stats can be wrong.
+   Files:
+   - services/confidence.py
+   - services/database.py
+   Issue: confidence.py emits verdict "Approved", but recompute_scan_stats counts only "verified".
+   Fix: count both "approved" and "verified" as approved rows.
+
+3. README documents wrong SP-API env names.
+   Files:
+   - README.md
+   - services/spapi/config.py
+   Issue: README says SP_API_* variables, but code reads AMZ_CLIENT_ID, AMZ_CLIENT_SECRET, REFRESH_TOKEN, or LWA_* equivalents.
+   Fix: either update README or update config.py to accept SP_API_* too.
+
+4. .env.example is referenced but missing.
+   Fix: add .env.example with non-secret placeholder values.
+
+5. requests is used but missing from requirements.txt.
+   Files:
+   - services/spapi/auth.py
+   - services/spapi/catalog.py
+   Fix: add requests to requirements.txt, or migrate SP-API calls to httpx.
+
+6. Analytics export rank filtering is inconsistent.
+   File: routers/analytics.py
+   Issue: runtime rank caps allow null BSR through, but export filtering can exclude null ranks whenever max_rank is set.
+   Fix: align export filtering with runtime rank rules.
+
+
+P1 Analytics Issues
+-------------------
+1. Analytics detail initially loads only 5000 candidates.
+   File: static/app.js
+   Issue: larger runs can silently hide candidates in the All tab.
+   Fix: make All tab server-paginated too, or add a clear total/limit warning.
+
+2. Verdict tabs are server-paged, but search/sort/rank filtering is local.
+   Files:
+   - static/app.js
+   - routers/analytics.py
+   Issue: filtering and sorting only affect the currently loaded page.
+   Fix: push search, sort, and rank filters into backend query parameters.
+
+3. Analytics bulk action may affect the wrong set.
+   File: static/app.js
+   Issue: bulk action uses data.candidates, not necessarily the current server-paged tab rows.
+   Fix: bulk should operate on explicit visible row ids, or backend should support "bulk current filter".
+
+4. Backend accepts arbitrary pages_per_title.
+   File: routers/analytics.py
+   Issue: UI caps pages at 10, but API callers can request huge searches.
+   Fix: validate and clamp pages_per_title on the backend.
+
+5. Missing helpful indexes.
+   File: services/database.py
+   Suggested indexes:
+   - analytics_candidates(run_id, verdict, confidence DESC)
+   - analytics_candidates(run_id, sales_rank)
+   - analytics_candidates(run_id, row_idx)
+
+
+P1 Performance
+--------------
+1. OpenAI clients are created repeatedly.
+   Files:
+   - services/extractor.py
+   - services/analytics/runner.py
+   Fix: create one OpenAI client per run/batch instead of per row.
+
+2. Barcode lookup is not cached despite README saying it is.
+   Files:
+   - services/barcode_lookup.py
+   - routers/barcode.py
+   - README.md
+   Fix: add a barcode_lookup_cache table, or update README/UI wording.
+
+3. Analytics run detail decodes large JSON blobs repeatedly.
+   Files:
+   - routers/analytics.py
+   - services/analytics/runner.py
+   Fix: store frequently displayed fields as real columns, not only inside data_json.
+
+4. SQLite writes are globally serialized.
+   File: services/database.py
+   Issue: one process-wide _LOCK limits concurrent writes.
+   Fix: acceptable for local use, but for multi-user use move long jobs to a queue and use a stronger database.
+
+5. Background jobs are daemon threads.
+   Files:
+   - services/analytics/runner.py
+   - services/analytics/ai_check.py
+   Issue: server restart kills active work.
+   Fix: persist job state and use a durable worker queue if reliability matters.
+
+
+Scoring and Vetting Risks
+-------------------------
+1. Verification ASIN floor may over-approve.
+   File: services/confidence.py
+   Issue: if catalog ASIN exists and title score >= 40, confidence can be floored to Approved.
+   Fix: consider requiring an additional signal or a higher title threshold.
+
+2. Verification and Analytics use different scoring engines.
+   Files:
+   - services/confidence.py
+   - services/analytics/matcher.py
+   Risk: thresholds and meanings drift over time.
+   Fix: document the difference clearly or share a common scoring policy layer.
+
+3. UPC normalization differs between flows.
+   Files:
+   - services/confidence.py
+   - services/analytics/matcher.py
+   Fix: centralize UPC/EAN normalization.
+
+4. Color mismatch can confuse scent/flavor words with colors.
+   File: services/analytics/matcher.py
+   Example risk: orange, lavender, etc.
+   Fix: only use structured color attributes when available, or add context-aware detection.
+
+5. Pack mismatch behavior needs clearer UI.
+   File: services/analytics/matcher.py
+   Current behavior: pack mismatch caps to Review.
+   Fix: surface "pack mismatch" as a clear badge/reason.
+
+
+Parsing and Input Issues
+------------------------
+1. Legacy /api/verify always parses as Excel.
+   File: routers/verify.py
+   Issue: _rows_to_dicts calls parse_file("file.xlsx", data), ignoring actual filename.
+   Fix: pass UploadFile.filename into the parser.
+
+2. Shared TSV parser does not use tab dialect.
+   File: services/file_parser.py
+   Issue: parse_raw_rows handles .tsv like comma CSV.
+   Fix: use csv.reader(..., dialect="excel-tab") for .tsv.
+
+3. UI says .xls is accepted, but openpyxl does not support old binary .xls.
+   Files:
+   - static/index.html
+   - services/analytics/parser.py
+   Fix: remove .xls from accepted types or add a real .xls parser.
+
+4. Template link says CSV but backend returns XLSX.
+   Files:
+   - static/index.html
+   - routers/scans.py
+   Fix: change download name to catalog-template.xlsx.
+
+
+Dead, Unused, or Confusing Code
+-------------------------------
+1. keepa_imports and amazon_imports are saved but not loaded.
+   File: services/database.py
+   Fix: either use them as a real cache or remove the legacy persistence.
+
+2. load_imports appears unused.
+   File: services/database.py
+
+3. search_all_pages appears unused.
+   File: services/spapi/catalog.py
+
+4. score_amazon_item appears unused except as an exported helper.
+   File: services/analytics/matcher.py
+
+5. _failed_signals appears unused.
+   File: routers/scans.py
+
+6. Stale or confusing logic:
+   - routers/scans.py status update chooses verified_partial in both branches.
+   - mark_exported writes exported_at="null" then immediately overwrites it with CURRENT_TIMESTAMP.
+   - Some comments refer to old endpoint behavior or old naming.
+
+
+Frontend Maintainability
+------------------------
+1. static/app.js is almost 4000 lines.
+   Risk: hard to safely change, easy to introduce cross-feature bugs.
+   Fix: split into modules:
+   - api.js
+   - verification.js
+   - analytics.js
+   - review-modal.js
+   - library-panel.js
+   - utilities.js
+
+2. static/index.html is over 1400 lines.
+   Fix: consider template fragments or smaller component sections if the app keeps growing.
+
+3. Many direct DOM id assumptions.
+   Risk: missing element can break feature initialization.
+   Fix: wrap feature setup by root container and avoid global required IDs where possible.
+
+4. UI label mismatch: Analytics button says Export CSV, but backend exports XLSX.
+   Files:
+   - static/index.html
+   - routers/analytics.py
+   Fix: rename button to Export Excel.
+
+5. Leftover console.log.
+   File: static/app.js
+   Fix: remove "[awiz] run created" console.log.
+
+
+Suggested Tackle Order
+----------------------
+1. Fix P0 correctness:
+   - DB init order
+   - Approved/verified count mismatch
+   - env docs/code mismatch
+   - missing requests dependency
+   - missing .env.example
+
+2. Fix Analytics data correctness:
+   - server-side pagination/filter/sort
+   - accurate bulk actions
+   - backend pages_per_title validation
+
+3. Improve performance:
+   - add analytics indexes
+   - reuse OpenAI clients
+   - add barcode cache or remove cache claims
+   - reduce repeated JSON blob decoding
+
+4. Tighten vetting/scoring:
+   - central UPC normalization
+   - review ASIN floor threshold
+   - color/scent ambiguity
+   - clearer pack mismatch reasons
+
+5. Clean maintainability:
+   - remove unused functions/legacy tables if not needed
+   - split static/app.js
+   - align labels and docs
