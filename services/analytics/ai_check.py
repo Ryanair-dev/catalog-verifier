@@ -68,10 +68,12 @@ _SYSTEM = (
     "You receive a vendor catalog item and a numbered list of Amazon candidates. "
     "For each candidate decide if it is the SAME physical product as the vendor item.\n\n"
     "Rules:\n"
-    "- Brand: determine brand from the Amazon TITLE first — the structured Brand field is "
-    "often wrong due to Amazon data quality issues. If the title clearly contains the vendor "
-    "brand, treat it as a brand match even if the Brand field says something else.\n"
-    "- Product type must match (shampoo ≠ conditioner)\n"
+    "- Brand: use 'extracted_brand' when provided — it is more reliable than the raw "
+    "catalog brand field. Also check the Amazon TITLE first, as the Amazon Brand field "
+    "is often wrong due to data quality issues.\n"
+    "- Product type must match exactly (shampoo ≠ conditioner, deodorant ≠ hair dye)\n"
+    "- UPC match is a strong signal but NOT conclusive — Amazon sometimes cross-attaches "
+    "UPCs to wrong products. Verify brand AND product type even when UPC matches.\n"
     "- Size must match within 10% (8 oz ≠ 16 oz; 8 oz ≈ 236 ml is fine). "
     "When the Amazon title lists a size alongside a pack count (e.g. '3.25 oz (2 Pack)'), "
     "the size is PER UNIT — compare it directly to the vendor size, do NOT multiply by pack count.\n"
@@ -94,19 +96,27 @@ def _fmt_candidate(i: int, c: dict) -> str:
     ]
     if attrs.get("size"):  lines.append(f"    Size: {attrs['size']}")
     if attrs.get("color"): lines.append(f"    Color: {attrs['color']}")
+    upc_match = (c.get("data") or {}).get("scores", {}).get("upc_match")
+    if upc_match:
+        lines.append("    UPC: matched (verify brand+type still correct)")
     return "\n".join(lines)
 
 
 def _build_user_msg(source: dict, batch: list[dict]) -> str:
     cands = "\n\n".join(_fmt_candidate(i, c) for i, c in enumerate(batch))
-    return json.dumps({
-        "source": {
-            "title": source.get("title") or "-",
-            "brand": source.get("brand") or "-",
-            "upc":   source.get("upc")   or "-",
-        },
-        "candidates": cands,
-    }, ensure_ascii=False)
+    ext = source.get("_extracted") or {}
+    source_obj: dict = {
+        "title":           source.get("title") or "-",
+        "brand":           source.get("brand") or "-",
+        "upc":             source.get("upc")   or "-",
+    }
+    if ext.get("brand"):
+        source_obj["extracted_brand"] = ext["brand"]
+    if ext.get("product_type"):
+        source_obj["product_type"] = ext["product_type"]
+    if ext.get("size"):
+        source_obj["size"] = ext["size"]
+    return json.dumps({"source": source_obj, "candidates": cands}, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -208,12 +218,19 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
             conn.row_factory = sqlite3.Row
 
             cat_map: dict[int, dict] = {}
+            extracted_map: dict[int, dict] = {}
             for r in conn.execute(
-                "SELECT row_idx, data_json FROM analytics_catalog_rows WHERE run_id=?",
+                "SELECT row_idx, data_json, extracted_json "
+                "FROM analytics_catalog_rows WHERE run_id=?",
                 (run_id,),
             ).fetchall():
                 try:
                     cat_map[r["row_idx"]] = json.loads(r["data_json"] or "{}")
+                except Exception:
+                    pass
+                try:
+                    if r["extracted_json"]:
+                        extracted_map[r["row_idx"]] = json.loads(r["extracted_json"])
                 except Exception:
                     pass
 
@@ -237,15 +254,21 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
                 "row_idx": c["row_idx"],
                 "asin":    c["asin"],
                 "amazon":  data.get("amazon") or {},
+                "data":    data,
             })
 
         total = sum(len(v) for v in by_row.values())
         _set_status(run_id, "Running", 0, total)
 
         # ---- build work units (source_row, batch) ----------------------- #
+        # Attach extracted brand fields to each source dict so _build_user_msg
+        # can include product_type, extracted_brand, size in the AI prompt.
         work: list[tuple[dict, list[dict]]] = []
         for row_idx, candidates in by_row.items():
-            source = cat_map.get(row_idx) or {}
+            source = dict(cat_map.get(row_idx) or {})
+            ext = extracted_map.get(row_idx)
+            if ext:
+                source["_extracted"] = ext
             for i in range(0, len(candidates), BATCH_SIZE):
                 work.append((source, candidates[i:i + BATCH_SIZE]))
 

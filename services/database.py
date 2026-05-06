@@ -243,6 +243,12 @@ def init_db() -> None:
                 "ALTER TABLE analytics_runs ADD COLUMN min_rank INTEGER DEFAULT 0"
             )
 
+        # additive migration — extracted brand/product fields per catalog row
+        if not _column_exists(conn, "analytics_catalog_rows", "extracted_json"):
+            conn.execute(
+                "ALTER TABLE analytics_catalog_rows ADD COLUMN extracted_json TEXT"
+            )
+
         # additive migration — analytics AI check results
         if not _column_exists(conn, "analytics_candidates", "ai_verdict"):
             conn.execute("ALTER TABLE analytics_candidates ADD COLUMN ai_verdict TEXT")

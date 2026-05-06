@@ -336,6 +336,7 @@ def calculate_confidence(
     amazon: dict,
     additional_keywords: Iterable[str] | None = None,
     upc_search_hit: bool = False,
+    extracted: dict | None = None,
 ) -> dict:
     """
     Return a breakdown of the confidence score for one source-to-Amazon pair.
@@ -349,7 +350,18 @@ def calculate_confidence(
           "upc_match":        bool,
         }
     """
-    src_brand = _s(source.get("brand") or source.get("manufacturer"))
+    # Extracted brand (from GPT-4o-mini) is cleaner than raw catalog text —
+    # prefer it when available.  extracted_product_type and model are injected
+    # as additional keywords so the scorer can reward product-type matches.
+    _ext = extracted or {}
+    src_brand = _s(_ext.get("brand")) or _s(source.get("brand") or source.get("manufacturer"))
+
+    _ext_kws: list[str] = [
+        k for k in [_ext.get("product_type"), _ext.get("model")] if k
+    ]
+    if _ext_kws:
+        additional_keywords = list(additional_keywords or []) + _ext_kws
+
     amz_brand = _s(amazon.get("brand") or amazon.get("manufacturer"))
     amz_title = _lower(amazon.get("title"))
     amz_desc = _lower(amazon.get("description"))

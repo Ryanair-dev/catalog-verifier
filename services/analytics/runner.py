@@ -33,6 +33,7 @@ from typing import Any, Iterable
 from services import database
 from services.analytics.matcher import calculate_confidence
 from services.analytics.parser import SourceRow
+from services.analytics.brand_extractor import extract_brands
 from services.spapi import get_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
 
@@ -353,6 +354,7 @@ def _upsert_candidate(
     sources: list[str],
     max_rank: int = 0,
     min_rank: int = 0,
+    extracted: dict | None = None,
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
@@ -363,12 +365,17 @@ def _upsert_candidate(
     max_rank: when > 0, ASINs whose sales_rank exceeds this are forced to not_approved.
     min_rank: when > 0, ASINs whose sales_rank is below this are forced to not_approved.
     Unknown/null rank is never penalised by either cap.
+    extracted: brand fields from GPT-4o-mini extraction — used for more precise scoring.
     """
     asin = (normalized.get("asin") or "").strip().upper()
     if not asin:
         return "skip"
 
-    scores = calculate_confidence(source, normalized, upc_search_hit="UPC" in sources)
+    scores = calculate_confidence(
+        source, normalized,
+        upc_search_hit="UPC" in sources,
+        extracted=extracted,
+    )
     conf = scores["confidence_score"]
     hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
     if hard_reject:
@@ -463,6 +470,35 @@ def _upsert_candidate(
             )
 
     return verdict
+
+
+def _save_extracted_brands(run_id: int, extracted: dict[int, dict]) -> None:
+    """Persist extracted brand fields into analytics_catalog_rows.extracted_json."""
+    if not extracted:
+        return
+    with database._LOCK, _with_conn() as conn:
+        conn.executemany(
+            "UPDATE analytics_catalog_rows SET extracted_json=? "
+            "WHERE run_id=? AND row_idx=?",
+            [(json.dumps(v, ensure_ascii=False), run_id, k) for k, v in extracted.items()],
+        )
+
+
+def _load_extracted_brands(run_id: int) -> dict[int, dict]:
+    """Load extracted brand fields from DB for an existing run."""
+    with _with_conn() as conn:
+        rows = conn.execute(
+            "SELECT row_idx, extracted_json FROM analytics_catalog_rows "
+            "WHERE run_id=? AND extracted_json IS NOT NULL",
+            (run_id,),
+        ).fetchall()
+    result: dict[int, dict] = {}
+    for r in rows:
+        try:
+            result[r["row_idx"]] = json.loads(r["extracted_json"] or "{}")
+        except Exception:
+            pass
+    return result
 
 
 def _recompute_run_counts(run_id: int) -> None:
@@ -615,18 +651,33 @@ def _tier3_title(
     rows: list[SourceRow],
     max_pages: int,
     run_id: int = 0,
+    extracted_brands: dict[int, dict] | None = None,
 ) -> dict[int, list[dict]]:
     """
-    One paginated keyword search per unique title. Titles are used
-    verbatim for now — the optional GPT clean-up step is a follow-up.
+    One paginated keyword search per unique title.
+    When extracted_brands is provided, builds queries from extracted
+    brand + product_type (+ model) instead of the raw vendor title —
+    this gives Amazon's search engine cleaner, more targeted input.
     """
+    extracted_brands = extracted_brands or {}
     term_to_rows: dict[str, list[int]] = {}
     for r in rows:
-        if r.search_term:
-            # search_term returns search_title if set, else falls back to title.
-            # Add brand prefix if we have it — dramatically improves relevance.
-            term = f"{r.brand} {r.search_term}".strip() if r.brand else r.search_term
-            term_to_rows.setdefault(term, []).append(r.row_idx)
+        ext = extracted_brands.get(r.row_idx) or {}
+        brand = ext.get("brand") or r.brand or ""
+        product_type = ext.get("product_type") or ""
+        model = ext.get("model") or ""
+
+        if brand and product_type:
+            # Extracted fields available — build a clean, targeted query
+            parts = [p for p in [brand, product_type, model] if p]
+            term = " ".join(parts)
+        elif r.search_term:
+            # Fallback: existing approach (brand prefix + raw title/search_term)
+            term = f"{brand} {r.search_term}".strip() if brand else r.search_term
+        else:
+            continue
+
+        term_to_rows.setdefault(term, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
     terms = list(term_to_rows.items())
@@ -721,6 +772,9 @@ def _rescore_pipeline(
                 (run_id,),
             ).fetchall()
 
+        # Load previously extracted brand fields (stored during the original run).
+        extracted_brands_rescore = _load_extracted_brands(run_id)
+
         # Build row_idx → catalog data map, also resolve new title per row.
         catalog_map: dict[int, dict] = {}
         title_by_row: dict[int, str] = {}
@@ -813,7 +867,9 @@ def _rescore_pipeline(
                 sources_list = []
 
             scores = calculate_confidence(
-                source, amazon_data, upc_search_hit="UPC" in sources_list
+                source, amazon_data,
+                upc_search_hit="UPC" in sources_list,
+                extracted=extracted_brands_rescore.get(row_idx),
             )
             conf = scores["confidence_score"]
             hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
@@ -1068,9 +1124,32 @@ def _run_pipeline(
                 return True
             return False
 
+        # --- Brand extraction (GPT-4o-mini, always when OpenAI key present) ---
+        # Extracts brand / product_type / model / size / pack_info from vendor
+        # titles. Used to build better Tier 3 search queries and improve scorer
+        # brand matching.  Stored in DB so rescore can reuse without re-calling.
+        extracted_brands: dict[int, dict] = {}
+        import os as _os
+        if _os.getenv("OPENAI_API_KEY"):
+            _update_progress(run_id, phase="Extracting product fields with AI…")
+
+            def _extraction_progress(done: int, total_ext: int) -> None:
+                _update_progress(
+                    run_id,
+                    phase=f"Extracting product fields ({done}/{total_ext})",
+                    done=done,
+                    total=total_ext,
+                )
+
+            extracted_brands = extract_brands(source_rows, run_id, progress_cb=_extraction_progress)
+            _save_extracted_brands(run_id, extracted_brands)
+            if _handle_control():
+                return
+
         # --- AI title cleaning (before Tier 3, if enabled) ------------------
         cleaned_titles: dict[int, str] = {}
-        if ai_clean_titles and "Title" in search_methods:
+        if ai_clean_titles and "Title" in search_methods and not extracted_brands:
+            # Only run simple title cleaning when full brand extraction didn't run
             _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(total))
             cleaned_titles = clean_titles_parallel(source_rows, run_id)
             if _handle_control():
@@ -1112,7 +1191,13 @@ def _run_pipeline(
         # --- Tier 3: Title ---------------------------------------------------
         if "Title" in search_methods:
             _update_progress(run_id, phase="Tier 3 / Title search")
-            tier3 = _tier3_title(api, _rows_for_title_search(), pages_per_title, run_id=run_id)
+            tier3 = _tier3_title(
+                api,
+                _rows_for_title_search(),
+                pages_per_title,
+                run_id=run_id,
+                extracted_brands=extracted_brands,
+            )
             for ri, items in tier3.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "Title"))
@@ -1123,6 +1208,7 @@ def _run_pipeline(
         _update_progress(run_id, phase="Vetting candidates", done=0, total=total)
         for r in source_rows:
             source_dict = r.as_source_dict()
+            ext = extracted_brands.get(r.row_idx)
             by_asin: dict[str, tuple[dict, list[str]]] = {}
             for item, source_label in candidates_by_row.get(r.row_idx, []):
                 asin = (item.get("asin") or "").upper()
@@ -1135,7 +1221,10 @@ def _run_pipeline(
                     by_asin[asin] = (item, [source_label])
 
             for asin, (item, srcs) in by_asin.items():
-                _upsert_candidate(run_id, r.row_idx, item, source_dict, srcs, max_rank, min_rank)
+                _upsert_candidate(
+                    run_id, r.row_idx, item, source_dict, srcs,
+                    max_rank, min_rank, extracted=ext,
+                )
 
             done += 1
             if done % 10 == 0 or done == total:

@@ -136,11 +136,29 @@ else:                  verdict = "not_approved"
 
 Vendor catalogs often export UPC-A without the leading zero (11 digits instead of 12). `services/analytics/parser.py` zero-pads any 11-digit all-numeric UPC at parse time so the full 12-digit form is used everywhere: SP-API search, confidence scoring, and DB storage. This is done in the parser (not the runner) so the fix applies to both new runs and rescores.
 
+### Brand extraction phase (pre-search)
+
+Before any SP-API search, `services/analytics/brand_extractor.py` runs GPT-4o-mini on every vendor title to extract structured fields:
+- `brand` — cleaner than raw catalog brand column
+- `product_type` — product category (e.g. "deodorant", "dish soap")
+- `model` — specific variant/model name
+- `size` — size string
+- `pack_info` — pack count or null
+
+Stored in `analytics_catalog_rows.extracted_json` (additive migration). Used by:
+- **Tier 3**: builds `"{brand} {product_type} {model}"` queries instead of raw title → better Amazon search relevance
+- **Matcher**: uses `extracted.brand` as primary brand signal (overrides raw catalog text)
+- **Matcher**: injects `product_type` + `model` as `additional_keywords` for scoring boost
+- **AI Check**: includes `extracted_brand` and `product_type` in prompt context
+- **Rescore**: loads stored extracted fields — no re-extraction needed
+
+Only runs when `OPENAI_API_KEY` is present. Skipped gracefully if missing. Runs in parallel (4 workers, 20 titles per GPT-4o-mini call).
+
 ### 3-tier SP-API search
 
 1. **Tier 1 — UPC batch**: `search_by_identifiers` up to 20 UPCs per call.
 2. **Tier 2 — Item ID keyword**: one `search_by_keywords` call per unique Item ID.
-3. **Tier 3 — Title keyword**: paginated `search_by_keywords` per unique title (optional GPT-4o-mini pre-cleaning).
+3. **Tier 3 — Title keyword**: paginated `search_by_keywords` per unique title. Uses extracted brand+product_type when available; falls back to raw title.
 
 ### Max BSR (Best Seller Rank) cap
 
