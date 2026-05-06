@@ -2847,16 +2847,18 @@
     if (sc.gender_mismatch) return "Gender mismatch";
     if (sc.color_mismatch)  return "Color mismatch";
 
+    // BSR cap overrides everything else — check before pack_mismatch so it
+    // isn't masked. If conf ≥ 35 the score alone would put this in Review or
+    // higher, so something external (rank) must have forced not_approved.
+    if (v === "not_approved" && conf >= 35) {
+      const rank = c.sales_rank;
+      return rank != null ? `BSR ${Number(rank).toLocaleString()} > max` : "Rank cap";
+    }
+
     // Pack mismatch → capped at 80 → review
     if (sc.pack_mismatch) {
       const p = sc.effective_pack;
       return p > 1 ? `Pack ×${p} on Amazon` : "Pack mismatch";
-    }
-
-    // Rank-forced not_approved: confidence was high enough to pass but rank cap overrode it
-    if (v === "not_approved" && conf >= 35) {
-      const rank = c.sales_rank;
-      return rank != null ? `BSR ${Number(rank).toLocaleString()} > max` : "Rank cap";
     }
 
     // UPC match contributed to score
