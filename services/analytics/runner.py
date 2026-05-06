@@ -1129,8 +1129,7 @@ def _run_pipeline(
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
         extracted_brands: dict[int, dict] = {}
-        import os as _os
-        if _os.getenv("OPENAI_API_KEY"):
+        if os.getenv("OPENAI_API_KEY"):
             _update_progress(run_id, phase="Extracting product fields with AI…")
 
             def _extraction_progress(done: int, total_ext: int) -> None:
