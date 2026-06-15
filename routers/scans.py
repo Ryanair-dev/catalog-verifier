@@ -41,9 +41,14 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from services import ai_recheck, database
 from services.confidence import score_row
 from services.extractor import ai_extract, apply_abbreviations, rule_extract
+from services.file_parser import parse_file
+from services.keepa_matcher import find_candidates
+from services.safety import read_upload_limited
 
 router = APIRouter()
 
@@ -52,42 +57,6 @@ router = APIRouter()
 # File parsing helpers
 # --------------------------------------------------------------------------- #
 
-def _parse_workbook(data: bytes) -> tuple[list[str], list[list[Any]]]:
-    """Return (headers, rows) from an Excel file. Headers come from row 0."""
-    wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
-    rows_iter = ws.iter_rows(values_only=True)
-    try:
-        first = next(rows_iter)
-    except StopIteration:
-        return [], []
-    headers = [str(h).strip() if h is not None else f"Column {i+1}"
-               for i, h in enumerate(first)]
-    body: list[list[Any]] = []
-    for row in rows_iter:
-        if row is None or all(v in (None, "") for v in row):
-            continue
-        body.append(list(row))
-    return headers, body
-
-
-def _parse_csv(data: bytes) -> tuple[list[str], list[list[Any]]]:
-    import csv
-    text = data.decode("utf-8-sig", errors="replace")
-    reader = csv.reader(io.StringIO(text))
-    try:
-        headers = [h.strip() for h in next(reader)]
-    except StopIteration:
-        return [], []
-    body = [list(r) for r in reader if any((c or "").strip() for c in r)]
-    return headers, body
-
-
-def _parse_file(filename: str, data: bytes) -> tuple[list[str], list[list[Any]]]:
-    name = (filename or "").lower()
-    if name.endswith(".csv") or name.endswith(".tsv"):
-        return _parse_csv(data)
-    return _parse_workbook(data)
 
 
 def _apply_mapping(
@@ -116,6 +85,7 @@ def _apply_mapping(
     item_idx = col_index(mapping.get("item_id_col"))
     title_idx = col_index(mapping.get("title_col"))
     asin_idx = col_index(mapping.get("asin_col"))
+    brand_col_idx = col_index(mapping.get("brand_col"))
     attr_indexes = [
         (name, col_index(name)) for name in (mapping.get("attr_cols") or [])
     ]
@@ -130,11 +100,17 @@ def _apply_mapping(
                 v = cell(row, idx)
                 if v not in (None, ""):
                     attrs[col_name] = v
+        # brand_col overrides brand_literal when present
+        brand_val = None
+        if brand_col_idx is not None:
+            brand_val = str(cell(row, brand_col_idx) or "").strip() or None
+        if not brand_val:
+            brand_val = brand_literal or None
         out.append({
             "UPC/EAN": cell(row, upc_idx),
             "Item ID": cell(row, item_idx),
             "Vendor Title": cell(row, title_idx),
-            "Brand": brand_literal or None,
+            "Brand": brand_val,
             "ASIN": cell(row, asin_idx),
             "_attributes": attrs,
         })
@@ -216,8 +192,10 @@ def _guess_abbr_category(full: str) -> str:
 async def scan_preview(catalog_file: UploadFile = File(...)) -> dict:
     """Return the first 10 rows + detected headers for the import wizard."""
     try:
-        data = await catalog_file.read()
-        headers, rows = _parse_file(catalog_file.filename or "", data)
+        data = await read_upload_limited(catalog_file)
+        headers, rows = parse_file(catalog_file.filename or "", data)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
     if not headers:
@@ -252,19 +230,34 @@ async def create_scan(
     marketplace: str = Form("US"),
     condition: str = Form("New"),
     ai_mode: str = Form("false"),
+    match_from_keepa: str = Form("false"),
+    match_methods: str = Form("[]"),
 ) -> dict:
     try:
         mapping_obj = _json.loads(mapping)
     except _json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Malformed mapping JSON")
 
-    data = await catalog_file.read()
     try:
-        headers, rows = _parse_file(catalog_file.filename or "", data)
+        methods_list = _json.loads(match_methods)
+        if not isinstance(methods_list, list):
+            methods_list = []
+    except _json.JSONDecodeError:
+        methods_list = []
+
+    data = await read_upload_limited(catalog_file)
+    try:
+        headers, rows = parse_file(catalog_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
-    required_cols = ("upc_col", "item_id_col", "title_col", "asin_col")
+    match_mode = str(match_from_keepa).lower() in ("1", "true", "yes", "on")
+
+    # ASIN column is only required in normal mode; match-from-Keepa doesn't need it
+    if match_mode:
+        required_cols = ("upc_col", "item_id_col", "title_col")
+    else:
+        required_cols = ("upc_col", "item_id_col", "title_col", "asin_col")
     missing = [k for k in required_cols if not mapping_obj.get(k)]
     if missing:
         raise HTTPException(
@@ -287,6 +280,8 @@ async def create_scan(
         catalog_filename=catalog_file.filename,
         catalog_count=len(mapped_rows),
         ai_mode=ai_on,
+        match_from_keepa=match_mode,
+        match_methods=methods_list if match_mode else [],
     )
     database.save_scan_catalog_rows(scan_id, mapped_rows)
 
@@ -336,9 +331,9 @@ async def attach_amazon(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    data = await amazon_file.read()
+    data = await read_upload_limited(amazon_file)
     try:
-        headers, rows = _parse_file(amazon_file.filename or "", data)
+        headers, rows = parse_file(amazon_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
@@ -383,57 +378,79 @@ async def run_verify(scan_id: int) -> dict:
     use_ai = bool(scan.get("ai_mode"))
 
     dupes = _find_duplicates(catalog_rows, "Item ID")
+    # Load pair-manager sets once — avoids per-row DB queries.
+    blacklist_set = database.load_blacklist_set()
+    verified_set  = database.load_verified_set()
+    # Build a token set from the library for O(1) membership checks instead of
+    # per-token DB queries inside the AI learning loop.
+    known_tokens: set[str] = {e["abbr"].lower() for e in abbr_list}
     ai_added: list[dict] = []
 
+    # ------------------------------------------------------------------ #
+    # AI extraction (optional) — parallelised across rows with a thread
+    # pool so the event loop isn't blocked for each OpenAI call.
+    # ------------------------------------------------------------------ #
+    ai_results: dict[int, dict] = {}
+    if use_ai:
+        def _ai_one(idx: int, row: dict, amz: dict | None) -> tuple[int, dict]:
+            return idx, ai_extract(
+                row.get("Vendor Title") or "",
+                abbreviations=abbr_list,
+                extra_context=_safe_amz_context(amz),
+            )
+
+        workers = min(6, max(1, len(catalog_rows)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _ai_one, i, r,
+                    amazon_index.get(str(r.get("ASIN") or "").strip().upper()),
+                ): i
+                for i, r in enumerate(catalog_rows)
+            }
+            for fut in as_completed(futs):
+                try:
+                    idx, res = fut.result()
+                    ai_results[idx] = res
+                except Exception:  # noqa: BLE001
+                    pass
+
     results = []
-    for row in catalog_rows:
+    for i, row in enumerate(catalog_rows):
         asin = str(row.get("ASIN") or "").strip().upper()
         upc = str(row.get("UPC/EAN") or "").strip()
         amz = amazon_index.get(asin)
         score = score_row(row, amz, abbr_list, thresholds=thresholds)
 
-        # Always run the library-based token expansion for display. This uses
-        # the same substitution that already powers the fuzzy scorer but keeps
-        # original casing so the UI shows e.g. "Adhesive Sponge 4x4" instead
-        # of the lowercased version the scorer uses internally.
         raw_title = row.get("Vendor Title") or ""
         title_expanded = apply_abbreviations(raw_title, abbr_list)
 
         try:
             attrs = rule_extract(raw_title, abbr_list)
             if use_ai:
-                ai_result = ai_extract(
-                    raw_title,
-                    abbreviations=abbr_list,
-                    extra_context=_safe_amz_context(amz),
-                )
+                ai_result = ai_results.get(i) or {}
                 if isinstance(ai_result, dict) and "error" not in ai_result:
                     attrs.update({k: v for k, v in ai_result.items() if v})
-                    # GPT is asked to expand *any* remaining unknown abbreviation
-                    # tokens. Prefer its expanded title over the rule-only one
-                    # when it actually added something.
                     ai_expanded = ai_result.get("expanded_title")
                     if isinstance(ai_expanded, str) and ai_expanded.strip() \
                             and ai_expanded.strip().lower() != title_expanded.strip().lower():
                         title_expanded = ai_expanded.strip()
-                    # Auto-learn unknown product types / forms into "Product Attributes".
+                    # Auto-learn unknown product types / forms — use in-memory
+                    # set to skip DB round-trips for already-known tokens.
                     for key in ("form", "product_type"):
                         val = ai_result.get(key)
                         if isinstance(val, str) and val.strip() \
-                                and not database.has_library_entry(val.strip()):
+                                and val.strip().lower() not in known_tokens:
                             created, entry = database.add_library_entry(
                                 "Product Attributes", val.strip(), val.strip(),
                                 added_by="ai",
                             )
                             if created and entry:
+                                known_tokens.add(val.strip().lower())
                                 ai_added.append({
                                     "abbr": entry["abbr"], "full": entry["full"],
                                     "category": "Product Attributes",
                                 })
-                    # Log any brand-new abbreviations GPT expanded into the
-                    # library so future runs hit them deterministically. We
-                    # guess a reasonable category per token, falling back to
-                    # "Product Attributes" so the row isn't silently dropped.
                     for na in ai_result.get("new_abbreviations") or []:
                         if not isinstance(na, dict):
                             continue
@@ -441,13 +458,14 @@ async def run_verify(scan_id: int) -> dict:
                         full = str(na.get("full") or "").strip()
                         if not abbr or not full or abbr.lower() == full.lower():
                             continue
-                        if database.has_library_entry(abbr):
+                        if abbr.lower() in known_tokens:
                             continue
                         category = _guess_abbr_category(full)
                         created, entry = database.add_library_entry(
                             category, abbr, full, added_by="ai",
                         )
                         if created and entry:
+                            known_tokens.add(abbr.lower())
                             ai_added.append({
                                 "abbr": entry["abbr"], "full": entry["full"],
                                 "category": category,
@@ -460,22 +478,29 @@ async def run_verify(scan_id: int) -> dict:
         except Exception:  # noqa: BLE001
             pass
 
-        # Resolve the matching Amazon title so the UI's "Amazon Title" column
-        # and the AI re-check feature don't need a second lookup. Falls through
-        # common key names across Amazon / Keepa exports.
         amz_title = ""
         if amz:
             for k in ("Title", "item_name", "Item Name", "Product Title"):
                 if amz.get(k):
                     amz_title = str(amz[k]); break
 
-        # Only surface the expanded title when it actually differs from the
-        # original — otherwise the UI gets a redundant duplicate column.
         title_expanded_out = (
             title_expanded.strip()
             if title_expanded and title_expanded.strip().lower() != raw_title.strip().lower()
             else None
         )
+
+        # Pair manager overrides — applied after scoring.
+        pair_verdict = score["verdict"]
+        pair_status  = ""
+        is_blacklisted = upc and asin and (upc, asin) in blacklist_set
+        is_verified    = upc and asin and (upc, asin) in verified_set
+        if is_blacklisted:
+            pair_verdict = "Not Approved"
+            pair_status  = "Pair Blacklisted"
+        elif is_verified and score["confidence"] >= 40 and score["verdict"] != "Not Approved":
+            pair_verdict = "Approved"
+            pair_status  = "Pair Verified"
 
         results.append({
             "UPC": row.get("UPC/EAN"),
@@ -486,20 +511,19 @@ async def run_verify(scan_id: int) -> dict:
             "Brand": row.get("Brand"),
             "ASIN": row.get("ASIN"),
             "Confidence": score["confidence"],
-            "Verdict": score["verdict"],
+            "Verdict": pair_verdict,
             "original_verdict": score["verdict"],
-            "review_status": "",
+            "review_status": pair_status,
             "signals": score["signals"],
             "amz_pack": score["amz_pack"],
             "duplicate": str(row.get("Item ID") or "").strip() in dupes,
-            "blacklisted": database.is_blacklisted(upc, asin),
+            "blacklisted": bool(is_blacklisted),
             "notes": score["notes"],
             "_attributes": row.get("_attributes") or {},
-            # AI re-check fields — populated on demand by /ai-recheck.
-            "ai_suggestion": None,   # "Approved" | "Review" | "Not Approved" | "keep" | null
-            "ai_reason": None,       # short string
-            "ai_model": None,        # e.g. "gpt-4o-mini"
-            "ai_checked_at": None,   # ISO timestamp
+            "ai_suggestion": None,
+            "ai_reason": None,
+            "ai_model": None,
+            "ai_checked_at": None,
         })
 
     database.save_scan_results(scan_id, results)
@@ -513,6 +537,168 @@ async def run_verify(scan_id: int) -> dict:
         "duplicate_item_ids": sorted(dupes),
         "ai_added": ai_added,
         "stats": stats,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Match-from-Keepa pipeline (separate from normal verify)
+# --------------------------------------------------------------------------- #
+
+@router.post("/scans/{scan_id}/match")
+async def run_match(scan_id: int) -> dict:
+    """Run the match-from-Keepa pipeline for scans created with match_from_keepa=True."""
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if not scan.get("match_from_keepa"):
+        raise HTTPException(status_code=400, detail="Scan was not created in match-from-Keepa mode")
+    if scan["status"] == "pending":
+        raise HTTPException(status_code=400, detail="Keepa data not yet attached")
+
+    database.update_scan(scan_id, status="verifying")
+
+    abbr_list  = database.flat_library()
+    thresholds = database.get_thresholds()
+    catalog_rows = database.load_scan_catalog_rows(scan_id)
+    keepa_index  = database.load_scan_amazon_rows(scan_id)   # asin → row
+    methods      = scan.get("match_methods") or ["upc", "item_id", "title"]
+
+    candidates = find_candidates(
+        catalog_rows=catalog_rows,
+        keepa_rows=keepa_index,
+        methods=methods,
+        abbr_list=abbr_list,
+        thresholds=thresholds,
+    )
+
+    database.save_scan_candidates(scan_id, candidates)
+
+    # Populate scan_results with best candidate per row for stats/export compat.
+    best_by_row: dict[int, dict] = {}
+    for c in candidates:
+        idx = c["row_idx"]
+        if idx not in best_by_row or c["Confidence"] > best_by_row[idx]["Confidence"]:
+            best_by_row[idx] = c
+
+    results = [best_by_row[i] for i in sorted(best_by_row)]
+    database.save_scan_results(scan_id, results)
+    stats = database.recompute_scan_stats(scan_id)
+    database.update_scan(scan_id, status="verified_unreviewed")
+
+    return {
+        "scan":       database.get_scan(scan_id),
+        "candidates": database.load_scan_candidates(scan_id),
+        "thresholds": thresholds,
+        "stats":      stats,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Candidate-level verdict (match-from-Keepa mode)
+# --------------------------------------------------------------------------- #
+
+class CandidateVerdict(BaseModel):
+    verdict: str        # "Approved" | "Not Approved"
+    review_status: str = ""
+
+
+@router.post("/scans/{scan_id}/candidates/{cand_id}/verdict")
+async def set_candidate_verdict(
+    scan_id: int, cand_id: int, body: CandidateVerdict,
+) -> dict:
+    """
+    Approve or discard a single candidate.
+
+    Approving a candidate:
+      - Sets its verdict to Approved and review_status to 'Approved'
+      - Discards all other candidates for the same row
+      - Prevents approving the same ASIN for a different row in this scan
+      - Updates scan_results[row_idx] to this candidate (for export compat)
+
+    Discarding a candidate:
+      - Sets its verdict to Not Approved and review_status to 'Discarded'
+    """
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    cand = database.get_scan_candidate(cand_id)
+    if not cand or cand["scan_id"] != scan_id:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    verdict = body.verdict.strip()
+    if verdict not in ("Approved", "Not Approved"):
+        raise HTTPException(status_code=400, detail="verdict must be Approved or Not Approved")
+
+    row_idx = cand["row_idx"]
+    asin    = cand["asin"]
+
+    if verdict == "Approved":
+        # Enforce: one ASIN per scan — check if already approved elsewhere
+        already_row = database.get_asin_approved_for_scan(scan_id, asin)
+        if already_row is not None and already_row != row_idx:
+            raise HTTPException(
+                status_code=409,
+                detail=f"ASIN {asin} is already approved for row {already_row} in this scan",
+            )
+
+        # Update this candidate
+        updated = dict(cand)
+        updated["Verdict"] = "Approved"
+        updated["review_status"] = "Approved"
+        database.update_scan_candidate(cand_id, "Approved", "Approved", updated)
+
+        # Discard all other candidates for this row with a single targeted UPDATE
+        with database._LOCK, database._connect() as conn:
+            conn.execute(
+                "UPDATE scan_candidates SET verdict='Not Approved', review_status='Discarded' "
+                "WHERE scan_id=? AND row_idx=? AND id!=? AND review_status!='Discarded'",
+                (scan_id, row_idx, cand_id),
+            )
+
+        # Sync scan_results row so export and stats reflect the approval
+        result_data = dict(updated)
+        database.update_scan_result_row(scan_id, row_idx, "Approved", "Approved", result_data)
+
+    else:
+        # Discard
+        updated = dict(cand)
+        updated["Verdict"] = "Not Approved"
+        updated["review_status"] = body.review_status or "Discarded"
+        database.update_scan_candidate(
+            cand_id, "Not Approved", updated["review_status"], updated,
+        )
+        row_candidates = [
+            c for c in database.load_scan_candidates(scan_id)
+            if c.get("row_idx") == row_idx and c.get("review_status") != "Discarded"
+        ]
+        replacement = max(
+            row_candidates,
+            key=lambda c: float(c.get("Confidence", c.get("confidence", 0)) or 0),
+            default=updated,
+        )
+        replacement_verdict = replacement.get("Verdict") or replacement.get("verdict") or "Not Approved"
+        replacement_status = replacement.get("review_status") or ""
+        database.update_scan_result_row(
+            scan_id, row_idx, replacement_verdict, replacement_status, replacement,
+        )
+
+    stats = database.recompute_scan_stats(scan_id)
+    database.update_scan(scan_id, status="verified_partial")
+    return {"ok": True, "stats": stats}
+
+
+@router.get("/scans/{scan_id}/candidates")
+async def list_candidates(scan_id: int) -> dict:
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    catalog_rows = database.load_scan_catalog_rows(scan_id)
+    candidates   = database.load_scan_candidates(scan_id)
+    return {
+        "scan":        scan,
+        "candidates":  candidates,
+        "catalog_rows": catalog_rows,
     }
 
 
@@ -541,7 +727,7 @@ async def update_row(scan_id: int, row_idx: int, body: RowOverride) -> dict:
         new_status = (
             "verified_partial"
             if stats["reviewed"] < (stats["verified"] + stats["review"] + stats["not_approved"])
-            else "verified_partial"
+            else "verified_complete"
         )
         database.update_scan(scan_id, status=new_status)
     return {"ok": True, "stats": stats}
@@ -552,14 +738,12 @@ async def mark_exported(scan_id: int) -> dict:
     scan = database.get_scan(scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-    database.update_scan(
-        scan_id, status="verified_complete",
-        exported_at=_json.dumps(None),  # will be set by SQL CURRENT_TIMESTAMP below
-    )
-    # A second pass to stamp exported_at — update_scan will accept the column.
+    # Single atomic update — status + exported_at set together to avoid race condition
     with database._LOCK, database._connect() as conn:
         conn.execute(
-            "UPDATE scans SET exported_at=CURRENT_TIMESTAMP WHERE id=?",
+            "UPDATE scans SET status='verified_complete', "
+            "exported_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=?",
             (scan_id,),
         )
     return {"scan": database.get_scan(scan_id)}

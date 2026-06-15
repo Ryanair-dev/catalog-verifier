@@ -1,36 +1,43 @@
 """
-AI Re-check — second-pass verdict suggestions powered by OpenAI.
+AI Re-check — second-pass verdict suggestions.
 
-Given a subset of rows already scored by the deterministic engine, this module
-asks GPT-4o-mini to play devil's advocate: it sees the vendor title, the
-Amazon title, the current verdict, and the per-signal breakdown, then returns a
-*suggested* verdict plus a short reason. The suggestion lands alongside the
-original verdict — nothing auto-applies. The user still clicks accept/reject.
+Tries Anthropic Claude first (ANTHROPIC_API_KEY); falls back to OpenAI
+(OPENAI_API_KEY) when Anthropic is unavailable.
 
-As a side effect the re-check also harvests unfamiliar product_type / form /
-variant tokens out of the titles and feeds them into the abbreviation library
-(category "Product Attributes"), so every run makes the next one sharper.
+Given a subset of rows already scored by the deterministic engine, asks the
+AI to play devil's advocate: it sees the vendor title, the Amazon title, the
+current verdict, and the per-signal breakdown, then returns a *suggested*
+verdict plus a short reason.  The suggestion is shown alongside the original
+verdict — nothing auto-applies.  The user still clicks accept/reject.
 
 Cost model
 ----------
-OpenAI gpt-4o-mini pricing (as of 2025):
-    $0.150 per 1M input  tokens
-    $0.600 per 1M output tokens
+Claude Sonnet 4.6 (default):
+    $3.00 per 1M input  tokens  = $0.003 per 1K
+    $15.00 per 1M output tokens  = $0.015 per 1K
 
-Empirically each row's prompt is ~230 input tokens and the structured
-JSON response is ~80 output tokens, i.e. ~$0.000083 per row. The
-:func:`estimate_cost` helper exposes that math so the UI can show the user a
-live dollar amount before they commit to a run.
+Claude Haiku 4.5:
+    $0.80 per 1M input  tokens  = $0.0008 per 1K
+    $4.00 per 1M output tokens  = $0.004 per 1K
+
+OpenAI gpt-4o-mini (fallback):
+    $0.150 per 1M input  tokens  = $0.00015 per 1K
+    $0.600 per 1M output tokens  = $0.00060 per 1K
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any
 
-# USD per 1K tokens — keep in sync with the public OpenAI pricing page.
+# USD per 1K tokens
 PRICING: dict[str, dict[str, float]] = {
+    # Claude models (primary)
+    "claude-sonnet-4-6":         {"input": 0.003,   "output": 0.015},
+    "claude-haiku-4-5-20251001": {"input": 0.0008,  "output": 0.004},
+    # OpenAI models (fallback)
     "gpt-4o-mini": {"input": 0.00015, "output": 0.00060},
     "gpt-4o":      {"input": 0.00250, "output": 0.01000},
 }
@@ -43,7 +50,7 @@ AVG_OUTPUT_TOKENS = 80
 AVG_LATENCY_MS = 850
 
 ALLOWED_MODELS = tuple(PRICING.keys())
-DEFAULT_MODEL  = "gpt-4o-mini"
+DEFAULT_MODEL  = "claude-sonnet-4-6"
 
 ALLOWED_BUCKETS = ("Approved", "Verified", "Review", "Not Approved")
 
@@ -76,7 +83,7 @@ SYSTEM_PROMPT = (
     "You are a CPG catalog quality auditor. Given a vendor product, the Amazon "
     "listing it was matched to, and the initial rule-based verdict, decide "
     "whether the match is correct. "
-    "Respond ONLY with a JSON object with these keys:\n"
+    "Respond ONLY with a raw JSON object (no markdown, no code blocks):\n"
     "  suggested_verdict : one of \"Approved\", \"Review\", \"Not Approved\", \"keep\".\n"
     "    Use \"keep\" if the initial verdict is clearly correct and nothing changes.\n"
     "  reason            : one short sentence (< 120 chars) explaining your call.\n"
@@ -110,7 +117,6 @@ def _build_user_prompt(row: dict, amz: dict | None) -> str:
             if amz.get(k):
                 amz_upc = str(amz[k]); break
 
-    # Compact signal summary — drop fields the model doesn't need to see.
     sig_summary = {}
     for key in ("upc", "item_id", "brand", "title", "pack"):
         s = signals.get(key) or {}
@@ -139,11 +145,86 @@ def _build_user_prompt(row: dict, amz: dict | None) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# JSON extraction helper
+# --------------------------------------------------------------------------- #
+
+def _extract_json(text: str) -> dict:
+    """Parse JSON from a model response that may contain markdown or prose."""
+    text = text.strip()
+    # Direct parse
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Strip markdown code fence
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except Exception:
+            pass
+    # Find first {...}
+    m = re.search(r"\{[\s\S]+\}", text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return {}
+
+
+# --------------------------------------------------------------------------- #
 # Single-row re-check
 # --------------------------------------------------------------------------- #
 
-def recheck_row(row: dict, amz: dict | None, client, model: str) -> dict:
-    """Call OpenAI once for a single row. Returns a structured dict — never raises."""
+def _is_anthropic(client: Any) -> bool:
+    """True when client is an Anthropic SDK instance."""
+    return client is not None and hasattr(client, "messages") and not hasattr(client, "chat")
+
+
+def recheck_row(row: dict, amz: dict | None, client: Any, model: str) -> dict:
+    """Call AI once for a single row. Returns a structured dict — never raises."""
+    if _is_anthropic(client):
+        return _recheck_claude(row, amz, client, model)
+    return _recheck_openai(row, amz, client, model)
+
+
+def _recheck_claude(row: dict, amz: dict | None, client: Any, model: str) -> dict:
+    started = time.time()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=256,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": _build_user_prompt(row, amz)}],
+            temperature=0,
+        )
+        raw    = resp.content[0].text if resp.content else "{}"
+        parsed = _extract_json(raw)
+        in_t   = getattr(resp.usage, "input_tokens",  AVG_INPUT_TOKENS)
+        out_t  = getattr(resp.usage, "output_tokens", AVG_OUTPUT_TOKENS)
+    except Exception as exc:
+        return {
+            "ok": False, "error": str(exc),
+            "input_tokens": 0, "output_tokens": 0,
+            "duration_ms": int((time.time() - started) * 1000),
+        }
+
+    verdict = (parsed.get("suggested_verdict") or "keep").strip()
+    if verdict not in (*ALLOWED_BUCKETS, "keep"):
+        verdict = "keep"
+    return {
+        "ok": True,
+        "suggested_verdict": verdict,
+        "reason": (parsed.get("reason") or "").strip()[:240],
+        "attributes": parsed.get("attributes") or {},
+        "input_tokens":  int(in_t),
+        "output_tokens": int(out_t),
+        "duration_ms":   int((time.time() - started) * 1000),
+    }
+
+
+def _recheck_openai(row: dict, amz: dict | None, client: Any, model: str) -> dict:
     started = time.time()
     try:
         resp = client.chat.completions.create(
@@ -158,12 +239,11 @@ def recheck_row(row: dict, amz: dict | None, client, model: str) -> dict:
         raw    = resp.choices[0].message.content or "{}"
         parsed = json.loads(raw)
         usage  = getattr(resp, "usage", None)
-        in_t   = getattr(usage, "prompt_tokens", AVG_INPUT_TOKENS) if usage else AVG_INPUT_TOKENS
+        in_t   = getattr(usage, "prompt_tokens",     AVG_INPUT_TOKENS)  if usage else AVG_INPUT_TOKENS
         out_t  = getattr(usage, "completion_tokens", AVG_OUTPUT_TOKENS) if usage else AVG_OUTPUT_TOKENS
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {
-            "ok": False,
-            "error": str(exc),
+            "ok": False, "error": str(exc),
             "input_tokens": 0, "output_tokens": 0,
             "duration_ms": int((time.time() - started) * 1000),
         }
@@ -183,18 +263,28 @@ def recheck_row(row: dict, amz: dict | None, client, model: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Client bootstrap (lazy — we import openai only when needed)
+# Client bootstrap
 # --------------------------------------------------------------------------- #
 
-def make_client():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-    try:
-        from openai import OpenAI
-        return OpenAI(api_key=api_key)
-    except Exception:
-        return None
+def make_client() -> Any:
+    """Return an AI client — Anthropic preferred, OpenAI fallback — or None."""
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if key:
+        try:
+            import anthropic
+            return anthropic.Anthropic(api_key=key)
+        except Exception:
+            pass
+
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        try:
+            from openai import OpenAI
+            return OpenAI(api_key=key)
+        except Exception:
+            pass
+
+    return None
 
 
 def actual_cost(input_tokens: int, output_tokens: int, model: str) -> float:

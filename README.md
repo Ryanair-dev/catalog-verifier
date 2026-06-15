@@ -28,10 +28,14 @@ Open `http://127.0.0.1:8000`.
 | Variable | Required | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | Optional | AI Extractor and AI Re-check (GPT-4o / GPT-4o-mini) |
-| `SP_API_REFRESH_TOKEN` | Optional | Analytics SP-API search |
-| `SP_API_CLIENT_ID` | Optional | Analytics SP-API search |
-| `SP_API_CLIENT_SECRET` | Optional | Analytics SP-API search |
-| `SP_API_MARKETPLACE_ID` | Optional | Defaults to `ATVPDKIKX0DER` (US) |
+| `ANTHROPIC_API_KEY` | Optional | Claude-backed AI checks when configured |
+| `AMZ_CLIENT_ID` / `SP_API_CLIENT_ID` | Optional | Analytics SP-API search |
+| `AMZ_CLIENT_SECRET` / `SP_API_CLIENT_SECRET` | Optional | Analytics SP-API search |
+| `REFRESH_TOKEN` / `SP_API_REFRESH_TOKEN` | Optional | Analytics SP-API search |
+| `AMZ_SELLER_ID` / `SP_API_SELLER_ID` | Optional | Listing eligibility checks |
+| `MARKETPLACE_ID` / `SP_API_MARKETPLACE_ID` | Optional | Defaults to `ATVPDKIKX0DER` (US) |
+| `CATALOG_VERIFIER_API_TOKEN` | Optional | Requires `X-CV-Token` on API calls when set |
+| `CATALOG_VERIFIER_MAX_UPLOAD_MB` | Optional | Upload size cap; defaults to `25` |
 
 All are optional. Features that need a missing key are disabled with a clear UI message.
 
@@ -135,7 +139,7 @@ Search the blacklist by UPC or ASIN. Shows the confidence at rejection, the fail
 
 ## Barcode lookup chain
 
-Five keyless sources tried in order: Open Food Facts → Open Beauty Facts → Open Products Facts → UPC Item DB → DuckDuckGo scrape. Results are cached in SQLite. Each results row has a **Clear cache** button to force a fresh lookup.
+Five keyless sources tried in order: Open Food Facts → Open Beauty Facts → Open Products Facts → UPC Item DB → DuckDuckGo scrape. Results are looked up on demand and retained on the current results row; each row has a **Clear cache** button to force a fresh lookup.
 
 ---
 
@@ -253,7 +257,7 @@ catalog-verifier/
 
 **AI Re-check / AI Extractor does nothing** — check that `OPENAI_API_KEY` is set in `.env` and the server was restarted after editing it.
 
-**Analytics runs stay in "Error"** — SP-API credentials are missing or invalid. Check `SP_API_*` keys in `.env`. The `/api/analytics/status` endpoint confirms whether the credentials are accepted.
+**Analytics runs stay in "Error"** — SP-API credentials are missing or invalid. Check `AMZ_*` or `SP_API_*` keys in `.env`. The `/api/analytics/status` endpoint confirms whether the credentials are accepted.
 
 **Not Approved items all score 0** — their ASINs are missing from the Keepa export. Add the missing ASINs to the Keepa Product Viewer and re-export.
 

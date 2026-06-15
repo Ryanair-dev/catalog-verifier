@@ -6,15 +6,17 @@ Serves the static single-page UI from /static and exposes the REST API under /ap
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, export, library, pairs, scans, settings, verify
+from routers import analytics, barcode, brand_analytics, eligibility, export, library, pairs, scans, settings, storage_fees, verify
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -23,20 +25,56 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Ensure DB is initialised and orphaned run states are cleared on startup."""
+    database.init_db()
+    database.reset_orphaned_running_states()
+    yield
+
+
 app = FastAPI(
     title="Amazon Catalog Verification",
     description="Automated vetting of CPG catalog products against Amazon listings.",
     version="1.0.0",
+    lifespan=_lifespan,
 )
 
-# Permissive CORS — this app is intended to run locally for now.
+# Compress JSON/text responses ≥ 1 KB — big win for large scan result payloads.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+def _cors_origins() -> list[str]:
+    raw = os.getenv(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000",
+    )
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+# Local-first CORS. Override CORS_ORIGINS for non-default frontends.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _optional_api_token(request: Request, call_next):
+    """Require X-CV-Token only when CATALOG_VERIFIER_API_TOKEN is configured."""
+    token = os.getenv("CATALOG_VERIFIER_API_TOKEN")
+    if (
+        token
+        and request.method != "OPTIONS"
+        and request.url.path.startswith("/api/")
+        and request.url.path != "/api/health"
+        and request.headers.get("x-cv-token") != token
+    ):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 # API routers.
 app.include_router(scans.router,    prefix="/api", tags=["scans"])
@@ -46,14 +84,10 @@ app.include_router(export.router,   prefix="/api", tags=["export"])
 app.include_router(pairs.router,    prefix="/api", tags=["pairs"])
 app.include_router(library.router,  prefix="/api", tags=["library"])
 app.include_router(settings.router, prefix="/api", tags=["settings"])
-app.include_router(analytics.router, prefix="/api", tags=["analytics"])
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    """Ensure DB is initialised on startup even if services.database wasn't
-    imported through a side-effect path."""
-    database.init_db()
+app.include_router(analytics.router,       prefix="/api", tags=["analytics"])
+app.include_router(brand_analytics.router, prefix="/api", tags=["brand-analytics"])
+app.include_router(eligibility.router,    prefix="/api", tags=["eligibility"])
+app.include_router(storage_fees.router,   prefix="/api", tags=["storage-fees"])
 
 
 @app.get("/api/health")

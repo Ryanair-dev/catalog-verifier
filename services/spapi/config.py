@@ -10,8 +10,9 @@ every key we need.
 
 We accept BOTH naming schemes in use across the project:
 
-  asin-scraper style:    AMZ_CLIENT_ID, AMZ_CLIENT_SECRET, REFRESH_TOKEN, AMZ_SELLER_ID
-  spec / Cowork style:   LWA_APP_ID,    LWA_CLIENT_SECRET, REFRESH_TOKEN, SELLER_ID
+  asin-scraper style:    AMZ_CLIENT_ID,    AMZ_CLIENT_SECRET,    REFRESH_TOKEN,        AMZ_SELLER_ID
+  SP-API docs style:     SP_API_CLIENT_ID, SP_API_CLIENT_SECRET, SP_API_REFRESH_TOKEN, SP_API_SELLER_ID
+  spec / Cowork style:   LWA_APP_ID,       LWA_CLIENT_SECRET,    REFRESH_TOKEN,        SELLER_ID
 
 If both are set, the asin-scraper names win (matches existing .env files
 in the wild). MARKETPLACE_ID falls back to NA if unset.
@@ -44,17 +45,19 @@ def load_sp_api_credentials() -> SPAPICredentials:
     Read SP-API creds from the environment and return a dataclass.
     Raises RuntimeError if any of the three required values is missing.
     """
-    client_id     = _first_env("AMZ_CLIENT_ID",     "LWA_APP_ID")
-    client_secret = _first_env("AMZ_CLIENT_SECRET", "LWA_CLIENT_SECRET")
-    refresh_token = _first_env("REFRESH_TOKEN")
-    seller_id     = _first_env("AMZ_SELLER_ID",     "SELLER_ID")
-    marketplace   = _first_env("MARKETPLACE_ID") or "ATVPDKIKX0DER"
+    client_id = _first_env("AMZ_CLIENT_ID", "SP_API_CLIENT_ID", "LWA_APP_ID")
+    client_secret = _first_env(
+        "AMZ_CLIENT_SECRET", "SP_API_CLIENT_SECRET", "LWA_CLIENT_SECRET",
+    )
+    refresh_token = _first_env("REFRESH_TOKEN", "SP_API_REFRESH_TOKEN")
+    seller_id = _first_env("AMZ_SELLER_ID", "SP_API_SELLER_ID", "SELLER_ID")
+    marketplace = _first_env("MARKETPLACE_ID", "SP_API_MARKETPLACE_ID") or "ATVPDKIKX0DER"
 
     missing = [
         n for n, v in [
-            ("AMZ_CLIENT_ID / LWA_APP_ID",         client_id),
-            ("AMZ_CLIENT_SECRET / LWA_CLIENT_SECRET", client_secret),
-            ("REFRESH_TOKEN",                       refresh_token),
+            ("AMZ_CLIENT_ID / SP_API_CLIENT_ID / LWA_APP_ID", client_id),
+            ("AMZ_CLIENT_SECRET / SP_API_CLIENT_SECRET / LWA_CLIENT_SECRET", client_secret),
+            ("REFRESH_TOKEN / SP_API_REFRESH_TOKEN", refresh_token),
         ] if not v
     ]
     if missing:

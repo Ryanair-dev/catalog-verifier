@@ -7,7 +7,7 @@ decision and yields a clean list of source rows ready for SP-API search
 and confidence scoring.
 
 Supported formats:
-  * .xlsx / .xls / .xlsm  (openpyxl)
+  * .xlsx / .xlsm         (openpyxl)
   * .csv / .tsv           (stdlib csv)
 
 The parser deliberately does *not* try to auto-detect the header row --
@@ -36,9 +36,16 @@ class SourceRow:
     row_idx: int                     # 0-based index within the data rows
     upc: str = ""                    # raw UPC/EAN/GTIN value
     itemid: str = ""                 # raw Item ID / MPN / SKU
-    title: str = ""                  # raw title/description
+    title: str = ""                  # full vendor title — used for scoring
+    search_title: str = ""           # simplified title for SP-API keyword search
+                                     # (falls back to title if not mapped)
     brand: str = ""                  # always the wizard-supplied brand
     raw: dict[str, Any] = field(default_factory=dict)  # original header->cell map
+
+    @property
+    def search_term(self) -> str:
+        """The term to send to Amazon keyword search — search_title if set, else title."""
+        return self.search_title or self.title
 
     def as_dict(self) -> dict:
         """Serialisable form stored in analytics_catalog_rows.data_json."""
@@ -47,11 +54,12 @@ class SourceRow:
             "upc": self.upc,
             "itemid": self.itemid,
             "title": self.title,
+            "search_title": self.search_title,
             "brand": self.brand,
             "raw": self.raw,
         }
 
-    # Shape expected by matcher.calculate_confidence
+    # Shape expected by matcher.calculate_confidence — always uses full title
     def as_source_dict(self) -> dict:
         return {
             "upc": self.upc,
@@ -68,8 +76,11 @@ class SourceRow:
 # --------------------------------------------------------------------------- #
 
 
-def _raw_rows(filename: str, data: bytes) -> list[list[Any]]:
-    """Pull rows-as-arrays. No header assumption."""
+def _raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
+    """Pull rows-as-arrays. No header assumption.
+
+    Pass ``sheet_name`` to read a specific Excel sheet; omit to use the active sheet.
+    """
     name = (filename or "").lower()
     if name.endswith(".csv") or name.endswith(".tsv"):
         text = data.decode("utf-8-sig", errors="replace")
@@ -77,10 +88,12 @@ def _raw_rows(filename: str, data: bytes) -> list[list[Any]]:
         reader = csv.reader(io.StringIO(text), dialect=dialect)
         return [list(r) for r in reader]
 
-    # Default: Excel via openpyxl (handles .xlsx / .xlsm / newer .xls
-    # technically not but the wizard's preview endpoint also uses openpyxl).
+    # Default: Excel via openpyxl (.xlsx / .xlsm). Legacy binary .xls is not supported.
     wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
+    if sheet_name and sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+    else:
+        ws = wb.active
     return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
@@ -129,6 +142,7 @@ def parse_source_rows(
     header_row_idx: int,
     mapping: dict,
     brand: str,
+    sheet_name: str = "",
 ) -> list[SourceRow]:
     """
     Parse a vendor file into SourceRow objects.
@@ -141,12 +155,13 @@ def parse_source_rows(
                        step 3 output. Values are 0-based column indices
                        as strings.
       brand:           free-text brand typed in step 3; applied to every row.
+                       Overridden per-row by mapping["brand"] column when set.
 
     Returns:
       A list of SourceRow dicts, skipping any row where UPC, Item ID, and
       Title are all blank (those are almost always spacer rows).
     """
-    all_rows = _raw_rows(filename, data)
+    all_rows = _raw_rows(filename, data, sheet_name=sheet_name)
     if not all_rows:
         return []
 
@@ -157,9 +172,11 @@ def parse_source_rows(
     headers = [_cell_str(c) or f"col_{i}" for i, c in enumerate(header_row)]
     data_rows = all_rows[header_row_idx + 1:]
 
-    upc_col    = _col_int(mapping, "upc")
-    itemid_col = _col_int(mapping, "itemid")
-    title_col  = _col_int(mapping, "title")
+    upc_col          = _col_int(mapping, "upc")
+    itemid_col       = _col_int(mapping, "itemid")
+    title_col        = _col_int(mapping, "title")
+    search_title_col = _col_int(mapping, "search_title")
+    brand_col        = _col_int(mapping, "brand")
 
     brand_clean = (brand or "").strip()
 
@@ -168,9 +185,12 @@ def parse_source_rows(
         # Pad short rows so the col lookups don't IndexError.
         cells = list(row) + [None] * max(0, len(headers) - len(row))
 
-        upc    = _cell_str(cells[upc_col])    if upc_col    is not None and upc_col    < len(cells) else ""
-        itemid = _cell_str(cells[itemid_col]) if itemid_col is not None and itemid_col < len(cells) else ""
-        title  = _cell_str(cells[title_col])  if title_col  is not None and title_col  < len(cells) else ""
+        upc_raw      = _cell_str(cells[upc_col])          if upc_col          is not None and upc_col          < len(cells) else ""
+        # Zero-pad 11-digit UPCs → 12-digit UPC-A (vendor exports often strip leading zero)
+        upc          = ("0" + upc_raw) if (len(upc_raw) == 11 and upc_raw.isdigit()) else upc_raw
+        itemid       = _cell_str(cells[itemid_col])       if itemid_col       is not None and itemid_col       < len(cells) else ""
+        title        = _cell_str(cells[title_col])        if title_col        is not None and title_col        < len(cells) else ""
+        search_title = _cell_str(cells[search_title_col]) if search_title_col is not None and search_title_col < len(cells) else ""
 
         if not upc and not itemid and not title:
             continue  # spacer row — skip
@@ -179,12 +199,19 @@ def parse_source_rows(
         # "View original row" later without re-parsing the file.
         raw = {headers[j]: _cell_str(cells[j]) for j in range(min(len(headers), len(cells)))}
 
+        row_brand = (
+            _cell_str(cells[brand_col])
+            if brand_col is not None and brand_col < len(cells)
+            else None
+        ) or brand_clean
+
         parsed.append(SourceRow(
             row_idx=i,
             upc=upc,
             itemid=itemid,
             title=title,
-            brand=brand_clean,
+            search_title=search_title,
+            brand=row_brand,
             raw=raw,
         ))
 

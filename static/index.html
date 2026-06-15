@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=8" />
 </head>
 <body class="min-h-screen">
 
@@ -56,15 +56,31 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
         ROI &amp; Cost
       </div>
+      <div class="nav-item" data-view="brand-analytics">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+        Brand Analytics
+      </div>
+      <div class="nav-item" data-view="quick-search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+        Quick Search
+      </div>
 
       <div class="section-label">Tools</div>
+      <div class="nav-item" id="open-tools-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        Tools
+      </div>
+
+      <!-- Divider before utility items -->
+      <div style="margin:8px 12px 4px;border-top:1px solid rgba(255,255,255,0.12);"></div>
+
       <div class="nav-item" data-view="pairs">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         Pair Manager
       </div>
       <div class="nav-item" id="open-abbr-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h16"/></svg>
-        Abbreviation Library
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Library
       </div>
       <div class="nav-item" id="open-settings-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -78,7 +94,7 @@
     </aside>
 
     <!-- ==================== Main ==================== -->
-    <main class="flex-1 overflow-hidden">
+    <main class="flex-1 overflow-hidden" style="position:relative;">
 
       <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
@@ -256,17 +272,16 @@
                       <th>Brand</th>
                       <th>ASIN</th>
                       <th>Confidence</th>
-                      <th>Verdict</th>
                       <th>Review Status</th>
                       <th>AI Suggestion</th>
                       <th>Reason</th>
                       <th>UPC</th>
-                      <th>Item ID</th>
+                      <th>Item ID / MPN</th>
                       <th>Brand</th>
                       <th>Title</th>
-                      <th>Pack</th>
-                      <th>Amz Pack</th>
+                      <th>Pack Qty</th>
                       <th>Barcode DB</th>
+                      <th>Verdict</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -467,17 +482,16 @@
                       <th>Brand</th>
                       <th>ASIN</th>
                       <th>Confidence</th>
-                      <th>Verdict</th>
                       <th>Review Status</th>
                       <th>AI Suggestion</th>
                       <th>Reason</th>
                       <th>UPC</th>
-                      <th>Item ID</th>
+                      <th>Item ID / MPN</th>
                       <th>Brand</th>
                       <th>Title</th>
-                      <th>Pack</th>
-                      <th>Amz Pack</th>
+                      <th>Pack Qty</th>
                       <th>Barcode DB</th>
+                      <th>Verdict</th>
                       <th></th>
                     </tr>
                   </thead>
@@ -495,15 +509,71 @@
         <header class="view-header">
           <div>
             <h1 class="view-title">Pair Manager</h1>
-            <p class="view-subtitle">Search the blacklist by UPC or ASIN. No bulk list — search-only.</p>
+            <p class="view-subtitle">Search the blacklist and your confirmed Pair Library. Import pairs, export by brand.</p>
           </div>
         </header>
 
         <div class="px-8 py-6 space-y-4">
+          <!-- ===== Pair Library ===== -->
+          <div class="card plib-card">
+            <div class="card-body">
+              <div class="flex items-start justify-between gap-4 mb-3">
+                <div>
+                  <div class="font-semibold" style="color: var(--navy-800)">Pair Library</div>
+                  <div class="text-sm mt-0.5" style="color:#6b7480; max-width: 760px;">
+                    Manually confirmed identifier → ASIN pairs. A UPC can map to <b>many ASINs</b> (same product,
+                    multiple Amazon listings), and an ASIN keeps all its UPCs (first = primary, rest = <b>aliases</b>).
+                    Imported pairs auto-verify in runs, and for any ASIN you import only its imported UPCs count for it.
+                  </div>
+                </div>
+                <div id="plib-stats" class="text-sm font-medium whitespace-nowrap" style="color:#6b7480;">—</div>
+              </div>
+
+              <div class="grid gap-3" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+                <!-- Import -->
+                <div class="plib-panel">
+                  <div class="text-sm font-semibold mb-1" style="color: var(--navy-800)">1 · Import pairs</div>
+                  <div class="text-xs mb-2" style="color:#6b7480;">Fixed template: ASIN | UPC | EAN | MPN/Item ID | Brand | Manufacturer. Multiple UPCs per cell via commas.</div>
+                  <input type="file" id="plib-import-file" accept=".xlsx,.xlsm,.csv,.tsv" class="hidden" />
+                  <div class="flex items-center gap-2">
+                    <button id="plib-import-btn" class="btn btn-primary btn-sm">Import file…</button>
+                    <a id="plib-import-template" class="text-xs underline cursor-pointer" style="color: var(--indigo-600, #4f46e5);">Download template</a>
+                  </div>
+                  <div id="plib-import-result" class="text-xs mt-2" style="color:#6b7480;"></div>
+                </div>
+
+                <!-- Export by brand -->
+                <div class="plib-panel">
+                  <div class="text-sm font-semibold mb-1" style="color: var(--navy-800)">2 · Export by brand</div>
+                  <div class="text-xs mb-2" style="color:#6b7480;">Everything in the library for one brand — or leave blank for all brands.</div>
+                  <div class="flex items-center gap-2">
+                    <input id="plib-brand-input" list="plib-brands-datalist" placeholder="All brands"
+                           class="flex-1 text-sm rounded border px-2 py-1.5" style="border-color:#e2e6ec; min-width: 0;" />
+                    <datalist id="plib-brands-datalist"></datalist>
+                    <button id="plib-export-btn" class="btn btn-secondary btn-sm">Export Excel</button>
+                  </div>
+                </div>
+
+                <!-- Lookup export -->
+                <div class="plib-panel">
+                  <div class="text-sm font-semibold mb-1" style="color: var(--navy-800)">3 · Lookup &amp; export</div>
+                  <div class="text-xs mb-2" style="color:#6b7480;">Upload UPCs/MPNs to find → Excel with Matched + Not Found. Rows that include an ASIN are saved as new pairs.</div>
+                  <input type="file" id="plib-lookup-file" accept=".xlsx,.xlsm,.csv,.tsv" class="hidden" />
+                  <div class="flex items-center gap-2">
+                    <button id="plib-lookup-btn" class="btn btn-primary btn-sm">Match file…</button>
+                    <a id="plib-lookup-template" class="text-xs underline cursor-pointer" style="color: var(--indigo-600, #4f46e5);">Download template</a>
+                  </div>
+                  <div id="plib-lookup-result" class="text-xs mt-2" style="color:#6b7480;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ===== Search (blacklist + library) ===== -->
           <div class="card">
             <div class="card-body">
               <div class="flex items-center gap-3">
-                <input id="pairs-search" placeholder="Enter a UPC or ASIN…" class="flex-1 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
+                <input id="pairs-search" placeholder="Enter a UPC, ASIN, MPN, or brand…" class="flex-1 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
                 <button id="pairs-search-btn" class="btn btn-primary">Search</button>
               </div>
             </div>
@@ -513,12 +583,28 @@
             <div class="icon-wrap">
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
-            <div class="font-semibold" style="color: var(--navy-800)">Search for a blacklisted pair</div>
-            <div class="text-sm mt-1" style="color: #6b7480;">Pairs appear on the blacklist when rejected during review or export.</div>
+            <div class="font-semibold" style="color: var(--navy-800)">Search the blacklist and Pair Library</div>
+            <div class="text-sm mt-1" style="color: #6b7480;">Blacklist pairs come from rejections; library pairs from your imports.</div>
+          </div>
+
+          <div id="plib-results" class="card hidden">
+            <div class="card-body p-0">
+              <div class="px-4 pt-3 pb-1 text-sm font-semibold" style="color: var(--navy-800)">Pair Library matches</div>
+              <table class="results-table">
+                <thead>
+                  <tr>
+                    <th>ASIN</th><th>UPC</th><th>UPC Aliases</th>
+                    <th>MPN/Item ID</th><th>EAN</th><th>Brand</th><th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody id="plib-results-body"></tbody>
+              </table>
+            </div>
           </div>
 
           <div id="pairs-results" class="card hidden">
             <div class="card-body p-0">
+              <div class="px-4 pt-3 pb-1 text-sm font-semibold" style="color: var(--navy-800)">Blacklist matches</div>
               <table class="results-table">
                 <thead>
                   <tr>
@@ -604,6 +690,21 @@
         </div>
       </div>
 
+      <!-- ==================== Analytics Run Loading Screen ==================== -->
+      <div id="analytics-run-loading" class="hidden" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f8f9fc;z-index:10;">
+        <lottie-player
+          id="analytics-lottie-player"
+          src="/static/loader-car.json"
+          background="transparent"
+          speed="1"
+          style="width:280px;height:280px;"
+          loop
+          autoplay>
+        </lottie-player>
+        <div class="text-sm font-semibold" style="color:#4f46e5;letter-spacing:0.05em;margin-top:-24px;">Loading…</div>
+        <div class="mt-1 text-xs" style="color:#94a3b8;">Fetching run data, hang tight</div>
+      </div>
+
       <!-- ==================== Analytics Run Detail ==================== -->
       <div id="view-analytics-run" class="hidden">
         <header class="view-header">
@@ -620,33 +721,120 @@
             <span id="analytics-run-status-pill" class="ms-pill">
               <span class="ms-pill-dot"></span> <span id="analytics-run-status-text">—</span>
             </span>
-            <button id="analytics-run-export" class="btn btn-secondary text-xs" disabled>Export CSV</button>
+            <button id="analytics-run-pause" class="btn btn-warning text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              Pause
+            </button>
+            <button id="analytics-run-resume" class="btn btn-success text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Resume
+            </button>
+            <button id="analytics-run-stop" class="btn btn-danger text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              Stop &amp; Delete
+            </button>
+            <button id="analytics-run-rescore" class="btn btn-secondary text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              Re-score
+            </button>
+            <button id="analytics-run-ai-check" class="btn btn-secondary text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+              AI Check
+            </button>
+            <button id="analytics-run-ai-stop" class="btn btn-danger text-xs hidden" title="Stop AI check after the current batch">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+              Stop AI
+            </button>
+            <button id="analytics-run-ai-apply" class="btn btn-primary text-xs hidden">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              Apply AI Decisions
+            </button>
+            <button id="analytics-run-export" class="btn btn-secondary text-xs" disabled>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Export Excel
+            </button>
           </div>
         </header>
 
         <div class="px-8 py-6 space-y-6">
 
-          <!-- Progress bar (visible while the run is Searching / Vetting) -->
-          <div id="analytics-run-progress-card" class="card hidden">
-            <div class="card-body">
-              <div class="flex items-center justify-between text-xs mb-2" style="color: #475569;">
-                <span id="analytics-run-progress-phase" class="font-medium">Searching…</span>
-                <span id="analytics-run-progress-counts" style="font-variant-numeric: tabular-nums;">0 / 0</span>
+          <!-- Progress card (visible while active / paused / stopped) -->
+          <div id="analytics-run-progress-card" class="run-progress-card hidden">
+            <div class="rp-header">
+              <div class="rp-left">
+                <span id="analytics-run-progress-dot" class="rp-dot"></span>
+                <div>
+                  <div id="analytics-run-progress-phase" class="rp-phase">Searching…</div>
+                  <div id="analytics-run-progress-sub" class="rp-sub"></div>
+                </div>
               </div>
-              <div class="progress"><div class="bar" id="analytics-run-progress-bar" style="width:0%"></div></div>
-              <div class="text-xs mt-2" style="color: #94a3b8;">
-                We'll update this every few seconds. You can leave this page and come back — the run keeps going in the background.
+              <div class="rp-right">
+                <div id="analytics-run-progress-eta" class="rp-eta hidden"></div>
+                <div id="analytics-run-progress-counts" class="rp-counts">0 / 0</div>
               </div>
+            </div>
+            <div class="rp-track">
+              <div class="rp-fill" id="analytics-run-progress-bar" style="width:0%"></div>
+            </div>
+            <div class="rp-hint">Updates every few seconds — you can leave this page and come back.</div>
+          </div>
+
+          <!-- AI Check progress bar (visible while AI check is running) -->
+          <div id="analytics-run-ai-progress-card" class="run-progress-card hidden" style="background:linear-gradient(135deg,#f5f3ff 0%,#ede9fe 100%); border-color:#c4b5fd;">
+            <div class="rp-header">
+              <div class="rp-left">
+                <span class="rp-dot" style="background:#7c3aed;box-shadow:0 0 0 3px #ddd6fe;"></span>
+                <div>
+                  <div class="rp-phase" style="color:#5b21b6;">AI Check running…</div>
+                  <div id="analytics-run-ai-progress-sub" class="rp-sub">Reviewing candidates</div>
+                </div>
+              </div>
+              <div class="rp-right">
+                <div id="analytics-run-ai-progress-counts" class="rp-counts" style="color:#7c3aed;">0 / 0</div>
+              </div>
+            </div>
+            <div class="rp-track" style="background:#ddd6fe;">
+              <div class="rp-fill" id="analytics-run-ai-progress-bar" style="width:0%;background:#7c3aed;"></div>
             </div>
           </div>
 
           <!-- Summary counts -->
-          <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <div class="summary-stat"><div class="summary-stat-label">Catalog rows</div><div class="summary-stat-value" id="analytics-run-stat-catalog">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label">Candidates</div><div class="summary-stat-value" id="analytics-run-stat-candidates">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: var(--green-600);">Verified</div><div class="summary-stat-value" id="analytics-run-stat-verified" style="color: var(--green-600);">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: #b58100;">Review</div><div class="summary-stat-value" id="analytics-run-stat-review" style="color: #b58100;">0</div></div>
-            <div class="summary-stat"><div class="summary-stat-label" style="color: #b91c1c;">Rejected</div><div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div></div>
+          <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-neutral">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+              </div>
+              <div class="summary-stat-label">Catalog rows</div>
+              <div class="summary-stat-value" id="analytics-run-stat-catalog">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-purple">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </div>
+              <div class="summary-stat-label">Candidates</div>
+              <div class="summary-stat-value" id="analytics-run-stat-candidates">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-green">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: var(--green-600);">Verified</div>
+              <div class="summary-stat-value" id="analytics-run-stat-verified" style="color: var(--green-600);">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-amber">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: #b45309;">Review</div>
+              <div class="summary-stat-value" id="analytics-run-stat-review" style="color: #b45309;">0</div>
+            </div>
+            <div class="summary-stat">
+              <div class="summary-stat-icon ssi-red">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+              </div>
+              <div class="summary-stat-label" style="color: #b91c1c;">Rejected</div>
+              <div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div>
+            </div>
           </div>
 
           <!-- Candidates table -->
@@ -670,10 +858,30 @@
               </div>
 
               <!-- Toolbar: search + bulk action + count -->
-              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color: #edf0f5;">
-                <div class="flex items-center gap-2 flex-1">
-                  <input id="analytics-run-search" type="text" class="input text-sm" placeholder="Search title, brand, ASIN, UPC…" style="max-width: 320px;" />
-                  <span id="analytics-run-candidates-summary" class="text-xs" style="color: #6b7480;">
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color: #edf0f5; background: #fafbfc;">
+                <div class="flex items-center gap-3 flex-1">
+                  <div class="search-wrap" style="max-width: 260px; flex: 1;">
+                    <svg class="si" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    <input id="analytics-run-search" type="text" class="input text-sm w-full" placeholder="Search title, brand, ASIN, UPC…" />
+                  </div>
+                  <div class="flex items-center gap-2" style="flex-shrink:0; border-left:1px solid #e2e8f0; padding-left:10px;">
+                    <span class="text-xs" style="color:#64748b; white-space:nowrap;">BSR</span>
+                    <input id="analytics-run-rank-min" type="number" min="0" step="10000" class="input text-xs" style="width:80px;" placeholder="Min" />
+                    <span class="text-xs" style="color:#94a3b8;">–</span>
+                    <input id="analytics-run-rank-max" type="number" min="0" step="10000" class="input text-xs" style="width:80px;" placeholder="Max" />
+                    <label class="flex items-center gap-1 text-xs" style="color:#64748b; white-space:nowrap; cursor:pointer;">
+                      <input type="checkbox" id="analytics-run-rank-skip-null" />
+                      hide unranked
+                    </label>
+                  </div>
+                  <div id="analytics-run-ai-filter-wrap" class="hidden flex items-center gap-1" style="flex-shrink:0; border-left:1px solid #e2e8f0; padding-left:10px;">
+                    <span class="text-xs" style="color:#64748b; white-space:nowrap;">AI</span>
+                    <button class="ai-filter-pill" data-ai-filter="all">All</button>
+                    <button class="ai-filter-pill" data-ai-filter="approve">✓ Approved</button>
+                    <button class="ai-filter-pill" data-ai-filter="reject">✗ Rejected</button>
+                    <button class="ai-filter-pill" data-ai-filter="uncertain">? Uncertain</button>
+                  </div>
+                  <span id="analytics-run-candidates-summary" class="text-xs whitespace-nowrap" style="color: #94a3b8;">
                     <span id="analytics-run-candidates-count">0</span> shown
                   </span>
                 </div>
@@ -693,14 +901,18 @@
                       <th class="sortable" data-sort-key="amz_title">Amazon Title <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="brand">Brand <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="sources">Sources <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="amz_pack">AMZ Pack <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="sales_rank">BSR <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="confidence">Confidence <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="verdict">Verdict <span class="sort-caret"></span></th>
+                      <th>Reason</th>
                       <th class="text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="analytics-run-candidates-body"></tbody>
                 </table>
               </div>
+              <div id="analytics-run-pagination" style="display:flex;align-items:center;gap:4px;padding:10px 4px;flex-wrap:wrap;"></div>
               <div id="analytics-run-candidates-empty" class="hidden empty-state" style="padding: 32px 12px;">
                 <div class="text-sm" style="color: #6b7480;">No candidates yet. This table fills up as the search finishes.</div>
               </div>
@@ -709,24 +921,690 @@
 
         </div>
       </div>
+
+      <!-- ===== View: Brand Analytics (list) ===== -->
+      <div id="view-brand-analytics" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Brand Analytics</h1>
+            <p class="view-subtitle">Discover every ASIN a brand or manufacturer sells on Amazon — with UPC, EAN, GTIN, MPN, and BSR.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="ba-new-search-btn" class="btn btn-primary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              New Search
+            </button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-6">
+          <div class="card analytics-entry-card">
+            <div class="card-body" style="padding: 28px;">
+              <div class="flex items-start gap-4">
+                <div class="analytics-entry-icon" style="background: linear-gradient(135deg,#e0e7ff,#c7d2fe);">
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                </div>
+                <div class="flex-1">
+                  <div class="text-lg font-semibold" style="color:#3730a3;">Brand &amp; Manufacturer Catalog Discovery</div>
+                  <div class="text-sm mt-1" style="color: #6b7480; max-width: 540px;">
+                    Enter a brand or manufacturer name — AI discovers sub-brands, then we search Amazon for all their products.
+                    Results include ASIN, BSR, UPC, EAN, GTIN, and MPN. Cached for up to 7 days.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <div class="flex items-center justify-between mb-3">
+                <div class="font-semibold" style="color:#3730a3;">Past Runs</div>
+                <button id="ba-refresh-runs" class="btn btn-secondary text-xs">Refresh</button>
+              </div>
+              <div id="ba-runs-body" class="text-sm">
+                <div class="empty-state" style="padding: 24px 12px;">
+                  <div class="text-sm" style="color: #6b7480;">No runs yet — click New Search to start.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== View: Brand Analytics Run Detail ===== -->
+      <div id="view-brand-analytics-run" class="hidden">
+        <header class="view-header">
+          <div class="flex items-center gap-3">
+            <button id="ba-run-back" class="icon-btn" title="Back to Brand Analytics">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            </button>
+            <div>
+              <h1 id="ba-run-title" class="view-title">Run Detail</h1>
+              <p id="ba-run-subtitle" class="view-subtitle"></p>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="ba-run-status-pill" class="ms-pill">
+              <span class="ms-pill-dot"></span> <span id="ba-run-status-text">—</span>
+            </span>
+            <button id="ba-run-ai-fill-btn" class="btn btn-secondary hidden">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+              AI Fill
+            </button>
+            <button id="ba-run-filter-categories-btn" class="btn btn-secondary hidden">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+              Filter Categories
+            </button>
+            <button id="ba-run-export-btn" class="btn btn-secondary hidden">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
+              Export
+            </button>
+            <button id="ba-run-stop-btn" class="btn btn-secondary hidden">Stop</button>
+            <button id="ba-run-delete-btn" class="btn btn-secondary hidden" style="color:#dc2626;">Delete</button>
+          </div>
+        </header>
+
+        <div class="px-8 py-6 space-y-4">
+
+          <!-- Progress card -->
+          <div id="ba-run-progress-card" class="run-progress-card hidden" style="background: linear-gradient(135deg, #e0e7ff, #ede9fe); border-color: #a5b4fc;">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-semibold" style="color:#3730a3;" id="ba-run-progress-phase">Searching…</span>
+              <span class="text-xs" style="color:#6366f1;" id="ba-run-progress-counts">0 / 0</span>
+            </div>
+            <div class="progress" style="background:#c7d2fe;">
+              <div class="bar" id="ba-run-progress-bar" style="width:0%; background:#4f46e5;"></div>
+            </div>
+          </div>
+
+          <!-- AI Fill progress card -->
+          <div id="ba-run-ai-fill-card" class="run-progress-card hidden" style="background: linear-gradient(135deg,#f0fdf4,#dcfce7); border-color: #86efac;">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm font-semibold" style="color:#15803d;">AI Fill running…</span>
+              <div class="flex items-center gap-3">
+                <span class="text-xs" style="color:#16a34a;" id="ba-run-ai-fill-counts">0 / 0</span>
+                <button id="ba-run-ai-fill-stop" class="btn btn-secondary" style="padding:2px 10px;font-size:12px;height:auto;">Stop</button>
+              </div>
+            </div>
+            <div class="progress" style="background:#bbf7d0;">
+              <div class="bar" id="ba-run-ai-fill-bar" style="width:0%; background:#16a34a;"></div>
+            </div>
+          </div>
+
+          <!-- Freshness banner -->
+          <div id="ba-run-freshness-banner" class="hidden px-4 py-2 rounded-lg flex items-center gap-3 text-sm" style="background:#fef9c3; border:1px solid #fde68a; color:#92400e;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            <span id="ba-run-freshness-text"></span>
+            <button id="ba-run-refresh-btn" class="btn btn-secondary text-xs ml-auto">Refresh data</button>
+          </div>
+
+          <!-- Amazon brand names panel -->
+          <div id="ba-run-brand-names-panel" class="hidden" style="position:relative;display:inline-block;">
+            <button id="ba-brand-names-toggle" style="display:inline-flex;align-items:center;gap:6px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:20px;padding:5px 12px 5px 10px;cursor:pointer;font-size:12px;font-weight:600;color:#374151;white-space:nowrap;transition:background 150ms,border-color 150ms;" onmouseenter="this.style.background='#e8eef5';this.style.borderColor='#c7d2dd'" onmouseleave="this.style.background='#f1f5f9';this.style.borderColor='#e2e8f0'">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2.2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+              Amazon brand names found in results
+              <span id="ba-brand-names-new-badge" class="hidden" style="background:#fef3c7;color:#92400e;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;"></span>
+              <svg id="ba-brand-names-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.5" style="transition:transform 200ms;flex-shrink:0;"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <!-- Dropdown -->
+            <div id="ba-brand-names-dropdown" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:120;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.13);padding:14px 16px;min-width:520px;max-width:min(860px,90vw);">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;line-height:1.4;">Items marked <b style="color:#92400e;">new</b> weren't in your original search terms — add them for better recall on a re-run.</div>
+              <div id="ba-run-brand-names-list" style="display:flex;flex-wrap:wrap;gap:6px;max-height:260px;overflow-y:auto;"></div>
+            </div>
+          </div>
+
+          <!-- Stats row -->
+          <div id="ba-run-stats" class="grid grid-cols-5 gap-3 hidden">
+            <div class="card" style="padding:0;">
+              <div class="card-body" style="padding:12px 16px;">
+                <div class="text-xs" style="color:#6b7480;">Total Brands</div>
+                <div class="text-xl font-semibold" style="color:#1e293b;" id="ba-stat-brands">—</div>
+              </div>
+            </div>
+            <div class="card" style="padding:0;">
+              <div class="card-body" style="padding:12px 16px;">
+                <div class="text-xs" style="color:#6b7480;">ASINs Found</div>
+                <div class="text-xl font-semibold" style="color:#1e293b;" id="ba-stat-asins">—</div>
+              </div>
+            </div>
+            <div class="card" style="padding:0;">
+              <div class="card-body" style="padding:12px 16px;">
+                <div class="text-xs" style="color:#6b7480;">With UPC</div>
+                <div class="text-xl font-semibold" style="color:#1e293b;" id="ba-stat-upc">—</div>
+              </div>
+            </div>
+            <div class="card" style="padding:0;">
+              <div class="card-body" style="padding:12px 16px;">
+                <div class="text-xs" style="color:#6b7480;">With MPN</div>
+                <div class="text-xl font-semibold" style="color:#1e293b;" id="ba-stat-mpn">—</div>
+              </div>
+            </div>
+            <div class="card" style="padding:0;">
+              <div class="card-body" style="padding:12px 16px;">
+                <div class="text-xs" style="color:#6b7480;">Missing IDs</div>
+                <div class="text-xl font-semibold" style="color:#1e293b;" id="ba-stat-missing">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Toolbar + table -->
+          <div class="card">
+            <div class="card-body" style="padding: 0;">
+              <div class="flex items-center gap-2 px-4 py-3 border-b" style="border-color:#eef0f4;">
+                <input id="ba-run-search" class="text-sm rounded border px-3 py-1 flex-1" placeholder="Filter by brand, ASIN, title…" style="border-color:#e2e6ec;" />
+                <button id="ba-run-search-btn" class="btn btn-secondary text-xs">Filter</button>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="results-table" style="font-size:13px;">
+                  <thead>
+                    <tr>
+                      <th>Brand</th>
+                      <th>ASIN</th>
+                      <th>Image</th>
+                      <th>Title</th>
+                      <th style="cursor:pointer;" id="ba-sort-bsr">BSR ↕</th>
+                      <th>Category</th>
+                      <th title="Multipack count">Pack</th>
+                      <th title="Unit of measure quantity">UOM Qty</th>
+                      <th id="ba-th-upc">UPC</th>
+                      <th id="ba-th-ean">EAN</th>
+                      <th>GTIN</th>
+                      <th id="ba-th-mpn">MPN</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ba-run-items-body">
+                    <tr><td colspan="12" class="text-center" style="color:#94a3b8; padding:24px;">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div id="ba-run-pagination" style="display:flex;align-items:center;gap:4px;padding:10px 16px;flex-wrap:wrap;"></div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ===== View: Quick Search ===== -->
+      <div id="view-quick-search" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Quick Search</h1>
+            <p class="view-subtitle">Search Amazon for a single item by any combination of UPC, Item ID, title, or brand.</p>
+          </div>
+        </header>
+
+        <div style="padding: 28px 32px; max-width: 900px;">
+
+          <!-- Search form card -->
+          <div class="card qs-form-card mb-6">
+            <div style="padding: 28px 28px 24px;">
+
+              <!-- Identifier fields (multi-tag inputs) -->
+              <div class="qs-field-group mb-4">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                  <div class="qs-field-group-label" style="margin-bottom:0;">Identifiers</div>
+                  <span style="font-size:11px;color:#94a3b8;">Press <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">Enter</kbd> or <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">,</kbd> to add multiple</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px;">
+                  <div>
+                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">UPC / EAN / Barcode</label>
+                    <div class="tag-input-wrap" id="qs-upc-wrap" onclick="document.getElementById('qs-upc').focus()">
+                      <input id="qs-upc" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. 012345678901…">
+                    </div>
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Item ID / MPN / SKU</label>
+                    <div class="tag-input-wrap" id="qs-itemid-wrap" onclick="document.getElementById('qs-itemid').focus()">
+                      <input id="qs-itemid" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. ASL02…">
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Context fields -->
+              <div class="qs-field-group mb-4">
+                <div class="qs-field-group-label">Context (single search)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px;">
+                  <div>
+                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Product Title</label>
+                    <input id="qs-title" type="text" class="input-field" placeholder="e.g. DawnMist 2 oz After Shave Lotion">
+                  </div>
+                  <div>
+                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Brand</label>
+                    <input id="qs-brand" type="text" class="input-field" placeholder="e.g. DawnMist">
+                  </div>
+                </div>
+              </div>
+
+              <!-- Options row -->
+              <div style="display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap;">
+                <div>
+                  <label class="block text-xs font-semibold mb-2" style="color: #64748b;">Vetting Mode</label>
+                  <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
+                    <button id="qs-mode-cpg" class="qs-mode-btn active" data-mode="cpg">CPG</button>
+                    <button id="qs-mode-medical" class="qs-mode-btn" data-mode="medical">Medical</button>
+                  </div>
+                </div>
+                <div style="flex: 1; min-width: 120px; max-width: 160px;">
+                  <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Min BSR</label>
+                  <input id="qs-min-rank" type="number" class="input-field w-full" placeholder="0 = no floor" min="0">
+                </div>
+                <div style="flex: 1; min-width: 120px; max-width: 160px;">
+                  <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Max BSR</label>
+                  <input id="qs-max-rank" type="number" class="input-field w-full" placeholder="0 = no cap" min="0">
+                </div>
+                <div style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
+                  <span id="qs-status-text" class="text-xs hidden" style="color: #6b7480;"></span>
+                  <button id="qs-clear-btn" class="btn btn-secondary">Clear</button>
+                  <button id="qs-search-btn" class="btn btn-primary" style="min-width: 145px; gap: 7px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Search Amazon
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Results area -->
+          <div id="qs-results-area" class="hidden">
+
+            <!-- Summary bar -->
+            <div class="flex items-center justify-between mb-3">
+              <div id="qs-results-summary" class="text-sm font-semibold" style="color: var(--purple-800);"></div>
+              <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
+                <button id="qs-filter-all"          class="qs-filter-btn active" data-filter="all">All</button>
+                <button id="qs-filter-verified"     class="qs-filter-btn" data-filter="verified">Verified</button>
+                <button id="qs-filter-review"       class="qs-filter-btn" data-filter="review">Review</button>
+                <button id="qs-filter-not_approved" class="qs-filter-btn" data-filter="not_approved">Not Approved</button>
+              </div>
+            </div>
+
+            <!-- Results table -->
+            <div class="card">
+              <div style="overflow-x: auto;">
+                <table class="results-table" style="width: 100%;">
+                  <thead>
+                    <tr>
+                      <th style="width: 80px;">Score</th>
+                      <th style="width: 100px;">Verdict</th>
+                      <th style="width: 120px;">ASIN</th>
+                      <th>Amazon Title</th>
+                      <th style="width: 100px;">BSR</th>
+                      <th style="width: 130px;">Category</th>
+                      <th style="width: 120px;">UPC</th>
+                      <th style="width: 110px;">MPN</th>
+                      <th style="width: 90px;">Source</th>
+                      <th id="qs-th-query" style="width: 110px;" class="hidden">Query</th>
+                    </tr>
+                  </thead>
+                  <tbody id="qs-results-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Empty / idle state -->
+          <div id="qs-empty-state" class="text-center" style="padding: 52px 0; color: #94a3b8;">
+            <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--purple-50, #f4f0ff); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--purple-400, #8b76e5)" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="text-sm font-semibold" style="color: #475569; margin-bottom: 4px;">Ready to search</div>
+            <div class="text-xs" style="color: #94a3b8;">Fill in at least one field above and click <strong style="color: var(--purple-600);">Search Amazon</strong>.</div>
+          </div>
+
+        </div>
+      </div>
+      <!-- /view-quick-search -->
+
+      <!-- view-tools removed — Tools is now a sidebar panel (#tools-panel) -->
+
     </main>
   </div>
 
-  <!-- ==================== Abbreviation side panel (rework) ==================== -->
+  <!-- ==================== Brand Analytics Wizard ==================== -->
+  <div id="ba-wizard-modal" class="modal-backdrop hidden">
+    <div class="wizard-shell" style="max-width:620px;">
+      <div class="wizard-header">
+        <div>
+          <div class="wizard-kicker">Brand Analytics</div>
+          <div class="wizard-title" id="ba-wiz-title">New Brand Search</div>
+        </div>
+        <button class="icon-btn" id="ba-wiz-close" title="Cancel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+      </div>
+
+      <div class="wizard-stepper">
+        <div class="step active" data-bawiz-indicator="1"><span class="dot">1</span><span>Input</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-bawiz-indicator="2"><span class="dot">2</span><span>Sub-brands</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-bawiz-indicator="3"><span class="dot">3</span><span>Configure</span></div>
+        <div class="step-line"></div>
+        <div class="step" data-bawiz-indicator="4"><span class="dot">4</span><span>Confirm</span></div>
+      </div>
+
+      <div class="wizard-body" style="min-height:280px;">
+
+        <!-- Step 1: Brand/Manufacturer input -->
+        <div class="wizard-step" data-bawiz-panel="1">
+          <div class="wizard-step-title">What brand or manufacturer do you want to research?</div>
+          <div class="wizard-step-hint">Enter the brand name and choose whether it's a brand (sells products) or a manufacturer (owns sub-brands).</div>
+          <div class="flex items-center gap-3 mb-4 mt-4">
+            <button id="ba-wiz-type-brand" class="vetting-mode-btn active" data-batype="brand" style="padding:6px 18px;font-size:13px;font-weight:600;border-radius:6px;border:2px solid #4f46e5;background:#4f46e5;color:#fff;cursor:pointer;">Brand</button>
+            <button id="ba-wiz-type-manufacturer" class="vetting-mode-btn" data-batype="manufacturer" style="padding:6px 18px;font-size:13px;font-weight:600;border-radius:6px;border:2px solid #e2e8f0;background:#f8fafc;color:#64748b;cursor:pointer;">Manufacturer</button>
+          </div>
+          <label class="abbr-label">Name</label>
+          <input id="ba-wiz-name" class="abbr-input" placeholder="e.g. Dukal" autocomplete="off" list="ba-wiz-name-list" />
+          <datalist id="ba-wiz-name-list"></datalist>
+          <div id="ba-wiz-name-feedback" class="text-xs mt-2" style="color:#6b7480;"></div>
+        </div>
+
+        <!-- Step 2: Sub-brand discovery -->
+        <div class="wizard-step hidden" data-bawiz-panel="2">
+          <div class="wizard-step-title">Discover sub-brands</div>
+          <div class="wizard-step-hint">Click below to use AI to discover sub-brands and aliases. If this brand is already in your Library, results load instantly.</div>
+          <div class="flex items-center gap-3 mt-4 mb-3">
+            <button id="ba-wiz-discover-btn" class="btn btn-primary">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L14 8L20 10L14 12L12 18L10 12L4 10L10 8Z"/></svg>
+              Discover Sub-brands
+            </button>
+            <span id="ba-wiz-discover-status" class="text-xs" style="color:#6b7480;"></span>
+          </div>
+
+          <!-- Progress bar — shown while AI is running -->
+          <div id="ba-wiz-discover-progress" class="hidden mb-4">
+            <div class="flex items-center justify-between text-xs mb-1" style="color:#6366f1;">
+              <span id="ba-wiz-discover-phase">Asking AI…</span>
+              <span id="ba-wiz-discover-eta" style="font-variant-numeric:tabular-nums;color:#94a3b8;"></span>
+            </div>
+            <div class="progress" style="background:#e0e7ff;">
+              <div class="bar" id="ba-wiz-discover-bar" style="width:0%;background:linear-gradient(90deg,#6366f1,#8b5cf6);transition:width 0.4s ease;"></div>
+            </div>
+          </div>
+          <div id="ba-wiz-brands-list" class="hidden">
+            <div class="text-xs font-semibold mb-2" style="color:#334155;">Select brands to search (all checked by default):</div>
+            <div id="ba-wiz-brands-checkboxes" class="space-y-1 max-h-48 overflow-y-auto pr-1"></div>
+            <!-- Manual add -->
+            <div class="flex items-center gap-2 mt-3">
+              <input id="ba-wiz-add-brand-input" class="abbr-input" style="flex:1;height:32px;font-size:12px;" placeholder="Add a brand manually…" autocomplete="off" />
+              <button id="ba-wiz-add-brand-btn" type="button" class="btn btn-secondary" style="height:32px;padding:0 12px;font-size:12px;white-space:nowrap;">+ Add</button>
+            </div>
+            <div class="mt-3 flex items-center gap-2">
+              <input type="checkbox" id="ba-wiz-save-library" checked />
+              <label for="ba-wiz-save-library" class="text-xs cursor-pointer" style="color:#475569;">Save to Library for instant recall next time</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Configure -->
+        <div class="wizard-step hidden" data-bawiz-panel="3">
+          <div class="wizard-step-title">Configure the search</div>
+          <div class="wizard-step-hint">Set BSR limits and how many result pages to fetch per brand.</div>
+          <div class="flex items-center gap-2 mb-4 mt-1">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Product type</label>
+            <button id="ba-wiz-mode-cpg" class="vetting-mode-btn active" data-bamode="cpg" style="padding:5px 16px;font-size:13px;font-weight:600;border-radius:6px;border:2px solid #16a34a;background:#16a34a;color:#fff;cursor:pointer;">CPG</button>
+            <button id="ba-wiz-mode-medical" class="vetting-mode-btn" data-bamode="medical" style="padding:5px 16px;font-size:13px;font-weight:600;border-radius:6px;border:2px solid #e2e8f0;background:#f8fafc;color:#64748b;cursor:pointer;">Medical</button>
+            <span class="text-xs" style="color:#94a3b8;">CPG → UPC/EAN priority · Medical → MPN priority</span>
+          </div>
+          <label class="abbr-label mt-2">Run name</label>
+          <input id="ba-wiz-run-name" class="abbr-input mb-3" placeholder="e.g. Dukal — 2026-05-15" />
+          <div class="flex items-center gap-3 mb-3">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Min BSR</label>
+            <input id="ba-wiz-min-rank" type="number" min="0" step="1000" class="abbr-input" style="width:150px;" placeholder="0 = no limit" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs more popular than this → excluded</span>
+          </div>
+          <div class="flex items-center gap-3 mb-3">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Max BSR</label>
+            <input id="ba-wiz-max-rank" type="number" min="0" step="10000" class="abbr-input" style="width:150px;" placeholder="0 = no limit" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs above this rank → excluded</span>
+          </div>
+          <div class="flex items-center gap-3 mb-4">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Pages / brand</label>
+            <input id="ba-wiz-pages" type="number" min="0" value="10" class="abbr-input" style="width:90px;" />
+            <span class="text-xs" style="color:#94a3b8;">Each page = 20 results. 0 = no limit (all pages).</span>
+          </div>
+          <div id="ba-wiz-cache-notice" class="hidden px-3 py-2 rounded text-xs" style="background:#fef9c3;border:1px solid #fde68a;color:#92400e;"></div>
+        </div>
+
+        <!-- Step 4: Confirm -->
+        <div class="wizard-step hidden" data-bawiz-panel="4">
+          <div class="wizard-step-title">Ready to start?</div>
+          <div class="wizard-step-hint">Review the summary below, then click Start.</div>
+          <div id="ba-wiz-summary" class="mt-4 p-4 rounded-lg text-sm space-y-2" style="background:#f8fafc;border:1px solid #e2e8f0;"></div>
+          <div id="ba-wiz-feedback" class="text-xs mt-3" style="color:#b91c1c;"></div>
+        </div>
+
+      </div>
+
+      <div class="wizard-footer">
+        <button id="ba-wiz-back" class="btn btn-secondary">Back</button>
+        <div class="flex-1"></div>
+        <button id="ba-wiz-next" class="btn btn-primary">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Brand Item Edit Modal ==================== -->
+  <div id="ba-edit-modal" class="modal-backdrop hidden" style="align-items:center;justify-content:center;padding:0;">
+    <div class="bg-white rounded-xl w-[420px] p-6 shadow-xl" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="font-semibold text-lg mb-4" style="color:var(--navy-800)">Edit Identifiers</div>
+      <input type="hidden" id="ba-edit-asin" />
+      <div class="space-y-3">
+        <div><label class="abbr-label">UPC</label><input id="ba-edit-upc" class="abbr-input" placeholder="12-digit" /></div>
+        <div><label class="abbr-label">EAN</label><input id="ba-edit-ean" class="abbr-input" placeholder="13-digit" /></div>
+        <div><label class="abbr-label">GTIN</label><input id="ba-edit-gtin" class="abbr-input" placeholder="14-digit" /></div>
+        <div><label class="abbr-label">MPN</label><input id="ba-edit-mpn" class="abbr-input" placeholder="Part number" /></div>
+      </div>
+      <div class="flex justify-end gap-2 mt-5">
+        <button id="ba-edit-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ba-edit-save" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Cached Run Banner Choice ==================== -->
+  <div id="ba-cache-modal" class="modal-backdrop hidden" style="align-items:center;justify-content:center;padding:0;">
+    <div class="bg-white rounded-xl w-[460px] p-6 shadow-xl" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start gap-3 mb-4">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:#ede9fe;color:#7c3aed;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <div>
+          <div class="font-semibold" style="color:var(--navy-800)">Cached Results Available</div>
+          <div class="text-sm mt-1" style="color:#6b7480;" id="ba-cache-msg">Results from X days ago are available.</div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 mt-4">
+        <button id="ba-cache-refresh" class="btn btn-secondary">Re-run Search</button>
+        <button id="ba-cache-use" class="btn btn-primary">Use Cached</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== AI Fill confirm modal ==================== -->
+  <div id="ba-ai-fill-modal" class="modal-backdrop hidden" style="align-items:center;justify-content:center;padding:0;">
+    <div class="bg-white rounded-xl w-[460px] p-6 shadow-xl" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start gap-3 mb-4">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:#ecfdf5;color:#059669;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><path d="M12 8v4l3 3"/></svg>
+        </div>
+        <div>
+          <div class="font-semibold" style="color:var(--navy-800)">Start AI Fill?</div>
+          <div class="text-sm mt-1" style="color:#6b7480;" id="ba-ai-fill-modal-desc">Loading estimate…</div>
+        </div>
+      </div>
+      <div class="rounded-lg p-3 mb-4 text-sm" style="background:#f8fafc;border:1px solid #e2e8f0;">
+        <div class="flex justify-between mb-1">
+          <span style="color:#64748b;">Items to process</span>
+          <span class="font-semibold" style="color:#1e293b;" id="ba-ai-fill-modal-count">—</span>
+        </div>
+        <div class="flex justify-between mb-1">
+          <span style="color:#64748b;">Model</span>
+          <span class="font-semibold font-mono text-xs" style="color:#1e293b;" id="ba-ai-fill-modal-model">—</span>
+        </div>
+        <div class="flex justify-between">
+          <span style="color:#64748b;">Estimated cost</span>
+          <span class="font-semibold" style="color:#059669;" id="ba-ai-fill-modal-cost">—</span>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2">
+        <button id="ba-ai-fill-modal-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ba-ai-fill-modal-confirm" class="btn btn-primary">Start AI Fill</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Category Filter modal ==================== -->
+  <div id="ba-category-filter-modal" class="modal-backdrop hidden" style="align-items:center;justify-content:center;padding:0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width:500px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="flex items-start justify-between px-6 pt-6 pb-4" style="border-bottom:1px solid #e2e8f0;">
+        <div class="flex items-start gap-3">
+          <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style="background:#fef3c7;color:#d97706;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold" style="color:var(--navy-800)">Filter by Amazon Category</div>
+            <div class="text-sm mt-1" style="color:#6b7480;">Check categories to remove those ASINs from this run. This cannot be undone — re-run the search to restore removed items.</div>
+          </div>
+        </div>
+        <button id="ba-cat-filter-close" class="icon-btn ml-2" style="flex-shrink:0;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="ba-cat-filter-body" class="overflow-y-auto px-6 py-4" style="flex:1;">
+        <div class="text-sm text-center" style="color:#94a3b8;padding:24px 0;">Loading categories…</div>
+      </div>
+      <div class="px-6 py-4 flex items-center justify-between" style="border-top:1px solid #e2e8f0;">
+        <span class="text-xs" style="color:#94a3b8;" id="ba-cat-filter-summary">—</span>
+        <div class="flex gap-2">
+          <button id="ba-cat-filter-cancel" class="btn btn-secondary">Cancel</button>
+          <button id="ba-cat-filter-apply" class="btn btn-primary" style="background:#d97706;border-color:#d97706;">Remove Checked</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Tools side panel ==================== -->
+  <div id="tools-panel" class="side-panel side-panel-wide">
+    <div class="side-panel-header">
+      <div>
+        <div class="font-semibold" style="color:var(--navy-800)">Tools</div>
+        <div class="text-xs" style="color:#6b7480;">Eligibility check &amp; FBA storage fees — paste ASINs once, export one file.</div>
+      </div>
+      <button id="tools-close" class="icon-btn" title="Close">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+
+      <!-- ASIN input -->
+      <div>
+        <label class="abbr-label" style="display:block;margin-bottom:6px;">ASINs</label>
+        <textarea id="tools-asin-input" rows="7"
+          placeholder="B09XYZ1234&#10;B08ABC5678&#10;B07DEF9012&#10;…&#10;One per line, or comma/space-separated. Up to 5,000."
+          style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
+        <div id="tools-asin-count" style="font-size:12px;color:#94a3b8;margin-top:4px;"></div>
+      </div>
+
+      <!-- Options checkboxes -->
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="abbr-section-title" style="margin-bottom:2px;">What to run</div>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-elig-wrap">
+          <input type="checkbox" id="tools-opt-elig" checked style="accent-color:#6366f1;width:15px;height:15px;" />
+          <div>
+            <div style="font-size:13px;font-weight:600;color:#1e293b;">Eligibility Check</div>
+            <div style="font-size:11px;color:#94a3b8;">Can your seller account list each ASIN in new condition?</div>
+          </div>
+        </label>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-sf-wrap">
+          <input type="checkbox" id="tools-opt-sf" checked style="accent-color:#f59e0b;width:15px;height:15px;" />
+          <div>
+            <div style="font-size:13px;font-weight:600;color:#1e293b;">Storage Fees</div>
+            <div style="font-size:11px;color:#94a3b8;">FBA monthly fee per unit — non-peak &amp; Q4 peak columns.</div>
+          </div>
+        </label>
+      </div>
+
+      <!-- Run button -->
+      <button id="tools-run-btn" class="btn btn-primary" style="width:100%;justify-content:center;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        Run
+      </button>
+
+      <!-- Progress section (hidden until run starts) -->
+      <div id="tools-progress-section" class="hidden" style="display:flex;flex-direction:column;gap:12px;">
+
+        <!-- Eligibility progress row -->
+        <div id="tools-elig-progress" class="hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span style="font-size:12px;font-weight:600;color:#6366f1;">Eligibility</span>
+            <span id="tools-elig-label" style="font-size:11px;color:#94a3b8;"></span>
+          </div>
+          <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+            <div id="tools-elig-bar" style="height:100%;background:linear-gradient(90deg,#6366f1,#818cf8);border-radius:99px;width:0%;transition:width 0.4s ease;"></div>
+          </div>
+          <!-- Eligibility stats -->
+          <div id="tools-elig-stats" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+            <span style="font-size:11px;background:#f0fdf4;color:#16a34a;border-radius:99px;padding:2px 8px;font-weight:600;">✓ <span id="tp-elig-can">0</span> can sell</span>
+            <span style="font-size:11px;background:#fffbeb;color:#d97706;border-radius:99px;padding:2px 8px;font-weight:600;">⚠ <span id="tp-elig-appr">0</span> needs approval</span>
+            <span style="font-size:11px;background:#fef2f2;color:#dc2626;border-radius:99px;padding:2px 8px;font-weight:600;">✗ <span id="tp-elig-rest">0</span> restricted</span>
+            <span style="font-size:11px;background:#f8fafc;color:#94a3b8;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-elig-err">0</span> error</span>
+          </div>
+        </div>
+
+        <!-- Storage fees progress row -->
+        <div id="tools-sf-progress" class="hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span style="font-size:12px;font-weight:600;color:#f59e0b;">Storage Fees</span>
+            <span id="tools-sf-label" style="font-size:11px;color:#94a3b8;"></span>
+          </div>
+          <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+            <div id="tools-sf-bar" style="height:100%;background:linear-gradient(90deg,#f59e0b,#fbbf24);border-radius:99px;width:0%;transition:width 0.4s ease;"></div>
+          </div>
+          <!-- Storage stats -->
+          <div id="tools-sf-stats" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+            <span style="font-size:11px;background:#f0fdf4;color:#16a34a;border-radius:99px;padding:2px 8px;font-weight:600;">✓ <span id="tp-sf-ok">0</span> with dims</span>
+            <span style="font-size:11px;background:#fffbeb;color:#d97706;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-sf-nodims">0</span> no dims</span>
+            <span style="font-size:11px;background:#fef2f2;color:#dc2626;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-sf-err">0</span> error</span>
+          </div>
+        </div>
+
+      </div><!-- /tools-progress-section -->
+
+      <!-- Export button (shown when done) -->
+      <button id="tools-export-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
+        Download CSV
+      </button>
+
+    </div><!-- /scrollable body -->
+  </div><!-- /#tools-panel -->
+
+  <!-- ==================== Universal Library side panel ==================== -->
   <div id="abbr-panel" class="side-panel side-panel-wide">
     <div class="side-panel-header">
       <div>
-        <div class="font-semibold" style="color: var(--navy-800)">Abbreviation Library</div>
-        <div class="text-xs" style="color: #6b7480;">Categorised — persistent across sessions.</div>
+        <div class="font-semibold" style="color: var(--navy-800)">Library</div>
+        <div class="text-xs" style="color: #6b7480;">Abbreviations, brands &amp; manufacturers — persistent across sessions.</div>
       </div>
       <button id="abbr-close" class="icon-btn" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     </div>
 
-    <!-- Category tabs -->
-    <div id="abbr-tabs" class="abbr-tabs" role="tablist"></div>
+    <!-- Top-level library type tabs -->
+    <div class="lib-type-tabs" role="tablist">
+      <button class="lib-type-tab active" data-lib-type="abbreviations">Abbreviations</button>
+      <button class="lib-type-tab" data-lib-type="brands">Brands</button>
+      <button class="lib-type-tab" data-lib-type="manufacturers">Manufacturers</button>
+    </div>
 
-    <div class="abbr-body">
-      <!-- Top: Add new entry -->
+    <!-- ---- Abbreviations tab ---- -->
+    <div id="lib-tab-abbreviations" class="abbr-body">
+      <!-- Category sub-tabs -->
+      <div id="abbr-tabs" class="abbr-tabs" role="tablist"></div>
+
+      <!-- Add new entry -->
       <div class="abbr-section">
         <div class="abbr-section-title">Add new entry</div>
         <div class="abbr-add-grid">
@@ -750,7 +1628,7 @@
         <div id="abbr-add-feedback" class="abbr-feedback"></div>
       </div>
 
-      <!-- Bottom: Browse / search -->
+      <!-- Browse / search -->
       <div class="abbr-section">
         <div class="abbr-section-title">
           <span>Browse &amp; search</span>
@@ -762,6 +1640,41 @@
         </div>
         <div id="abbr-results" class="abbr-results"></div>
         <div id="abbr-pagination" class="abbr-pagination hidden"></div>
+      </div>
+    </div>
+
+    <!-- ---- Brands tab ---- -->
+    <div id="lib-tab-brands" class="abbr-body hidden">
+      <div class="abbr-section">
+        <div class="abbr-section-title">Add brand</div>
+        <div class="flex gap-2 flex-wrap">
+          <input id="bl-brand-name" class="abbr-input flex-1" placeholder="Brand name" autocomplete="off" />
+          <input id="bl-brand-parent" class="abbr-input flex-1" placeholder="Parent manufacturer (optional)" autocomplete="off" />
+          <input id="bl-brand-aliases" class="abbr-input flex-1" placeholder="Aliases (comma-separated)" autocomplete="off" />
+          <button id="bl-brand-add" class="btn btn-primary">Add</button>
+        </div>
+        <div id="bl-brand-feedback" class="abbr-feedback"></div>
+      </div>
+      <div class="abbr-section">
+        <div class="abbr-section-title">Brands</div>
+        <div id="bl-brands-list" class="abbr-results"></div>
+      </div>
+    </div>
+
+    <!-- ---- Manufacturers tab ---- -->
+    <div id="lib-tab-manufacturers" class="abbr-body hidden">
+      <div class="abbr-section">
+        <div class="abbr-section-title">Add manufacturer</div>
+        <div class="flex gap-2 flex-wrap">
+          <input id="bl-mfr-name" class="abbr-input flex-1" placeholder="Manufacturer name" autocomplete="off" />
+          <input id="bl-mfr-aliases" class="abbr-input flex-1" placeholder="Aliases (comma-separated)" autocomplete="off" />
+          <button id="bl-mfr-add" class="btn btn-primary">Add</button>
+        </div>
+        <div id="bl-mfr-feedback" class="abbr-feedback"></div>
+      </div>
+      <div class="abbr-section">
+        <div class="abbr-section-title">Manufacturers</div>
+        <div id="bl-mfrs-list" class="abbr-results"></div>
       </div>
     </div>
   </div>
@@ -846,7 +1759,7 @@
             </div>
           </div>
           <div class="wizard-step-footer-link">
-            <a id="wizard-template-btn" href="/api/template" download="catalog-template.csv">
+            <a id="wizard-template-btn" href="/api/template" download="catalog-template.xlsx">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               Download template
             </a>
@@ -861,8 +1774,19 @@
             <div class="mapping-row">
               <div class="mapping-label">Brand</div>
               <div class="mapping-control">
-                <input id="map-brand" class="wizard-input" placeholder="e.g. Tide (free text — same brand for the whole catalog)" />
-                <div class="mapping-note">Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.</div>
+                <div style="display:flex;align-items:center;gap:0;margin-bottom:6px;">
+                  <button id="map-brand-mode-text" type="button" class="map-brand-mode-btn active" data-mode="text"
+                    style="padding:4px 14px;font-size:12px;font-weight:600;border:1px solid #cbd5e1;border-right:none;border-radius:6px 0 0 6px;cursor:pointer;background:#3b82f6;color:#fff;transition:all .15s;">
+                    Free text
+                  </button>
+                  <button id="map-brand-mode-col" type="button" class="map-brand-mode-btn" data-mode="col"
+                    style="padding:4px 14px;font-size:12px;font-weight:600;border:1px solid #cbd5e1;border-radius:0 6px 6px 0;cursor:pointer;background:#f8fafc;color:#64748b;transition:all .15s;">
+                    Column
+                  </button>
+                </div>
+                <input id="map-brand" class="wizard-input" placeholder="e.g. Tide (same brand for the whole catalog)" />
+                <select id="map-brand-col" class="wizard-input hidden"></select>
+                <div class="mapping-note" id="map-brand-note">Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.</div>
               </div>
             </div>
             <div class="mapping-row">
@@ -887,8 +1811,45 @@
               <div class="mapping-label">ASIN</div>
               <div class="mapping-control">
                 <select id="map-asin" class="wizard-input"></select>
+                <div class="mapping-note" id="map-asin-note">Leave blank to let the engine match ASINs from the Keepa export instead.</div>
               </div>
             </div>
+
+            <!-- Match-from-Keepa toggle -->
+            <div class="mapping-row" id="map-match-row" style="align-items:flex-start;">
+              <div class="mapping-label" style="padding-top:6px;">Match from Keepa</div>
+              <div class="mapping-control">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                  <label class="toggle-pill">
+                    <input type="checkbox" id="map-match-toggle" />
+                    <span class="slider"></span>
+                  </label>
+                  <span class="text-sm" style="color:#6b7480;">My catalog has no ASINs — find matches from the Keepa export</span>
+                </div>
+                <div id="map-match-methods" class="hidden" style="margin-top:8px;padding:10px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+                  <div class="text-xs" style="color:#64748b;font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;">Match methods</div>
+                  <div style="display:flex;flex-direction:column;gap:6px;">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                      <input type="checkbox" id="match-method-upc" checked style="width:14px;height:14px;" />
+                      <span class="text-sm" style="color:#374151;font-weight:500;">UPC / EAN</span>
+                      <span class="text-xs" style="color:#94a3b8;">exact digit match</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                      <input type="checkbox" id="match-method-item-id" checked style="width:14px;height:14px;" />
+                      <span class="text-sm" style="color:#374151;font-weight:500;">Item ID / MPN</span>
+                      <span class="text-xs" style="color:#94a3b8;">fuzzy model number match</span>
+                    </label>
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                      <input type="checkbox" id="match-method-title" checked style="width:14px;height:14px;" />
+                      <span class="text-sm" style="color:#374151;font-weight:500;">Title similarity</span>
+                      <span class="text-xs" style="color:#94a3b8;">token-set fuzzy match on product name</span>
+                    </label>
+                  </div>
+                  <div class="text-xs" style="color:#94a3b8;margin-top:8px;">Each catalog row can match up to 8 candidates. You review and approve one per row after verification.</div>
+                </div>
+              </div>
+            </div>
+
             <div class="mapping-row">
               <div class="mapping-label">Attributes</div>
               <div class="mapping-control">
@@ -1018,6 +1979,163 @@
     </div>
   </div>
 
+  <!-- ==================== Analytics AI Check modal ==================== -->
+  <div id="analytics-ai-check-modal" class="modal-backdrop hidden" style="align-items:center; justify-content:center; padding:0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width:440px; box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background:#ede9fe; color:var(--purple-700);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold text-base" style="color:#1e293b;">AI Check candidates</div>
+            <div class="text-xs mt-1" style="color:#64748b;">GPT-4o-mini reviews each candidate against the vendor item and adds an Approve / Reject / Uncertain badge. Your scored verdicts are not changed.</div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <label class="abbr-label">Which categories to check</label>
+          <div class="flex gap-4 mt-2">
+            <label class="flex items-center gap-2 text-sm" style="color:#334155;cursor:pointer;">
+              <input type="checkbox" id="ai-check-filter-review" checked style="accent-color:#6366f1;width:15px;height:15px;">
+              Review
+            </label>
+            <label class="flex items-center gap-2 text-sm" style="color:#334155;cursor:pointer;">
+              <input type="checkbox" id="ai-check-filter-not-approved" style="accent-color:#6366f1;width:15px;height:15px;">
+              Not Approved
+            </label>
+            <label class="flex items-center gap-2 text-sm" style="color:#334155;cursor:pointer;">
+              <input type="checkbox" id="ai-check-filter-approved" style="accent-color:#6366f1;width:15px;height:15px;">
+              Approved
+            </label>
+          </div>
+        </div>
+        <div id="ai-check-estimate" class="mt-3 rounded-lg px-4 py-3 text-xs" style="background:#f8fafc; border:1px solid #e2e8f0; color:#475569; line-height:1.6;">
+          Loading estimate…
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-2 rounded-b-xl" style="border-top:1px solid var(--grey-100); background:var(--grey-50);">
+        <button id="ai-check-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ai-check-confirm" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Start AI Check
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Apply AI Decisions confirmation ==================== -->
+  <div id="analytics-ai-apply-modal" class="modal-backdrop hidden" style="align-items:center; justify-content:center; padding:0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width:440px; box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background:#d1fae5; color:#059669;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold text-base" style="color:#1e293b;">Apply AI Decisions</div>
+            <div class="text-sm mt-1 leading-relaxed" style="color:#64748b;">
+              All AI verdicts will be applied to the actual candidate verdicts:
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 rounded-lg px-4 py-3 text-sm" style="background:#f8fafc; border:1px solid #e2e8f0; color:#334155; line-height:1.8;">
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full" style="background:#10b981;flex-shrink:0;"></span>
+            <span><strong>Approved AI</strong> → moved to <strong>Verified</strong></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full" style="background:#ef4444;flex-shrink:0;"></span>
+            <span><strong>Rejected AI</strong> → moved to <strong>Not Approved</strong></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2 h-2 rounded-full" style="background:#94a3b8;flex-shrink:0;"></span>
+            <span><strong>Uncertain AI</strong> → left unchanged</span>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-2 rounded-b-xl" style="border-top:1px solid var(--grey-100); background:var(--grey-50);">
+        <button id="ai-apply-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="ai-apply-confirm" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Apply
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Stop & Delete analytics run confirmation ==================== -->
+  <div id="analytics-stop-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width: 420px; box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background: #fee2e2; color: var(--red-500);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          </div>
+          <div>
+            <div class="font-semibold text-base" style="color: var(--navy-800);">Stop &amp; delete this run?</div>
+            <div class="text-sm mt-1 leading-relaxed" style="color: #6b7480;">
+              This will immediately stop the search and permanently delete the run along with all candidates found so far.<br>
+              <span class="font-medium" style="color: var(--red-600);">This cannot be undone.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-2 rounded-b-xl" style="border-top: 1px solid var(--grey-100); background: var(--grey-50);">
+        <button id="analytics-stop-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="analytics-stop-confirm" class="btn btn-danger">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+          Yes, stop &amp; delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Re-score modal ==================== -->
+  <div id="analytics-rescore-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
+    <div class="bg-white rounded-xl shadow-xl" style="width: 440px; box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
+      <div class="px-6 pt-6 pb-2">
+        <div class="flex items-start gap-4">
+          <div class="flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center" style="background: #ede9fe; color: var(--purple-700);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </div>
+          <div class="flex-1">
+            <div class="font-semibold text-base" style="color: var(--navy-800);">Re-score candidates</div>
+            <div class="text-sm mt-1 leading-relaxed" style="color: #6b7480;">
+              Pick which column to use for title comparison. Amazon search results won't change — only the confidence scores are recalculated.
+            </div>
+          </div>
+        </div>
+        <div class="mt-4">
+          <label class="abbr-label">Title column for scoring</label>
+          <select id="analytics-rescore-col" class="abbr-input mt-1"></select>
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label" style="display:flex; align-items:center; justify-content:space-between;">
+            <span>Brand <span class="mapping-note-inline">optional — worth up to 70 pts in scoring</span></span>
+            <button type="button" id="analytics-rescore-brand-mode-btn" class="mapping-note-inline" style="cursor:pointer; color:var(--purple-700); background:none; border:none; padding:0; font:inherit; text-decoration:underline; white-space:nowrap;">use a column instead</button>
+          </label>
+          <input id="analytics-rescore-brand-text" class="abbr-input mt-1" placeholder="e.g. Purell" autocomplete="off" />
+          <select id="analytics-rescore-brand-col" class="abbr-input mt-1 hidden"></select>
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label">Min BSR <span class="mapping-note-inline">ASINs more popular than this rank → Not Approved (0 = no floor)</span></label>
+          <input id="analytics-rescore-min-rank" type="number" min="0" step="1000" class="abbr-input mt-1" placeholder="e.g. 1000 (0 = no floor)" />
+        </div>
+        <div class="mt-3">
+          <label class="abbr-label">Max BSR <span class="mapping-note-inline">ASINs above this rank → Not Approved (0 = no ceiling)</span></label>
+          <input id="analytics-rescore-max-rank" type="number" min="0" step="10000" class="abbr-input mt-1" placeholder="e.g. 500000 (0 = no ceiling)" />
+        </div>
+      </div>
+      <div class="flex justify-end gap-2 px-6 py-4 mt-3 rounded-b-xl" style="border-top: 1px solid var(--grey-100); background: var(--grey-50);">
+        <button id="analytics-rescore-cancel" class="btn btn-secondary">Cancel</button>
+        <button id="analytics-rescore-confirm" class="btn btn-primary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Re-score
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- ==================== AI Re-check modal ==================== -->
   <div id="ai-recheck-modal" class="modal-backdrop hidden" style="align-items: center; justify-content: center; padding: 0;">
     <div class="bg-white rounded-xl w-[540px] p-6 shadow-xl" style="box-shadow: 0 24px 60px rgba(0,0,0,0.28);">
@@ -1123,8 +2241,8 @@
         <table class="results-table">
           <thead>
             <tr>
-              <th>Vendor Title</th><th>ASIN</th><th>Conf.</th><th>Verdict</th>
-              <th>UPC</th><th>Item</th><th>Brand</th><th>Title</th><th>Pack</th>
+              <th>Vendor Title</th><th>ASIN</th><th>Amazon Title</th><th>Conf.</th><th>Verdict</th>
+              <th>UPC</th><th>Item ID / MPN</th><th>Brand</th><th>Title</th><th>Pack</th>
               <th class="text-right">Action</th>
             </tr>
           </thead>
@@ -1193,15 +2311,15 @@
         <!-- Step 1 — File drop -->
         <div class="wizard-step" data-awiz-panel="1">
           <div class="wizard-step-title">Upload the vendor file</div>
-          <div class="wizard-step-hint">Drop the file vendors sent you — .xlsx, .xls, .csv, or .tsv. You'll tell us which row holds the real headers next.</div>
+          <div class="wizard-step-hint">Drop the file vendors sent you — .xlsx, .csv, or .tsv. You'll tell us which row holds the real headers next.</div>
           <div id="awiz-drop" class="drop-zone-lg">
             <div class="drop-zone-icon">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             </div>
             <div class="drop-zone-primary">Click to select file or drag and drop</div>
-            <div class="drop-zone-secondary">Supports .xlsx, .xls, .csv, .tsv</div>
+            <div class="drop-zone-secondary">Supports .xlsx, .csv, .tsv</div>
           </div>
-          <input type="file" id="awiz-file-input" accept=".xlsx,.xls,.csv,.tsv" class="hidden" />
+          <input type="file" id="awiz-file-input" accept=".xlsx,.csv,.tsv" class="hidden" />
           <div id="awiz-file-card" class="wizard-file-card hidden">
             <div class="wizard-file-icon">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -1217,6 +2335,15 @@
         <div class="wizard-step hidden" data-awiz-panel="2">
           <div class="wizard-step-title">Which row holds the column headers?</div>
           <div class="wizard-step-hint">Vendors often put company info or notes at the top. Click the row where your real headers live (UPC, Brand, Title, …). Everything above gets skipped.</div>
+
+          <!-- Sheet selector — shown only for multi-sheet workbooks -->
+          <div id="awiz-sheet-bar" class="hidden" style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:9px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#0284c7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+            <span style="font-size:0.8125rem;font-weight:600;color:#0c4a6e;white-space:nowrap;">Sheet:</span>
+            <select id="awiz-sheet-select"></select>
+            <span id="awiz-sheet-loading" class="hidden" style="font-size:0.75rem;color:#0369a1;">Loading…</span>
+          </div>
+
           <div class="awiz-preview-wrap">
             <table id="awiz-preview-table" class="awiz-preview-table">
               <tbody></tbody>
@@ -1230,23 +2357,72 @@
         <!-- Step 3 — Map columns -->
         <div class="wizard-step hidden" data-awiz-panel="3">
           <div class="wizard-step-title">Map the columns</div>
-          <div class="wizard-step-hint" id="awiz-map-hint">Tell us which column is which. The UPC / EAN column is the one we'll search for on Amazon.</div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-            <div>
-              <label class="abbr-label">UPC / EAN <span style="color: var(--purple-700)">*</span></label>
+          <div class="wizard-step-hint" id="awiz-map-hint">Tell us which column is which.</div>
+
+          <!-- Mode toggle — drives which identifier is primary -->
+          <div style="display:flex;align-items:center;gap:10px;margin:14px 0 4px;padding:12px 16px;background:var(--grey-50,#f7f8fa);border:1px solid var(--grey-100,#eef0f4);border-radius:10px;">
+            <span style="font-size:12px;font-weight:700;color:#475569;white-space:nowrap;">Catalog type</span>
+            <div style="display:flex;gap:0;background:#e2e8f0;border-radius:20px;padding:3px;">
+              <button id="awiz-map-mode-cpg" type="button" data-mode="cpg"
+                style="padding:5px 16px;font-size:12px;font-weight:600;border-radius:16px;border:none;cursor:pointer;background:var(--purple-600,#5b42b8);color:#fff;transition:background 140ms,color 140ms;">CPG</button>
+              <button id="awiz-map-mode-medical" type="button" data-mode="medical"
+                style="padding:5px 16px;font-size:12px;font-weight:600;border-radius:16px;border:none;cursor:pointer;background:transparent;color:#64748b;transition:background 140ms,color 140ms;">Medical</button>
+            </div>
+            <span id="awiz-map-mode-hint" class="text-xs" style="color:#94a3b8;flex:1;">
+              <strong style="color:var(--purple-700);">CPG</strong> — UPC/EAN is the primary search identifier.
+            </span>
+          </div>
+
+          <div class="awiz-map-grid mt-3">
+            <!-- Row 1: UPC | Item ID -->
+            <div class="awiz-map-field" id="awiz-map-upc-wrap">
+              <div class="awiz-map-field-head">
+                <span class="abbr-label" id="awiz-map-upc-label">UPC / EAN <span id="awiz-upc-req" style="color:var(--purple-700)">*</span></span>
+                <span id="awiz-upc-opt" class="awiz-map-note hidden">optional — still searched if provided</span>
+              </div>
               <select id="awiz-map-upc" class="abbr-input"></select>
             </div>
-            <div>
-              <label class="abbr-label">Item ID / Part Number</label>
+            <div class="awiz-map-field" id="awiz-map-itemid-wrap">
+              <div class="awiz-map-field-head">
+                <span class="abbr-label" id="awiz-map-itemid-label">Item ID / Part Number <span id="awiz-itemid-req" class="hidden" style="color:var(--purple-700)">*</span></span>
+                <span id="awiz-itemid-opt" class="awiz-map-note">optional — still searched if provided</span>
+              </div>
               <select id="awiz-map-itemid" class="abbr-input"></select>
             </div>
-            <div>
-              <label class="abbr-label">Vendor Title <span style="color: var(--purple-700)">*</span></label>
+            <!-- Row 2: Vendor Title | Search Title -->
+            <div class="awiz-map-field">
+              <div class="awiz-map-field-head">
+                <span class="abbr-label">Vendor Title <span style="color:var(--purple-700)">*</span></span>
+              </div>
               <select id="awiz-map-title" class="abbr-input"></select>
             </div>
-            <div>
-              <label class="abbr-label">Brand (type the brand for every row)</label>
+            <div class="awiz-map-field">
+              <div class="awiz-map-field-head">
+                <span class="abbr-label">Search Title</span>
+                <span class="awiz-map-note">optional — used only for Amazon keyword search, not for scoring</span>
+              </div>
+              <select id="awiz-map-search-title" class="abbr-input"></select>
+            </div>
+            <!-- Row 3: Brand (full width) -->
+            <div class="awiz-map-field awiz-map-field--full">
+              <div class="awiz-map-field-head">
+                <span class="abbr-label" id="awiz-brand-mode-label">Brand <span class="awiz-map-note" style="margin-left:4px;">(type one brand for every row)</span></span>
+                <button type="button" id="awiz-brand-mode-btn" class="awiz-brand-toggle-btn">use a column instead</button>
+              </div>
               <input id="awiz-map-brand" class="abbr-input" placeholder="e.g. Oral-B" autocomplete="off" />
+              <select id="awiz-map-brand-col" class="abbr-input hidden"></select>
+            </div>
+          </div>
+
+          <!-- Passthrough columns — user picks extra vendor columns to carry into export -->
+          <div style="margin-top:18px;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              <span style="font-size:0.8125rem;font-weight:700;color:#374151;">Carry-through columns</span>
+              <span style="font-size:0.75rem;color:#9ca3af;">Select vendor columns to include in the export (e.g. Cost, Available Qty)</span>
+            </div>
+            <div id="awiz-passthrough-list" style="display:flex;flex-wrap:wrap;gap:6px;min-height:30px;">
+              <span id="awiz-passthrough-empty" style="font-size:0.75rem;color:#9ca3af;align-self:center;">No extra columns with data to carry through</span>
             </div>
           </div>
 
@@ -1294,18 +2470,49 @@
 
           <!-- Title-only options — only shown if Title is checked -->
           <div id="awiz-title-opts" class="hidden awiz-title-opts">
-            <div class="flex items-center justify-between">
-              <label class="text-xs" style="color: #475569;">Pages per title (≈10 ASINs each)</label>
-              <input id="awiz-title-pages" type="number" min="1" max="10" value="5" class="w-16 text-sm rounded border px-2 py-1" style="border-color: #e2e6ec;" />
+            <div class="flex items-center gap-3 mt-1">
+              <div class="flex-1">
+                <div class="text-xs font-semibold mb-1" style="color:#334155;">Pages per title</div>
+                <div class="flex items-center gap-2">
+                  <input id="awiz-title-pages" type="number" min="1" max="10" value="1" class="abbr-input" style="width:70px;" />
+                  <span class="text-xs" style="color:#64748b;">× 20 results = candidates per title</span>
+                </div>
+                <div class="text-xs mt-1" style="color:#94a3b8;">Page 1 almost always contains the best match. Extra pages add noise and slow the run significantly.</div>
+              </div>
             </div>
-            <label class="flex items-center gap-2 text-xs cursor-pointer mt-2" style="color: #475569;">
+            <label class="flex items-center gap-2 text-xs cursor-pointer mt-3" style="color: #475569;">
               <input type="checkbox" id="awiz-title-ai-clean" />
-              Use GPT-4o to clean vendor titles before searching (costs extra tokens)
+              Use GPT-4o-mini to clean vendor titles before searching
+              <span id="awiz-ai-cost-hint" style="display:none; margin-left:6px; padding:2px 8px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span>
             </label>
           </div>
 
           <label class="abbr-label mt-4">Run name</label>
-          <input id="awiz-run-name" class="abbr-input mb-4" placeholder="e.g. Acme — April restock" />
+          <input id="awiz-run-name" class="abbr-input mb-2" placeholder="e.g. Acme — April restock" />
+          <div class="flex items-center gap-3 mb-2">
+            <label class="abbr-label" style="margin-bottom:0; white-space:nowrap;" for="awiz-min-rank">Min BSR</label>
+            <input id="awiz-min-rank" type="number" min="0" step="1000" class="abbr-input" style="width:150px;" placeholder="e.g. 1000 (0 = no limit)" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs more popular than this rank → Not Approved</span>
+          </div>
+          <div class="flex items-center gap-3 mb-4">
+            <label class="abbr-label" style="margin-bottom:0; white-space:nowrap;" for="awiz-max-rank">Max BSR</label>
+            <input id="awiz-max-rank" type="number" min="0" step="10000" class="abbr-input" style="width:150px;" placeholder="e.g. 500000 (0 = no limit)" />
+            <span class="text-xs" style="color:#94a3b8;">ASINs above this rank → Not Approved</span>
+          </div>
+          <div class="flex items-center gap-3 mb-4">
+            <label class="abbr-label" style="margin-bottom:0; white-space:nowrap;">Catalog Type</label>
+            <div class="flex items-center gap-0 rounded-lg overflow-hidden" style="border:1px solid #cbd5e1;">
+              <button id="awiz-mode-cpg" type="button" class="vetting-mode-btn active" data-mode="cpg"
+                style="padding:6px 16px; font-size:13px; font-weight:600; border:none; cursor:pointer; background:#3b82f6; color:#fff; transition:all 0.15s;">
+                CPG
+              </button>
+              <button id="awiz-mode-medical" type="button" class="vetting-mode-btn" data-mode="medical"
+                style="padding:6px 16px; font-size:13px; font-weight:600; border:none; cursor:pointer; background:#f8fafc; color:#64748b; transition:all 0.15s;">
+                Medical
+              </button>
+            </div>
+            <span id="awiz-mode-hint" class="text-xs" style="color:#94a3b8;">CPG: UPC is primary identifier (+50 pts). Medical: MPN is primary identifier (+40 pts exact).</span>
+          </div>
           <div id="awiz-summary" class="awiz-summary"></div>
         </div>
 
@@ -1319,6 +2526,10 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <!-- Shared overlay — dims the main content when any side panel is open -->
+  <div id="panel-overlay"></div>
+
+  <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
+  <script src="/static/app.js?v=32"></script>
 </body>
 </html>

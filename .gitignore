@@ -1,34 +1,95 @@
-# Python
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+# ── Virtual environments ──────────────────────────────────────────────────────
 .venv/
 venv/
 env/
-*.egg-info/
+ENV/
+venv.bak/
+env.bak/
 
-# SQLite DB (created on first run)
+# ── Build / packaging ─────────────────────────────────────────────────────────
+*.egg-info/
+*.egg
+dist/
+build/
+pip-log.txt
+
+# ── SQLite database (created on first run) ────────────────────────────────────
 catalog_verifier.db
 catalog_verifier.db-journal
 catalog_verifier.db-wal
 catalog_verifier.db-shm
 
-# Environment
+# ── Environment / secrets — NEVER commit these ────────────────────────────────
 .env
 .env.local
+.env.production
+.env.staging
+.env.test
+# Keep .env.example / .env.template (safe to commit as documentation)
+!.env.example
+!.env.template
 
-# IDE / OS
+# ── Test / coverage artifacts ─────────────────────────────────────────────────
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+nosetests.xml
+test-results/
+
+# ── Type-checker / linter caches ──────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# ── IDE / editors ─────────────────────────────────────────────────────────────
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Windows ───────────────────────────────────────────────────────────────────
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
-# Logs
+# ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
+logs/
 
-# User data / uploads (Excel files, sample exports — not source)
+# ── User-uploaded / exported data files (runtime artifacts, not source) ───────
 *.xlsx
 *.xls
 *.csv
+
+# Keep the bundled sample files that ship with the app
+!static/sample/*.xlsx
+!static/sample/*.xls
+!static/sample/*.csv
+
+# ── Jupyter (unlikely here, but common in analytics projects) ─────────────────
+.ipynb_checkpoints/
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
+*.orig

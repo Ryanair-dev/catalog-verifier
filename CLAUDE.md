@@ -1,0 +1,644 @@
+# CLAUDE.md — Project Intelligence for catalog-verifier
+
+_Last updated: 2026-06-11_
+
+**Changes this session (2026-06-11):**
+- **Pair Library remodeled: one UPC may map to MANY ASINs; authority is ASIN-keyed** (`services/database.py`, `routers/pairs.py`, `static/index.html`, `static/app.js`): The first build forced one ASIN per identifier (global PK on `pair_library_ids(id_type,identifier)`), but a real import file was 53 ASINs / 14 UPCs — the same UPC shared across up to 8 ASINs (one product, many Amazon listings). Under the old model that collapsed to 14 pairs (39 dropped, last-wins). Remodeled to **per-ASIN identifier uniqueness**: `pair_library_ids` PK is now `(asin, id_type, identifier)` (with an additive migration that RENAMEs the old table, recreates with the new PK, copies rows, drops old — idempotent, preserves data). Now an identifier can sit under many ASINs AND an ASIN keeps its own UPCs (primary + accumulating aliases). `upsert_library_pair` no longer moves identifiers between ASINs / orphan-cleans / deletes conflicting verified rows (a shared UPC is valid on many ASINs); it just upserts the per-ASIN id and mirrors (upc/ean,asin) into `verified_items` (all barcode forms) + clears the exact blacklist pair. Returns dropped `ids_moved`. **Authority moved to read time, ASIN-keyed**: new `_library_asin_upcs()` → `{asin:{upc forms}}`; `load_verified_set()` excludes a system-saved verified pair only when its ASIN IS in the library but its UPC is NOT one imported for that ASIN (so a slipped-through wrong pair for a known ASIN is overridden, while a UPC's other legitimate ASINs and unknown ASINs are untouched), and always unions in the library's own pairs; `load_blacklist_set()` excludes a blacklist entry that exactly matches a library pair. Replaced `_library_upc_precedence` (single-ASIN map). `load_pair_library_map()` now returns `{(type,ident):{asins}}`; lookup-export emits ONE Matched row per matching ASIN (a UPC lookup returns EVERY ASIN — the "export every ASIN" goal) and adds a supplied-but-unknown ASIN as a new pair (additive, no longer a "conflict"). UI/template copy updated to describe many-ASINs-per-UPC + per-ASIN authority; `ids_moved` removed from the import summary. Verified end-to-end on the real 53-row file (all 53 kept, shared UPC verifies for all its ASINs, slipped pair overridden, blacklist-of-library-pair ignored, alias case intact, lookup returns all ASINs) + the old→new migration.
+- **Wizard dropdowns upgraded to the custom component + carry-through picker now hides empty columns + Pair Library / pill visual polish** (`static/app.js`, `static/index.html`, `static/styles.css`): Three UI asks. (1) **Analytics wizard step-3 mapping selects** (`#awiz-map-upc/itemid/title/search-title/brand-col`) were plain native `<select>`s — `renderAwizMapping` now runs `enhanceSelect(sel, {block:true})` + `rebuildCustomMenu(sel)` on all five after populating options/values, so they render as the same `cs-*` custom dropdown used elsewhere (animated caret, focus ring, styled menu). `_applyBrandMode` now toggles `.hidden` on the brand-col's `.cs-wrap` wrapper (the native select is `.cs-native`-hidden after enhancement) via `closest('.cs-wrap')`. The existing `wireSelect` `onchange` handlers still fire because the cs component dispatches a bubbling `change` on the native select. (2) **Empty-column hiding (both the mapping dropdowns AND the carry-through pills)** — shared helper `_awizPopulatedCols()` returns `{populated:Set<colIdx>, hasDataRows}` from the preview sample (`state.awiz.preview.rows` after `headerRowIdx`). `renderAwizMapping` filters the `<option>` list to populated columns (so a stray empty "Column G" no longer appears), but ALWAYS keeps any currently-mapped index (`state.awiz.mapping` values) so a selection can't silently vanish. `renderAwizPassthrough` uses the same helper to only offer pills for populated, non-mapped columns. Both fall back to showing all when there are no data rows. Pill removal generalized to drop any pill whose column left `available` (mapped-away OR now-empty). (3) **Visual polish** — pills converted from inline styles to a `.pt-pill` class (+ `.pt-pill.selected` with a ✓ and focus glow, hover, active-scale, entrance animation); Pair Library card got `.plib-card` (brand-gradient top accent + fade-in) and its three sub-panels use `.plib-panel` (rounded border, hover lift + shadow, staggered entrance). All new animations honor `prefers-reduced-motion`. CSS vars used with literal fallbacks. Frontend-only — hard-refresh to see it.
+
+**Changes this session (2026-06-10):**
+- **Exact model/part-number match overrides false size-mismatch + pack difference** (`services/analytics/matcher.py`): User flagged 3M tape rows (e.g. vendor "3M 1530-1 Micropore Tape 1 in." itemid `1530-1`) landing in Not Approved with "size mismatch" against the correct Amazon listing ("...Tape 1530-1... 1 in x 10 yd, 12 Rolls/Carton"). Root cause was NOT a quantity issue: the vendor states only the tape WIDTH ("1 in") while Amazon states W×L ("1 in × 10 yd"), and Amazon's width fails to parse ("1 **inc**" misspelled / "1 IN" no period), so `_extract_imperial_in` dropped it and compared the vendor's 1-inch WIDTH against Amazon's 10-yd LENGTH (=360 in) → bogus `_linear_dims_mismatch`. Fix: new `_model_in_title(src_mpn, amz_title)` (alphanumerics-only substring; requires a SPECIFIC token ≥4 chars incl. a digit so "1"/"AB"/"Kit" never trigger) + `model_confirmed = brand_confirmed and _model_in_title(itemid/mpn, amz title)`. When `model_confirmed`: (a) it's a same-item floor → `total = max(total, 90)` alongside the brand+size floor; (b) the pack soft-cap is skipped (`if pack_mismatch and not model_confirmed`); (c) a detected `size_mismatch` is suppressed (set False) UNLESS `_has_vol_or_weight` is true on either title — so a model match overrides only the parsing-prone LINEAR mismatch, never a reliable volume/weight diff (same model "X100" at 8 oz vs 16 oz still hard-rejects). `model_confirmed` added to the scores dict. Precision verified: vendor `1530-1`→Amazon `1530-1` verifies (both real cases), but vendor `1527-1` (Transpore) →Amazon `1530-1` (Micropore) keeps `model_confirmed=False` and is NOT auto-approved (stays Review for manual look). Apply via rescore. NOTE: this is the matcher half — the third ASIN the user listed (B0009Q2OOK) was a search-recall miss (never returned by any tier; its row had an empty search_title + noisy vendor title) and needs a re-run/cleaner query, not a scoring change.
+- **Pair Library precedence: spreadsheet imports beat system-saved pairs at all times** (`services/database.py`): User rule — only spreadsheet-imported pairs are trusted as ground truth; pairs "saved via the system" (in-app Approve → save_verified, export round-trips, manual rejects → add_to_blacklist) may be wrong and must never contradict the library. The library was already import-only (nothing in run flows writes pair_library/aliases) and imports already delete conflicting verified rows — but BETWEEN imports a system action could create a conflicting verified pair or blacklist a library pair (blacklist wins in runs). Fix is enforced at READ time, not by blocking user actions: new `_library_upc_precedence()` returns {upc_form: ASIN} for every library upc/ean expanded via `_upc_mirror_forms`; `load_verified_set()` now EXCLUDES any verified row whose UPC the library maps to a different ASIN and always unions the library pairs in; `load_blacklist_set()` EXCLUDES entries that exactly match a library pair (the blacklist row stays in the table and remains visible/unlockable in the Pair Manager UI — runs just ignore it). Both loaders feed analytics runs (runner.py), rescores, and verify scans (scans.py), so precedence applies everywhere without changing any write path. Re-importing remains the way to change/kill a library pair. Verified by 13 checks incl. cross-barcode-form conflicts and re-import handover.
+- **Pair Library: import / export-by-brand / lookup-export on the Pair Manager page** (`services/database.py`, `routers/pairs.py`, `static/index.html`, `static/app.js`, `static/styles.css`): New feature — a manually-confirmed identifier→ASIN library with spreadsheet import and two export modes. **Schema** (CREATE TABLE IF NOT EXISTS in init_db): `pair_library(asin PK, brand, manufacturer, created_at, updated_at)` + `pair_library_ids(id_type, identifier, asin, is_primary, added_at, PK(id_type, identifier))` + indexes on (asin) and (brand). Model: each identifier points to exactly ONE ASIN (newest import wins — overwrite by design, imports are ground truth); an ASIN may carry many identifiers per type — first value = primary, the rest = aliases (solves the multi-UPC-per-item problem the user raised: re-importing a new UPC demotes the old one to an alias, nothing is lost). **DB helpers**: `upsert_library_pair(asin, ids, brand, manufacturer)` (single _LOCK transaction; moves identifiers between ASINs, orphan-cleans empty pair_library rows, mirrors every upc/ean into verified_items with review_status='Pair Library Import' across ALL equivalent barcode forms via `_upc_mirror_forms` (11/12/13/14-digit) — because verified_items is keyed by each flow's RAW string — deletes conflicting verified rows (same form, other ASIN) and clears exact blacklist entries), `pair_library_stats()`, `pair_library_rows(brand="")` (NOCASE brand filter; primary+aliases grouped), `load_pair_library_map()`, `search_pair_library(q)`. `save_verified` ON CONFLICT now PRESERVES review_status='Pair Library Import' (export round-trip re-saves must not erase provenance). **Endpoints** (routers/pairs.py): GET `/api/pairs/library/stats`; GET `/api/pairs/library/template?kind=import|lookup` (xlsx with Notes sheet); POST `/api/pairs/library/import` (fixed template ASIN|UPC|EAN|MPN/Item ID|Brand|Manufacturer — headers matched case-insensitively with synonyms (Item ID→mpn etc.), comma/semicolon multi-value UPC cells, 11→12 zero-pad, scientific-notation repair for BOTH float cells and text cells (`_cell`), barcode length validation {8,12,13,14} (`_norm_barcode` returns '' for junk so it never pollutes the auto-approve mirror), per-row skip reasons returned (capped 30)); GET `/api/pairs/library/export?brand=` (xlsx, 404 when empty); POST `/api/pairs/library/lookup-export` (upload UPC/EAN/MPN rows → xlsx Matched+Not Found sheets; UPC↔EAN cross-form matching via `_barcode_forms`; rows carrying identifier+valid ASIN not in library are SAVED (user rule: complete manual pairs are foolproof) and reported "Added to library"; a supplied ASIN that DISAGREES with the library match gets status "Matched — file says X, library says Y"; counts returned in X-Plib-Matched/Added/Notfound response headers); POST `/api/pairs/library/search`. Import + lookup processing run in `asyncio.to_thread` (event loop never blocked by per-row SQLite writes). **UI**: Pair Manager page gains a "Pair Library" card (stats line, 3 panels: Import w/ template link + result line, Export-by-brand w/ brand datalist autocomplete, Lookup&Export w/ template link); the search box now searches blacklist AND library in parallel (`Promise.all`) with a separate "Pair Library matches" results card. Export-by-brand uses fetch→blob so a 404 shows a toast instead of saving a JSON-error file; lookup uses raw fetch to read the X-Plib-* headers. `.btn-sm` added to styles.css (didn't exist). **Security fix (all 62 callers)**: `showToast` now sets the message via `textContent` instead of interpolating into innerHTML — toast text echoes server errors/uploaded-file content and was an XSS sink. Unlock Pair got try/catch + error toast. **Known/documented behavior**: manual verdict actions between imports can override the library (manual approve of upc→other-ASIN re-creates a conflicting verified row; manual reject can blacklist a library pair and blacklist wins over verified in both flows) — re-importing restores the library's truth. Same identifier listed twice in one file for different ASINs → last row wins.
+
+**Changes this session (2026-06-08):**
+- **Apparel-size (S/M/L/XL) hard reject + title-based colour hard reject** (`services/analytics/matcher.py`, `services/analytics/runner.py`, `routers/analytics.py`, `static/app.js`, `services/analytics/ai_check.py`): User: a garment-size difference (vendor "X-Large" vs Amazon "Medium") or a clear colour difference (Black vs White) is "categorically a no." (1) **New `_apparel_size_mismatch`** — `_GARMENT_SIZE_RE` + `_GARMENT_NORM` extract normalized clothing sizes (XS/S/M/L/XL/XXL/XXXL, incl. "X-Large", "Extra Large", "2XL", "Small/Medium" ranges; longest-token-first so "X-Large" isn't read as "Large"; bare single letters S/M/L are NOT matched to avoid model-number false positives). Fires when BOTH titles carry a garment size AND the size sets are disjoint ("X-Large"{XL} vs "Medium"{M} → reject; "Large"{L} vs "Large/X-Large"{L,XL} → share L → keep; "One Size Fits Most" → no size → no fire). This is SEPARATE from `_size_mismatch` (physical oz/ml/inch dimensions). (2) **`_color_mismatch` now falls back to the Amazon TITLE** when the structured `attributes.color` is empty (it usually is) — previously colour was only compared via the structured attr so "Black" vs "White" in titles never fired. Still requires BOTH sides to name a colour from the conservative `_COLOR_WORDS` set AND the sets to be disjoint, so "Black" vs "Black/Gray" and a colour-on-one-side-only (e.g. "Red Collection" vs a no-colour title) do NOT fire. Both run AFTER the same-item floors so they override even a UPC match (different size/colour = different UPC anyway). Wired: `apparel_size_mismatch` added to the returned scores dict, to `hard_reject` in `_upsert_candidate` + `_rescore_pipeline`, to `_HARD_REJECT_FLAGS` (analytics.py), and to `_verdictReason()` → "Size mismatch (S/M/L)" (app.js). AI prompt adds explicit apparel-size and colour hard-reject rules. **Apply via rescore** (matcher logic; `_rescore_pipeline` re-applies it). Verified: FUTURO socks "X-Large, Black" vs "Medium, Black" → conf 29 → Not Approved.
+- **Category-distance hard-reject no longer vetoes confirmed UPC/brand matches** (`services/analytics/runner.py`): In Medical mode, correct 100%-UPC matches were landing in Not Approved with reason "Category mismatch" — e.g. FUTURO Ultra Sheer Pantyhose (Amazon BSR category "Clothing"), Command hooks ("Tools & Home Improvement"), Scotch tape ("Office Products"). The category check maps the Amazon BSR top-level category and hard-rejects anything ≥5.0 from MEDICAL; but these are genuinely the vendor's products, just shelved by Amazon outside Health, so the veto was wrong (the AI even marked them ✓). Fix: in BOTH `_upsert_candidate` and `_rescore_pipeline`, the `category_mismatch` computation is now gated with `and not scores.get("upc_match") and not scores.get("brand_confirmed")` — i.e. the category distance only vetoes AMBIGUOUS matches (no UPC match AND brand not confirmed), which is its real purpose (catching cross-domain title-search noise). A confirmed UPC or normalized-brand match is trusted over Amazon's noisy category shelving. `category_mismatch` still hard-rejects for weak/ambiguous matches as before. **Apply via rescore** (logic lives in the runner, and `_rescore_pipeline` has the same gate) — no re-search needed.
+- **SP-API 403 (expired LWA client secret) now aborts the run with Amazon's actual reason instead of silently completing with 0 candidates** (`services/spapi/catalog.py`, `services/analytics/runner.py`): Diagnosed a "Complete, 0 candidates" run (3M/Atlantic catalogs) — runs 60/61 found 15k–17k candidates, then 62+ found 0 with the SAME catalog/code/BSR filter. Root cause was Amazon-side, NOT a code bug: a live SP-API probe returned **403** with body `{"code":"Unauthorized","details":"The LWA secret token you provided has expired."}` — i.e. the **LWA client secret expired** (Amazon rotates SP-API client secrets ~every 180 days). The refresh token itself was still valid (LWA token refresh succeeded), so the problem was specifically the client secret, not the refresh token or roles. Two issues fixed: (1) `catalog.py` `_get` was raising a generic `PermissionError("403 ... — check SP-API app roles/scopes.")` that DISCARDED Amazon's response body — it now parses `resp.json()["errors"][0].details/message` and includes it, so the real reason ("LWA secret token ... has expired") is visible. (2) The 403 `PermissionError` was being swallowed by the per-search `except Exception: log.warning; continue/break` handlers in `_tier1_upc` (Pass 1-3 `_run_batches` + Pass 4), `_tier2_itemid`, and `_tier3_title`, so the run completed with 0 candidates and no visible error. Each now has `except PermissionError: raise` BEFORE the generic handler, so the 403 propagates to `_run_pipeline`'s `except PermissionError`, which sets `status="Error"` with `phase=f"SP-API {exc}"` (e.g. "SP-API 403 on searchCatalogItems: The LWA secret token you provided has expired."). Transient per-term errors (timeouts, 400s) are still skipped. **Env note**: this `.env` uses `AMZ_CLIENT_ID` / `AMZ_CLIENT_SECRET` / `REFRESH_TOKEN` / `AMZ_SELLER_ID` (asin-scraper naming; `config.py` `_first_env` also accepts `SP_API_*` and `LWA_*`). Fix is to rotate the LWA client secret in Seller Central → Develop Apps → app → LWA credentials, update `AMZ_CLIENT_SECRET` in `.env`, restart. Diagnostic recipe: load `.env` in a one-off script, `LWATokenManager(...).get_token()` to test the refresh token, then a raw `requests.get` to `/catalog/2022-04-01/items` and print `resp.text` for the exact 403 body.
+- **Fix: "Could not load sheet: Cannot read properties of null (reading 'file')" error toasts** (`static/app.js`): The analytics-wizard sheet-picker `change` handler read `state.awiz.file` (non-optional) AFTER its `await _fetchAwizPreview(...)`. If the wizard was closed/reset while a sheet-preview request was in flight (`state.awiz` → null), the stale resolution threw on `state.awiz.file`, and several in-flight loads each produced an error toast (hence multiple identical toasts "out of nowhere" on the runs list). Fix: capture `const file = state.awiz.file` BEFORE the await; add `if (!state.awiz) return;` after the await to abort silently when the wizard closed; guard the catch block with `if (state.awiz)` so only genuine errors (wizard still open) surface a toast; null-guard `awizEl.next`. Also hardened `_applyAwizPreview` with an early `if (!state.awiz || !j) return;`. Frontend-only — just hard-refresh the browser.
+- **Candidates persist progressively after each search tier (was: only at the very end)** (`services/analytics/runner.py`): With all three methods selected the run showed 0 candidates for a long time and a Pause/Stop discarded everything — because `_run_pipeline` accumulated all tiers' hits in an in-memory `candidates_by_row` and only wrote them to the DB in a single "Vetting candidates" loop at the very end. Refactor: the end-of-run vetting loop was extracted into `_vet_and_store(run_id, rows_to_vet, candidates_by_row, extracted_brands, blacklist_set, verified_set, max_rank, min_rank, mode, phase_label)` and is now called **after each tier** over just the rows that tier touched (`[r for r in source_rows if r.row_idx in tierN]`), with phase labels "Scoring UPC matches" / "Scoring Item ID matches" / "Scoring title matches". `_upsert_candidate` already merges by (run_id,row_idx,asin) — unioning `sources` and keeping the best confidence — so a row hit by multiple tiers is re-vetted by the last tier that touched it with all accumulated sources, producing the same final score as the old single-pass vetting (verified end-to-end on a temp DB: UPC-then-Title on the same ASIN → merged sources `["UPC","Title"]`, conf 100). Benefits: (a) UPC matches appear in the UI as soon as Tier 1 finishes instead of after the whole (slow) search; (b) a Pause/Stop now keeps everything scored up to that point instead of losing the in-memory work. `blacklist_set`/`verified_set` are loaded once before the tiers. The separate final full-vet loop was removed (each row is already vetted by its last touching tier); a trailing `_recompute_run_counts` + Complete status remain. NOTE: searching all 3 methods is inherently slow (UPC's 4 passes incl. per-missed-UPC keyword fallback + one search per Item ID + paginated title search per product) — this change makes progress visible but does not speed up the search itself.
+- **Tier 3 title search query cleaning — drop pack/size noise, keep distinguishing words** (`services/analytics/runner.py`): A common product ("Vaseline Intensive Care Aloe Soothe Spray") stayed in Not Found even with the Title method enabled. Two causes in `_tier3_title`'s query construction: (a) the no-extraction path sent `"{brand} {raw_title}"` = "Vaseline VASELINE SPRAY 6/6.5oz ALOE" — the `6/6.5oz` slash-pack token wrecks Amazon keyword relevance; (b) the AI-extraction path used ONLY `"{brand} {product_type} {model}"`, which can DROP the distinguishing word ("aloe") and bury the right listing under a generic "Vaseline spray" query. Fix: new `_clean_search_query()` (+ `_QTY_NOISE_RE`) strips slash-pack codes ("6/6.5oz", "24/1ct", "12/6pk/22.5oz", "pk/144"), standalone sizes ("6.5oz", "1000g"), and "pack of N"/"N count"/"N pk" — while preserving every real product word AND shade codes ("#46") and meaningful numbers ("5 Hour", "WD40"). `_tier3_title` now builds the query as **brand + cleaned title** (brand not duplicated if the title already leads with it), so "VASELINE SPRAY 6/6.5oz ALOE" → query "VASELINE SPRAY ALOE". Extracted brand still preferred for the brand token; extracted product_type/model are only a fallback when there's no usable title. This is recall-first (find the candidate) with the matcher still doing precise scoring afterward. **Search-time fix** — applies to NEW runs (rescore doesn't re-query SP-API).
+- **Barcode recovery for EAN-13 stored without its check digit** (`services/analytics/runner.py`): A real product ("Vaseline Intensive Care Aloe Soothe Spray 6.5oz", EAN `0305210268494`) landed in Not Found because the vendor file's UPC column held `030521026849` — the EAN-13 with its trailing check digit (`4`) chopped off. That value matches neither Amazon's UPC (`021901441129`) nor — exactly — its EAN. `_all_id_forms` previously only converted UPC↔EAN by adding/removing a leading zero, so it generated `0030521026849` (prepend 0) and never tried the true EAN `0305210268494`. Fix: (1) new `_ean13_check_digit(d12)` computes the EAN-13 check digit; (2) new `_is_valid_upca(v)` validates a 12-digit UPC-A's own check digit; (3) in `_all_id_forms`, a 12-digit value that is NOT a self-consistent UPC-A now also yields `v + _ean13_check_digit(v)` (the recovered full EAN-13) — gated on the invalid-UPC-A test so genuine UPC-As (the vast majority) get no extra form and no extra SP-API call; (4) a 13-digit value now also yields its `v[:12]` truncation so the reverse matches. The recovered EAN flows into `eans_13` and is searched in Tier 1 Pass 3, and the return-side `_all_id_forms` on the fetched item's EAN intersects the row's forms → match. **Search-time fix**: applies to NEW runs (a rescore only re-scores existing candidates, it does not re-search SP-API), so the current run's Not Found rows need a fresh run to pick these up. Enabling the Title search method also catches such items by name.
+- **Pack/bundle differences approve (same item); shade/colour-variant hard reject** (`services/analytics/matcher.py`, `services/analytics/runner.py`, `routers/analytics.py`, `services/analytics/ai_check.py`, `static/app.js`): User rule — "if it's the same item and only the pack size differs, approve it"; but also flagged hair-colour shades getting mixed up (Bigen #46 Light Chestnut matched to #48 Dark Chestnut; rows #47 and #48 both matched the same #46 ASIN). Two coordinated changes. (1) **Pack no longer blocks a confirmed same-item match.** In `calculate_confidence` the `pack_mismatch` soft-cap (80) was moved to run BEFORE the `VERIFIED_FLOOR` (brand+title≥80→90) and the same-item floors (brand+size→90, UPC+brand/size→100), so any of those floors now override the pack cap — a vendor case of 144 vs an Amazon "3 Count" of the same per-unit product lands in Approved, not Review. The pack count is still surfaced (AMZ Pack column + "Pack ×N" — though the verdict is now Approved). (2) **`count_mismatch` suppressed when per-unit size is confirmed.** `count_mismatch = _unit_count_mismatch(...) and not size_confirmed`. Rationale: vendor "24/6oz" (case of 24) vs Amazon "6 oz, Pack of 6" — the `24/6` parses as count 24, Amazon "Pack of 6" as 6, which previously hard-rejected at 29. Since the per-unit 6oz size matches, the count difference is just case/bundle size, so it must not reject. Items with NO per-unit size (wipes "80 Count" vs "110 Count") keep `size_confirmed=False`, so count differences there still hard-reject (honours the earlier "count different = wrong item" rule for count-keyed SKUs). (3) **New `shade_mismatch` hard reject** (`_shade_mismatch` + `_TONE_WORDS` + `_SHADE_NUM_RE` in matcher.py): fires when both titles name a specific shade and they differ, via either (a) explicit shade codes — `#46` vs `#48`, `No. 7` vs `No. 5`, `48 Dark` (bare number before a tone/colour word) — collected by `_shade_codes()` and compared with `isdisjoint`, or (b) tonal qualifiers (`light`/`medium`/`dark`/`deep` + `-est`/`-er` forms) present on both sides and disjoint ("Light Chestnut" vs "Dark Chestnut"). Only fires when BOTH sides carry a shade signal, so plain CPG is never penalised. Runs AFTER the floors so it overrides a brand+size match — this is the safety net that stops same-brand+same-size shade variants (Bigen, Clairol, etc.) from being wrongly approved. `_TONE_WORDS` deliberately excludes "natural/warm/cool/rich/soft"; brands whose NAME contains a tone word ("Dark & Lovely") fail toward not-blocking (tone appears on both sides → not disjoint) rather than false-rejecting. Wired into `hard_reject` in `_upsert_candidate` + `_rescore_pipeline` (runner.py), `_HARD_REJECT_FLAGS` (analytics.py high-conf promotion guard), `_verdictReason()` → "Shade/color mismatch" (app.js). AI prompt (`ai_check.py`) updated: pack/bundle differences → approve when brand+type+size match; per-unit count SKU (no size) differences → reject; shade-code or tonal-qualifier differences → hard reject. **Requires a rescore** to apply to existing runs (all in `calculate_confidence`).
+- **ASIN conflict cap disabled for verdicts; high-confidence (≥90) auto-promoted to Approved** (`routers/analytics.py` `get_run_detail`): User rule — "if confidence is ≥90 it must be in Approved." Two problems caused 90% items to sit in Review: (a) the **ASIN conflict cap** downgraded `verified→review` and **persisted** it to DB whenever the same ASIN matched >1 catalog row (extremely common after the brand-normalization change pushed many more items to 90%); once persisted, subsequent loads showed verdict='review' with reason "Score 90%" (the `conflict_capped` flag was only set on the downgrade request, so the "ASIN conflict" reason never re-appeared). (b) Those persisted items had no mechanism to return to Approved. Fixes: (1) **Conflict cap downgrade removed** — the `asin_conflicts` map is still computed and returned so the informational "⚠ Conflict" badge still renders (lets the user spot/​manually-discard a genuine ambiguous match), but the verdict is no longer changed and nothing is persisted. `_to_conflict_cap` is retained as an always-empty list for the ai_verdict_counts refresh guard. (2) **Run-wide high-confidence promotion** — a single bulk `UPDATE analytics_candidates SET verdict='verified' WHERE run_id=? AND verdict='review' AND (review_status IS NULL OR review_status='') AND confidence >= AUTO_APPROVE AND <hard-reject flags via json_extract all 0> AND pack_mismatch=0 AND NOT (max_rank>0 AND rank>max) AND NOT (min_rank>0 AND rank<min)` promotes ALL qualifying review items across the whole run (not just the current page) in one statement. Hard-reject + pack flags live in `data_json.scores` so they're tested with `COALESCE(json_extract(data_json,'$.scores.<flag>'),0)=0`; `sales_rank` is a column. Manual/AI decisions (non-empty `review_status`, incl. `ai-accepted`/`ai-rejected`) are respected. Current-page in-memory `candidates` are patched to `verified` (+`auto_verified=True`) so THIS response is consistent, then `_recompute_run_counts` syncs tab badges. Idempotent: after the first promotion the bulk UPDATE matches 0 rows (uses the `(run_id, verdict)` index). Refresh guard updated to `if _to_conflict_cap or _to_promote or _to_verify`. **Tradeoff**: two different vendor rows matching the same ASIN at ≥90 will now both land in Approved (per user rule); the ⚠ Conflict badge is the manual-review signal. Existing runs apply this automatically on next load — no rescore needed.
+- **Brand normalization + same-item confirmation floors** (`services/analytics/matcher.py`, `services/analytics/ai_check.py`): Vendor and Amazon brand strings that refer to the same brand were failing the substring/word-exact checks and only getting partial fuzzy brand credit, so true matches (e.g. Selsun Blue 11oz) sat at ~78% in Review and got AI-rejected. Three additions: (1) **Brand normalization** — new `_normalize_brand()` lowercases, drops apostrophes, splits on non-alphanumerics, strips corporate/legal suffixes + generic descriptors (`_BRAND_NOISE_WORDS`: inc, llc, ltd, corp, co, health, healthcare, medical, pharma, labs, industries, products, brands, group, holdings, international, usa, global, the, …), and concatenates remaining tokens so spacing no longer matters. New `_brands_match()` returns True on normalized exact match, prefix containment (≥5 chars, e.g. "SheaMoisture"⊂"SheaMoistureOrganic"), or fuzzy ≥88 on normalized forms. Handles "Shea Moisture"="SheaMoisture", "Cardinal Health"="Cardinal", "Moleskine"="Moleskin", "Palmer's"="Palmers". Wired into `calculate_confidence` brand block as a new branch (sets `brand_score=BRAND_MAX` + `brand_confirmed=True`). The plain fuzzy fallback also sets `brand_confirmed=True` when best≥90. (2) **`_size_match()`** — positive counterpart to `_size_mismatch`: returns True when BOTH sides have a parseable size (volume oz/ml/l/gal, weight lb/kg, OR linear inches/cm/mm) and they agree within 10% (with the same per-unit/pack-count division logic as `_size_mismatch`). (3) **Same-item confirmation floors** in `calculate_confidence` (run AFTER VERIFIED_FLOOR, BEFORE the hard-reject caps so contradictions still override): `upc_match AND (brand_confirmed OR size_confirmed)` → total=**100**; `brand_confirmed AND size_confirmed` → floor at **90** (verified). The pack_mismatch soft-cap (80) was moved to run after these floors so a same-item match with a pack difference still lands in Review. New keys `brand_confirmed` + `size_match` added to the returned scores dict. Hard rejects (count/scent/size/gender/color/category/media) are unchanged and still cap to 29 → Not Approved, so "80ct vs 110ct", "Lavender vs Citrus", and "8oz vs 16oz" are still rejected even with a brand match. Both `_upsert_candidate` and `_rescore_pipeline` read `confidence_score` from `calculate_confidence`, so the floors apply automatically to both new runs and rescores — **existing runs must be rescored to pick up the new logic**. (4) **AI check prompt** (`ai_check.py` `_SYSTEM`) — added brand rule #5 (treat brands differing only by spacing/punctuation/case/corporate-suffix/minor-spelling as the SAME brand, with the same examples) and a strong SAME-ITEM rule (same brand + size within 10% + same core product type → 'approve'). After a rescore, re-run AI check so the ✗ AI badges refresh. **Known tradeoff**: brand+size→verified does not detect product-type differences that share a brand and size (e.g. SheaMoisture shampoo vs SheaMoisture body lotion, both 13oz, will both verify) — this matches the user's explicit "same brand + same size = same item" instruction; the AI check is the product-type safety net.
+- **UPC Tier 1 Pass 4 progress + off-by-one fix** (`services/analytics/runner.py`): A run stuck at "235/236 batches" for hours was actually still working — Pass 4 (keyword fallback for UPCs that got zero results from passes 1-3) had ZERO progress updates and runs one keyword search per missed UPC with a 0.6s sleep between each, so thousands of EAN-13 misses → ~90 min of silent work while the bar stayed frozen on Pass 3's last value. Fixes: (1) Pass 4 now sets `phase="Tier 1 / UPC keyword fallback (N items)"` and updates `done/total` every 10 items (and on the error-continue path). (2) `_run_batches` had an off-by-one (loop ended at `done=N-1`); it now writes `done=N` after the loop completes. For a currently-stuck run: Stop + Resume (resume skips rows that already have candidates).
+
+**Changes this session (2026-06-01):**
+- **Analytics wizard passthrough columns** (`services/database.py`, `services/analytics/runner.py`, `routers/analytics.py`, `static/index.html`, `static/app.js`): Users can now select additional vendor file columns (e.g. Cost, Available Qty, MOQ) in wizard step 3 to carry into the export. These columns appear after the fixed columns in every sheet of the Excel download. Implementation: (1) DB — additive migration adds `passthrough_cols TEXT DEFAULT ''` to `analytics_runs`. (2) runner.py — `start_analytics_run` accepts `passthrough_cols: str = ""` and stores it in the INSERT. (3) router — `create_analytics_run` accepts `passthrough_cols: str = Form("")`, validates as JSON array of strings, stores via `start_analytics_run`. Export reads `passthrough_cols` from run row, extends the `cand_hdr` list, fetches `json_extract(data_json, '$.raw')` from each catalog row (raw dict already stores every column keyed by header name), and appends the values for each selected column. Both the candidate sheets (Approved/Review/Not Approved) and the Not Found sheet receive the passthrough values. No new data needs to be stored per row — `SourceRow.raw` already exists. (4) HTML — "Carry-through columns" panel in step 3 with a flex-wrap container for pills. (5) JS — `renderAwizPassthrough()` builds toggle pills for all headers NOT already assigned to a primary mapping field; pill turns indigo when selected; selecting a column that gets later-mapped auto-removes it from the selection set; pills cleared on wizard reset; selected header names sent as `JSON.stringify([...passthroughCols])` in submit FormData.
+- **Count mismatch + scent/variant mismatch hard-rejects** (`services/analytics/matcher.py`, `services/analytics/runner.py`, `routers/analytics.py`, `static/app.js`): Two new hard-reject signals added. (1) `count_mismatch` — fires when BOTH titles have an explicit unit count > 1 (via `_pack_count`) and the counts differ by more than 10%. "80 Count trash bags" vs "110 Count trash bags" = different products, hard reject. Only fires when both sides are explicit — a no-count vendor item against an Amazon multi-pack is still handled by the softer `pack_mismatch` cap. (2) `scent_mismatch` — fires when both titles carry scent/fragrance/flavour words from `_SCENT_WORDS` frozenset (lavender, vanilla, citrus, lemon, grapefruit, mint, etc.) AND those scent-word sets are completely DISJOINT (e.g. "Lavender" vendor vs "Citrus" Amazon). Partial overlap (both titles say "grapefruit") is treated as potential match to avoid false positives on closely-named variants. Both flags added to `hard_reject` expression in `_upsert_candidate` and `_rescore_pipeline` in runner.py, to `_HARD_REJECT_FLAGS` in analytics.py defensive-promotion guard, and to `_verdictReason()` + tooltip reasons in app.js. Reason labels: "Count mismatch" and "Scent/variant mismatch".
+- **UPC Tier 1 Pass 4: keyword fallback for missed UPCs** (`services/analytics/runner.py`): Added a fourth pass to `_tier1_upc` that runs a keyword search for every catalog row that got ZERO results from passes 1-3. Two known causes of SP-API misses: (a) Old ASINs (B000-B002 era, pre-2010) whose UPC was never registered in Amazon's structured catalog identifier fields — `search_by_identifiers` finds nothing; (b) SP-API returns only the "featured" ASIN when multiple ASINs share a UPC (pack/size variants) — sibling variants are silently dropped even though they exist. Pass 4 searches the raw UPC string as a keyword (both original 11-digit form and zero-padded 12-digit form) using `search_by_keywords`, hitting Amazon's full-text index which finds both cases. Results are barcode-verified before accepting: the returned ASIN's UPC/EAN/GTIN fields must contain a form matching the searched UPC to prevent false positive matches where the UPC digits happen to appear in an unrelated product's title.
+- **Discard action now sets review_status='Manually Rejected'** (`static/app.js`): The "Discard" button (Review tab → Not Approved) was sending `review_status = ""` (empty string). The auto-promotion guard in `get_run_detail` checks `if (review_status).strip(): skip` — so empty review_status meant auto-promotion would re-promote the discarded item back to Review on the very next page load. Fix: `case "discard"` now sends `review_status = "Manually Rejected"` (same as `case "reject"`). All four actions now send a non-empty review_status: approve→"Reviewed", discard→"Manually Rejected", promote→"Manually Approved", reject→"Manually Rejected". Items discarded before this fix have empty review_status in DB — user should re-discard them once and they'll stick permanently.
+- **BSR floor also excludes unranked items** (`services/analytics/runner.py`, `routers/analytics.py`): Previously `null` BSR always passed through both the floor and ceiling checks ("never penalise unranked products"). Now: `max_rank` still allows null BSR (a cap doesn't require a rank to exist); `min_rank > 0` also excludes null-BSR items — setting a floor means "I only want confirmed-ranked products". Changed in `_upsert_candidate`, `_rescore_pipeline`, `_run_rank_clause` in `get_run_detail`, `_exp_rank_clause` in the export, and Quick Search verdict logic. SQL for min_rank clause changed from `AND (sales_rank IS NULL OR sales_rank >= N)` to `AND sales_rank IS NOT NULL AND sales_rank >= N`.
+- **Quick Search context filter** (`routers/analytics.py`): When Brand or Product Title is provided in the Quick Search modal, results are now filtered to only include ASINs where ALL significant words (≥3 chars) from that context appear in the Amazon brand + title. Example: title="smith & nephew" → only keep listings containing both "smith" and "nephew". Previously the title/brand were only used for scoring (items that didn't match could still show up as Review or Not Approved). Now non-matching ASINs are removed entirely from the result set before sorting.
+- **Pre-run BSR filter: items excluded entirely, not sent to Not Approved** (`services/analytics/runner.py`, `routers/analytics.py`): When a BSR min/max is set in the wizard before starting a run, items outside that range now disappear completely from all tabs (Approved, Review, Not Approved, All) instead of appearing in Not Approved with "BSR > max" reason. Three changes: (1) `_upsert_candidate` in runner.py: returns `"bsr_filtered"` early (before any DB write) when BSR fails the run's range; also DELETE any pre-existing entry for the ASIN (from a prior tier that found it before BSR was populated). (2) `_rescore_pipeline` in runner.py: same pattern — adds to a `delete_batch` list and uses `continue` to skip the `cand_batch` write; `delete_batch` is flushed in `_flush()` via `executemany DELETE`. (3) `get_run_detail` in analytics.py: adds `_run_rank_clause` (inline integer SQL fragment) built from `run_d["max_rank"]`/`run_d["min_rank"]` to ALL candidate queries (main WHERE, where_no_ai for AI counts, ASIN conflict query) so existing runs with already-stored BSR-capped items are also invisible. Export endpoint gets the same treatment (`_exp_rank_clause`).
+- **AI check: description + bullet points added to candidate context** (`services/analytics/ai_check.py`): `_fmt_candidate` now includes the Amazon product description (first 300 chars) and the first 3 bullet points (each capped at 120 chars) in the text sent to the AI. These fields were already stored in `data_json.amazon.description` and `data_json.amazon.bullet_points` from SP-API normalization — they just weren't being forwarded. Description and bullets surface variant/ingredient/size details (e.g. "lightly salted", "dry roasted", "12 oz canister") that often don't appear in the title alone. System prompt updated to explicitly tell the AI to use these extra fields.
+- **AI check prompt: confidence-aware + label-copy tolerance** (`services/analytics/ai_check.py`): Two improvements. (1) `_fmt_candidate` now includes `matcher_score: X%` in each candidate's formatted text so the AI knows the automated matcher's prior confidence. (2) System prompt updated with two new rules: (a) when matcher_score ≥ 90, only reject on HARD mismatches (completely different brand/category or >20% size difference) — word order differences, packaging descriptor words ("Cocktail", "Classic", "Lightly"), and minor variant naming should be 'uncertain' at most, never 'reject'; (b) product type rule relaxed — "must match exactly" → "must be the same core item"; minor label copy differences like "Cocktail Peanuts" vs "Peanuts", "Salted" vs "Lightly Salted", "Dry Roasted" vs "Dry Roasted Lightly Salted" are explicitly listed as NOT mismatches. Also: (c) when matcher_score ≥ 80 and brand+product type clearly match → default to 'approve' unless unmistakable hard mismatch found.
+- **AI-rejected/approved reason now shows in Reason column** (`static/app.js`): `_verdictReason()` was falling through to "Category or quality mismatch" for items moved to `not_approved` by Apply AI Decisions, because `review_status='ai-rejected'` wasn't checked. Now checks `review_status` before hard-reject flags: `ai-rejected` → shows `"AI: <ai_reasoning text>"` (truncated to 100 chars) or `"AI rejected"` if no reasoning; `ai-accepted` → shows `"AI approved"`.
+- **Apply AI decisions overridden by conflict-cap / auto-promotion** (`routers/analytics.py`): After clicking "Apply AI Decisions", items with `ai_verdict='approve'` were correctly moved to `verdict='verified'` in DB. But on the very next `GET /api/analytics/runs/{id}` call, the ASIN-conflict cap code (`_to_conflict_cap`) detected those newly-verified items as conflict candidates and moved them BACK to `verdict='review'` (because the conflict cap condition checks `not (c.get("review_status") or "").strip()` — empty review_status = no manual decision = cap fires). Similarly, AI-rejected items could be reversed by the auto-promotion guard. Fix: `apply_ai_decisions` now sets `review_status='ai-accepted'` on approved items and `review_status='ai-rejected'` on rejected items. Both the conflict-cap guard and the auto-promotion guard check `review_status` and skip items where it's non-empty, so AI decisions are permanently respected. `ai-accepted` was already a recognized status in the export pipeline.
+- **AI filter scoped counts still showing whole-run totals — root cause fixed** (`routers/analytics.py`, `static/app.js`): Root cause: auto-promotion (moving `not_approved` → `review` for items with confidence ≥ 35 and no hard rejects) was persisting to DB but never calling `_recompute_run_counts`. This meant `analytics_runs.review_count` stayed at the original run-completion value (e.g. 101) while the actual `WHERE verdict='review'` count could be much larger (e.g. 281 including all promoted items). The AI pills showed the larger scoped count (correct for the actual DB state) but the tab badge showed the stale count — making them look inconsistent. Three fixes: (1) After auto-promotion `executemany UPDATE`, now calls `_recompute_run_counts` and patches `run_d` in the same request (same pattern as conflict-cap fix). (2) After EITHER conflict-cap or auto-promotion writes happen in a request, `ai_verdict_counts` is recomputed with a fresh query so the scoped counts in the response reflect the post-write DB state rather than the pre-write snapshot computed at the top of the request. (3) `_serverCounts` in `renderAnalyticsRunCandidates` now uses tab-scoped counts from `tabPageData[tab].aiVerdictCounts` when available (user's explicit request); falls back to whole-run counts only when tabPageData is not yet loaded; treats empty `{}` as null so the AI filter section is hidden rather than showing disabled zero-count buttons.
+- **AI filter badge counts scoped to current tab** (`static/app.js`): Changed AI pill counts (✓ Approved / ✗ Rejected / ? Uncertain) to show only the count for the current tab, not the whole-run total. When on Review tab with 101 items, "Approved (5)" means 5 of those 101 review items got AI-approved — not 61 across all 1062 candidates. Implementation: `_serverCounts` on verdict tabs now uses `_pageEntry?.aiVerdictCounts` (from the tab-scoped `_fetchVerdictPage` response). Empty `{}` from server (= no AI verdicts on this tab) is treated as null so the filter section is hidden rather than showing disabled zero-count buttons. When `tabPageData[tab]` hasn't been fetched yet (null pageEntry), temporarily falls back to whole-run counts until the scoped fetch completes. Auto-fetch in `fetchAnalyticsRunDetail` now also triggers when `aiVerdictCounts == null` on an existing entry (e.g. after an AI check finishes while the user is on this tab).
+- **AI filter badge counts + conflict-cap stale run_d** (`static/app.js`, `routers/analytics.py`): Two fixes. (1) AI pill counts should always show whole-run totals (44 approved / 180 rejected / 57 uncertain = AI ran on all 1062 candidates). A previous fix attempted to scope these to the current tab, which caused the pills to be disabled when review items happened to have no AI verdicts — breaking the filters. Reverted `_serverCounts` back to always using `state.analyticsRun.data?.ai_verdict_counts` (whole-run). Clicking a pill on the Review tab correctly returns only review items that match the AI verdict (intersection of verdict tab + ai_verdict filter), so the server logic is fine; only the display count was misleadingly scoped. (2) `run_d` (the run row dict) was fetched at the start of `get_run_detail`, BEFORE the ASIN conflict-cap persistence loop ran. After `_recompute_run_counts`, `analytics_runs.review_count` was updated in DB but `run_d` in the response still had the old stale value — causing the tab badges (e.g. Review: 101) to be out of sync with the AI counts (which reflected the updated DB). Fix: `_recompute_run_counts` return value now used to patch `run_d` immediately so the response's `run.review_count` / `verified_count` / `not_approved_count` are always consistent with the DB state that generated the `ai_verdict_counts`.
+- **AI filter badge counts showing whole-run totals on verdict tabs** (`static/app.js`): When the user was on the Review tab (101 items) the AI filter pills showed "✓ Approved (44) ✗ Rejected (180) ? Uncertain (57)" — totalling 281, which is more than 101. Root cause: `_serverCounts` in `renderAnalyticsRunCandidates` fell back to `state.analyticsRun.data?.ai_verdict_counts` (the whole-run counts from the main `?limit=5000` snapshot, which has no verdict filter) whenever `tabPageData[tab]?.aiVerdictCounts` was null. This happened after `tabPageData` was cleared (apply AI decisions, rescore, or status change) and before the tab's scoped counts were refetched. Two fixes: (1) On verdict tabs, `_serverCounts` now uses ONLY `_pageEntry?.aiVerdictCounts` — never the whole-run fallback. On the All tab the whole-run counts are still used (correct). (2) The auto-fetch condition in `fetchAnalyticsRunDetail` now also triggers when `tabPageData[tab]` exists but its `aiVerdictCounts` is null, ensuring the scoped counts are always populated after any full data refresh.
+- **ASIN conflict cap persistence + AI filter count bug** (`routers/analytics.py`, `static/app.js`): Two bugs fixed. (1) ASIN conflict-capped items (same ASIN matched to multiple catalog rows) had their verdict downgraded from `verified→review` at response time only — the DB still said `verified` so they appeared on the Approved tab with a confusing "Review" verdict label (user could see "Approve" buttons next to items already in Approved). Fix: after building the conflict cap list, a single `executemany UPDATE` writes `verdict='review'` back to DB for all newly-capped items (same pattern as auto-promotion persistence). `_recompute_run_counts` is also called to sync the tab badge counts immediately. (2) When an AI filter pill (uncertain/rejected) was active, the pagination count always fell back to the full `run.review_count` (e.g. 556) instead of the filtered `ai_filtered_count`. Root cause: `tabPageData[tab]` stored `aiFilteredCount` from the server response but never stored `aiFilter` — so the guard `pageEntry?.aiFilter === _aiFilter` always returned `false` (undefined !== "uncertain"), and the code fell back to the stale run-level count. Fix: added `aiFilter: aiFilter` to the `tabPageData[tab]` entry object so the guard correctly matches and uses the server-returned filtered count. Also: `state.analyticsRun.tabPageData = {}` is now cleared immediately before `fetchAnalyticsRunDetail()` in the Apply AI Decisions handler so stale pre-apply page caches don't linger after decisions are applied.
+
+
+- **Brand runner: noise filter + coverage fix** (`services/analytics/brand_runner.py`): Two root-cause fixes found by comparing Ansell app export (828 ASINs, 76% contaminated) vs Keepa export (5,659 clean Ansell ASINs, only 310 overlap). (1) **Noise fix** — `_brand_matches` gained a `strict: bool = False` parameter. In strict mode, if Amazon's brand field is set but doesn't fuzzy-match any search term, the function returns False immediately without falling back to the title check. Previously the title fallback matched brand sub-strings in unrelated product titles: "Ringers" keyword → "Dead Ringers [DVD]" title contains `\bringers\b` → passed filter. "Edge" → "Gillette Edge Shaving Gel", "Encore" → "Baratza Encore Coffee Grinder", "Microflex" → "Shure Microflex MX415" all passed via title fallback. Phase A keyword search now calls `_brand_matches(..., strict=True)` — if Amazon knows the brand and it's not us, reject immediately. Title fallback is preserved for `strict=False` (non-Phase A) paths and for when the Amazon brand field is empty. (2) **Coverage fix** — Phase B (brandNames-only scan) and Phase C (variant scan) now loop `while True` and exhaust their nextToken chains to completion, ignoring `pages_per_brand`. Previously Phase B was capped at `pages_per_brand` pages (default 3 = 60 items), so a 5,659-item brand like Ansell got only 60 items from the targeted brand-registry scan. Phase A keyword searches remain capped by `pages_per_brand` since broad keyword queries drift into unrelated territory as pages increase. The stale progress-adjustment (`done_pages += pages_per_brand - pages_fetched`) was also removed for Phase B/C since it no longer applies.
+
+
+- **Analytics wizard sheet picker** (`services/file_parser.py`, `services/analytics/parser.py`, `routers/analytics.py`, `static/index.html`, `static/app.js`): When a vendor uploads a multi-sheet Excel workbook, the analytics wizard now shows a sheet selector in step 2. Changes: (1) `services/file_parser.py` — added `get_sheet_names(filename, data) -> list[str]` (uses openpyxl read-only mode for speed; returns `[]` for CSV/TSV); updated `parse_raw_rows`, `parse_file`, and `_parse_workbook` to accept optional `sheet_name` param — when provided and found in the workbook, that sheet is loaded instead of the active sheet. (2) `services/analytics/parser.py` — updated `_raw_rows(filename, data, sheet_name="")` and `parse_source_rows(..., sheet_name="")` identically. (3) `routers/analytics.py` — `POST /api/analytics/preview` now accepts `sheet_name: str = Form("")` and returns `sheets` (list of all sheet names) + `active_sheet` (which sheet was actually read); `POST /api/analytics/runs` accepts `sheet_name: str = Form("")` and passes it to `parse_source_rows`. (4) `static/index.html` — added `#awiz-sheet-bar` (info-blue bar with table icon, Sheet label, `#awiz-sheet-select` dropdown, `#awiz-sheet-loading` spinner) inside step 2, hidden by default. (5) `static/app.js` — extracted `_fetchAwizPreview(file, sheetName)` helper and `_applyAwizPreview(j, file)` helper; `loadAwizFile` calls both; `state.awiz` gains `sheets: []` and `selectedSheet: ""`; `renderAwizPreview` shows/hides the sheet bar, populates the dropdown, wires the change listener (guarded by `dataset.wired`) which re-fetches the preview for the chosen sheet and re-renders without advancing steps; `resetAwizUi` clears `dataset.wired` and hides the sheet bar on wizard reset; `submitAwiz` appends `sheet_name` to the FormData when set.
+
+**Changes this session (2026-05-21):**
+- **Analytics run search + auto-promotion persistence** (`routers/analytics.py`, `static/app.js`): Two bugs fixed. (1) Auto-promoted candidates (conf ≥ 35, no hard-reject, stored as `not_approved`) were invisible on BOTH tabs — DB verdict `not_approved` excluded them from the "Review" tab's server query, but response-time promotion to `review` excluded them from the client-side "Not Approved" filter. Fix: auto-promotion now writes back to DB via `executemany UPDATE` so all subsequent queries see `verdict='review'` and the item appears in the correct tab. (2) Search box was client-side only — typed query filtered the current 200-row page, so any ASIN on page 50+ could never be found. Fix: added `search` query parameter to `GET /api/analytics/runs/{id}` that does server-side `UPPER(asin) = UPPER(?)` (exact ASIN match) or `json_extract(data_json,'$.amazon.title') LIKE ?` (title substring); search input debounces 350ms then calls `_fetchVerdictPage()` which now appends `&search=...` to the URL; result replaces the current tab's cached page so pagination works correctly. Clearing the search box reverts to normal tab data.
+- **Analytics export OOM fix + ASCII filename** (`routers/analytics.py`): Export was crashing on large runs (74k candidates) because `SELECT ... data_json` loaded the full JSON blob for every candidate into Python memory (~150–300 MB), then `json.loads()` parsed each one just to extract two fields (amazon.title, amazon.brand). Fix: replaced with `json_extract(data_json, '$.amazon.title')` and `json_extract(data_json, '$.amazon.manufacturer')` in SQL so SQLite does the extraction in C — Python never sees the raw blob. Catalog rows similarly use `json_extract` for the four needed fields. Also fixed: run names with non-ASCII characters (e.g. Cyrillic "ИКФТВЫ") were kept verbatim in the Content-Disposition filename because Python's `.isalnum()` returns True for Unicode letters; browsers silently failed and saved the file as `export.txt` (21-byte JSON error). Fix: `c.isascii()` guard added so only ASCII alphanumerics survive into `safe_name`.
+- **Category filter UX inversion + empty-string fix** (`static/index.html`, `static/app.js`, `routers/brand_analytics.py`): Two bugs fixed. (1) UX was inverted — checkboxes defaulted to all-checked meaning "keep," so checking everything and clicking Apply sent an empty remove list and deleted nothing. Fixed: default all unchecked (= nothing selected for removal), checked = "mark for removal." Button renamed "Remove Checked." Summary text updated. Checked rows now show amber background + strikethrough label live as user selects. (2) Empty-string `bsr_category` rows appeared as "(Blanks)" in the modal but were not deleted because the backend only handled `IS NULL`. Fixed: `get_run_categories` uses `COALESCE(NULLIF(bsr_category, ''), '(Blanks)')` to normalise both NULL and `''` to the same sentinel; `filter_run_categories` deletes `WHERE bsr_category IS NULL OR bsr_category = ''` when `(Blanks)` is in the remove list.
+- **Brand names panel → dropdown pill** (`static/index.html`, `static/app.js`): Replaced the always-expanded brand names chip list with a compact toggle pill button. The pill shows the label, a "X new" amber badge (count of brand names not in original search terms), and a chevron arrow. Clicking opens a floating dropdown (white card, shadow, rounded, `z-index:120`, max-width 860px, max-height 260px scrollable) containing the hint text and all chips. Clicking outside closes it. Chevron rotates 180° when open. Toggle wiring guarded with `dataset.wired` so re-renders on poll ticks don't duplicate listeners.
+- **Analytics verdict inconsistency fix — defensive promotion** (`routers/analytics.py`, `static/app.js`): Candidates stored as `not_approved` with `confidence >= REVIEW_FLOOR (35)` but no hard-reject flags (`size_mismatch`, `gender_mismatch`, `color_mismatch`, `category_mismatch`, `media_format_mismatch`) and no valid BSR cap represent an inconsistent state (scorer logic says "review" but DB says "not_approved" — caused by pre-fix runs, re-scoring edge cases, or stale data). Fix: in `GET /api/analytics/runs/{id}` (`get_run_detail`), after the existing ASIN conflict-cap loop, a second loop promotes these candidates to `verdict="review"` with `auto_promoted=True` at response time (no DB write, no manual overrides ever touched). In `_verdictReason(c)` in `app.js`, `auto_promoted` candidates show `"Score X% — needs review"` instead of the misleading "Category or quality mismatch" catch-all.
+- **Tools sidebar redesign** (`static/index.html`, `static/app.js`, `routers/eligibility.py`, `routers/storage_fees.py`): Converted the full-screen Tools view into a Library-style slide-in sidebar panel (`#tools-panel`, `.side-panel-wide`). The panel has a single ASIN textarea, two checkboxes (Eligibility Check / Storage Fees), a Run button, and live progress bars for each job. When both jobs complete, a "Download CSV" button generates a client-side combined CSV with columns: ASIN, eligibility_status (if eligibility checked), fee_offpeak_per_unit_mo, fee_peak_q4_per_unit_mo (if storage fees checked). Peak/non-peak toggle removed from storage — both fee columns are always exported. Nav item `data-view="tools"` changed to `id="open-tools-btn"` (opens panel, no navigation). Standalone export endpoints slimmed to 2 columns each: eligibility → ASIN+status; storage → ASIN+fee (pass `?mode=peak` or `?mode=offpeak`). Old full-screen view HTML, all old eligibility/storage JS helpers, polling functions, event wiring, tab-switching, and the `#elig-toast` overlay all removed.
+- **Brand search recall improvement** (`services/spapi/catalog.py`, `services/analytics/brand_runner.py`, `routers/brand_analytics.py`, `static/index.html`, `static/app.js`, `services/database.py`): Added three-phase search strategy to close the gap between SP-API results (~1.5k) and Keepa full brand catalog (~1.9k). Root cause: Phase B was passing `keywords=Hartmann` AND `brandNames=Hartmann` together, so Amazon applied both filters — products where the brand is "Hartmann H" or "Paul Hartmann AG" but keyword not in title were dropped. Fixes: (1) Added `CatalogAPI.search_by_brand_names()` method to `catalog.py` — brandNames-only SP-API call with no keyword parameter, returns Amazon's complete brand catalog without keyword bias. (2) Phase B now uses `search_by_brand_names()` instead of `search_by_keywords()` — keyword filter removed entirely. (3) Phase A now collects distinct Amazon brand field values from matched results into `discovered_amz_brands` dict; Phase B merges these with user-supplied names so "Hartmann H" or other registry variants are automatically searched. (4) Phase C: any brand names first seen in Phase B results that fuzzy-match (≥70%) original terms get their own `search_by_brand_names` scan. (5) Added `amz_brand TEXT` column to `brand_analytics_items` (additive migration) — stores the actual Amazon brand field value (separate from `brand_searched` which is the search query label). (6) New endpoint `GET /api/brand-analytics/runs/{id}/brand-names` returns distinct `amz_brand` values with counts, ordered by count desc. (7) Run detail UI shows "Amazon brand names found" panel after run completes — chips with count, and a "new" badge for brand names not in the original search terms.
+- **Toast notification bug fix** (`static/app.js`): Two `function showToast` declarations in the same scope caused JavaScript hoisting to make the second (AI-learned abbreviation toast) override the main one, so every `showToast("message", "type")` call hit the wrong function, created a broken toast, and had inconsistent lifetime behavior. Fix: (1) renamed the AI-learned toast function from `showToast({abbr, full, category})` to `_showAILearnedToast({abbr, full, category})` to eliminate the name collision; (2) updated its two callers (~line 3070/3075) to use the new name; (3) changed the single `requestAnimationFrame` in the main `showToast` to a double RAF (`requestAnimationFrame(() => requestAnimationFrame(...))`) so the CSS entrance transition always fires after the browser paints the element; (4) added a 600 ms `setTimeout` safety net in `_dismissToast` so the element is always removed even if `transitionend` doesn't fire (e.g. hidden tab, CSS animations disabled).
+
+
+- **Multi-dimensional size mismatch with fraction normalisation** (`services/analytics/matcher.py`): Full rewrite of linear dimension extraction. Added `_normalize_fractions()` that converts unicode fractions (`¾`→`3/4`), mixed fractions (`1 3/4`, `2-3/8`), and simple fractions (`3/4`) to decimals before regex matching (denominators restricted to {2,3,4,5,6,7,8,10,12,16,32,64} to avoid corrupting pack codes like `2/1200ML`). Three extraction strategies per unit: (A) trailing-unit pair `6 X 8 Inch` → [6,8]; (B) mixed pair `2.125 x 4.75"` → [2.125,4.75]; (C) individual `3"`, `3 inch`, `3 in.`. Best strategy (most dims captured) wins. Imperial system: inches+feet+yards all converted to inch-equiv; metric: cm+mm all to mm-equiv; never cross-compared. Sorted list comparison with 10% tolerance. Fixes: `1 3/4 in. x 1 3/4 in.` vs `2-3/8" x 2-3/4"` → MISMATCH; vs `2 3/8 x 2 3/4 Inch` → MISMATCH; vs `6 X 8 Inch` → MISMATCH; vs `1 ¾" x 1 ¾"` → match.
+- **Brand Analytics post-search category filter**: removed pre-run wizard category dropdown (was filtering by AI-inferred categories during search). Replaced with a post-search "Filter Categories" button (shown only when run is Complete) that loads actual Amazon BSR categories from results, lets user uncheck unwanted categories, then permanently deletes matching items. Two new endpoints: `GET /api/brand-analytics/runs/{id}/categories` (GROUP BY bsr_category with counts) and `POST /api/brand-analytics/runs/{id}/filter-categories` (body: `{remove_categories:[...]}`, handles NULL bsr_category via `(No category)` sentinel). CSS: `.ba-cat-row`, `.ba-cat-name`, `.ba-cat-count` for the modal rows.
+
+**Changes this session (2026-05-20):**
+- **Toast system**: replaced all `alert()` calls (40+) with `showToast(msg, type, duration)`. `#toast-stack` fixed bottom-right, slides in/out, auto-dismisses. Types: success (green), error (red), warning (amber), info (blue). "Apply AI decisions" result shows rich toast with approved/rejected counts.
+- **AI check stop button (threading.Event)**: replaced `_STOP_FLAGS dict` with `_STOP_EVENTS: dict[int, threading.Event]`. `stop_ev.wait(timeout=0.5)` returns instantly when `ev.set()` is called. Each worker checks `stop_ev.is_set()` before making API call so queued batches abort instantly. `pool.shutdown(wait=False)` used (not context manager `__exit__`).
+- **Orphaned Running state on restart**: `reset_orphaned_running_states()` in `database.py` called from `main.py` lifespan on every startup — sets `ai_check_status='Stopped'` for any run stuck in 'Running' (thread died on server restart). Stop endpoint also has orphan guard: if no live thread but DB shows Running, updates DB directly.
+- **ASIN conflict → cap at Review**: in `GET /runs/{id}` response, any candidate with `verdict='verified'` whose ASIN appears in multiple catalog rows is downgraded to `verdict='review'` + `conflict_capped=True` (no DB change). `_verdictReason()` shows "ASIN conflict". Manual overrides (`review_status` set) are respected and not capped.
+- **Pack regex additions** (`_PACK_RE` in `matcher.py`): added `rolls?`, `tubes?`, `pairs?`, `vials?`, `sachets?` as pack-count indicators. Fixes "Uncut 2 Rolls" showing amz_pack=1.
+- **Analytics wizard Step 3 alignment**: replaced loose `grid-cols-2` with `.awiz-map-grid` + `.awiz-map-field-head` (min-height: 36px, justify-content: flex-end). Notes moved to `.awiz-map-note` block elements so selects align across columns regardless of note text length.
+- **Medical mode validation fix**: `_validateMapping()` now reads `state.awiz.vettingMode` — Medical requires Item ID (not UPC); CPG requires UPC (not Item ID).
+- **Conflict badge tooltip**: replaced native `title=` attribute (unreliable) with `.has-tooltip` + `data-tooltip` CSS `::after` pseudo-element tooltip (dark navy, white text, 280px max, fade+lift transition).
+- **AI check prompt improvements** (`ai_check.py`): updated system prompt to clarify distributor brand fields. Added `_title_brand()` helper that extracts first 1-3 words of vendor title as `title_brand` fallback when `extracted_brand` is absent — prevents AI giving "uncertain" when vendor `brand` field is a distributor name (e.g. "Fabrication Industries") and Amazon title brand is clearly different.
+
+This file is read automatically by Claude Code at the start of every session.
+**Update this file at the end of every task** — it is the single source of truth for session continuity.
+
+---
+
+## What this project is
+
+A local FastAPI web app that vets CPG vendor catalog products against Amazon listings. Two workflows:
+
+- **Verification tab** — user uploads a vendor catalog + Keepa export, the confidence engine scores each row, user reviews and exports to Excel.
+  - **Normal mode**: catalog has ASINs pre-assigned; Keepa rows are looked up by ASIN.
+  - **Match-from-Keepa mode**: catalog has no ASINs; engine searches the Keepa export to find candidate ASINs using selected methods (UPC, Item ID/MPN, Title). Up to 8 candidates per row; user reviews and approves one per row. One ASIN cannot be approved for two different catalog rows.
+- **Analytics tab** — user uploads a catalog, SP-API searches Amazon for matching ASINs, candidates are scored and presented for review.
+- **Brand Analytics tab** — user enters a brand or manufacturer name; AI discovers sub-brands; SP-API keyword-searches for all their ASINs; results include BSR, UPC, EAN, GTIN, MPN. Results cached in DB (7-day freshness). AI Fill extracts identifiers from title/description.
+
+Target scale: **hundreds of concurrent users** (multi-tenant SaaS). Architecture is currently SQLite + single-process uvicorn. SQLite WAL mode is enabled; Python-level `_LOCK` serialises writes.
+
+---
+
+## Stack
+
+| Layer | Tech |
+|---|---|
+| Backend | FastAPI 0.115, uvicorn, Pydantic v2, Python 3.11+ |
+| Database | SQLite (WAL mode), single file `catalog_verifier.db` |
+| AI | Anthropic `claude-sonnet-4-6` (verdict) + `claude-haiku-4-5-20251001` (extraction); OpenAI `gpt-4o-mini` retained as fallback when `ANTHROPIC_API_KEY` absent |
+| Amazon search | SP-API Catalog Items v2022-04-01 via `services/spapi/` |
+| Frontend | Vanilla JS SPA (`static/app.js`) — no build step |
+| Excel I/O | openpyxl |
+| Fuzzy matching | rapidfuzz |
+
+---
+
+## File map
+
+```
+catalog-verifier/
+├── main.py                          FastAPI app, middleware, router registration
+├── routers/
+│   ├── scans.py                     Scan lifecycle + verify engine + AI re-check
+│   ├── verify.py                    Legacy single-shot verify (kept for compat)
+│   ├── analytics.py                 Analytics runs CRUD + verdict overrides + export
+│   ├── brand_analytics.py           Brand Analytics CRUD + discover + AI fill + export
+│   ├── export.py                    Excel export for verify flow (20-column layout)
+│   ├── barcode.py                   5-source barcode lookup chain
+│   ├── pairs.py                     Blacklist search + unlock
+│   ├── library.py                   Abbreviation library CRUD
+│   └── settings.py                  Threshold read/write
+├── services/
+│   ├── confidence.py                Weighted signal scorer + ASIN floor logic (verify flow)
+│   ├── extractor.py                 rule_extract() + ai_extract() + amz_extract()
+│   ├── ai_recheck.py                GPT-4o-mini second-pass verdict suggestions; make_client() used by brand modules
+│   ├── barcode_lookup.py            Async 5-source barcode chain
+│   ├── database.py                  All SQLite I/O, migrations, caches
+│   ├── file_parser.py               Shared Excel/CSV parser (3 routers use this)
+│   ├── analytics/
+│   │   ├── runner.py                SP-API search orchestration (background thread); normalize_amazon_item() reused by brand_runner
+│   │   ├── matcher.py               Candidate confidence scoring for analytics runs
+│   │   ├── parser.py                Catalog file parsing for analytics
+│   │   ├── ai_check.py              GPT-4o-mini batch AI verification of analytics candidates
+│   │   ├── brand_discovery.py       AI sub-brand discovery (Claude/GPT-4o-mini)
+│   │   └── brand_runner.py          Brand Analytics SP-API background search + AI Fill
+│   └── spapi/
+│       ├── client.py                SP-API HTTP client
+│       ├── auth.py                  LWA token refresh
+│       ├── catalog.py               SearchCatalogItems wrapper
+│       ├── config.py                Marketplace config
+│       └── rate_limiter.py          Token-bucket rate limiter
+├── static/
+│   ├── index.html                   SPA shell
+│   ├── app.js                       All UI logic (~3600 lines)
+│   └── styles.css
+├── abbreviations.json               Seed data for library (loaded once on first run)
+├── requirements.txt
+├── .env                             OPENAI_API_KEY, SP_API_* — never commit
+└── CLAUDE.md                        This file
+```
+
+---
+
+## Analytics tab — scoring engine (`services/analytics/matcher.py`)
+
+This is a **separate scorer** from the verify-flow `services/confidence.py`. Do not confuse the two.
+
+### Signal weights (analytics only)
+
+| Signal | Max pts | Notes |
+|---|---|---|
+| Brand | 40 | Exact substring in Amazon title/brand/desc = full 40; **word-level exact match** (any vendor brand word ≥4 chars == Amazon brand field) = full 40; fuzzy ≥70% = partial |
+| Title similarity | 50 | `token_set_ratio` best-of-4 against Amazon title. **Shortcut**: if any significant vendor brand word (≥4 chars) is in the Amazon brand field AND the item ID is in the Amazon title/desc → auto 50. Handles multi-word vendor brands like "Gojo Purell" vs Amazon brand "PURELL". |
+| MPN | 10 | Dash-normalised exact ratio |
+| **Total** | **100** | Capped at 100 |
+
+UPC/EAN exact match → adds **50-point bonus** on top of normal brand+title score (not auto-100). UPC + brand match = 90 → verified. UPC alone = ~50 → review. Wrong-product UPC hit = ~50 → review.
+
+**ItemID/MPN search hit bonus** (`mpn_search_hit=True`, requires `brand_score > 0`):
+
+When the winning ASIN came from a Tier 2 ItemID keyword search (source string `"ItemID"` in candidate's `sources`), an additional bonus is applied based on MPN variation score (`_mpn_variation_score`):
+
+The bonus is **skipped entirely** when any guard fails: `brand_score = 0` (cross-brand coincidental match), or `best_title_ratio < 25` (titles are completely unrelated — different product types). Example: catalog `MS02` matching "MINISFORUM MS-02 Mini PC" while vendor brand is Dukal (e.g. catalog `MS02` matching Amazon "MINISFORUM MS-02 Mini PC" while the vendor brand is Dukal) must not be boosted.
+
+**Amazon MPN field empty fallback**: when `amazon.mpn` is empty but the catalog item ID appears verbatim (dash-normalised) in the Amazon title, `mpn_variation_score` is set to 100. This handles listings where SP-API doesn't populate the structured MPN field but the part number is clearly in the title (e.g. "Dawnmist ASL02 2 oz After Shave Lotion").
+
+| Mode | MPN var ≥ 95 | MPN var ≥ 70 |
+|---|---|---|
+| CPG | — | +20 pts |
+| Medical | +40 pts | +25 pts |
+
+`_mpn_variation_score(src, amz)`: dash-normalised fuzzy ratio, base-form ratio (suffix-stripped via `_extract_base_mpn`), and containment check (80 if one contains the other), returning the max. `_extract_base_mpn` strips trailing size/gender suffixes like `-M`, `-L` etc. via `re.sub(r'-?[A-Za-z], '', mpn)`.
+
+`calculate_confidence(source, amazon, *, upc_search_hit, mpn_search_hit=False, mode="cpg")` — both keyword args must be passed by runners.
+
+### Verdict thresholds (analytics)
+
+| Score | Verdict |
+|---|---|
+| ≥ 90 | `verified` |
+| ≥ 35 | `review` |
+| < 35 | `not_approved` |
+
+### Hard-reject caps (override thresholds)
+
+These cap `confidence_score` at **29.0**, which falls below the review floor → forces `not_approved`:
+
+| Condition | Trigger |
+|---|---|
+| **Size mismatch** | Both sides have a parseable size and they differ by >10%. Checks, in order: (1) volume oz/fl oz/ml/l/gal normalised to ml; (2) weight lb/kg normalised to g; (3) **multi-dimensional linear sizes** — inches (`3"`, `3 inch`, `3 inches`, `3-inch`), cm, mm, feet — ALL measurements extracted per unit family as sorted lists, compared element-by-element; units never cross-compared; different dimension counts skipped; `3" x 3"` vs `6" x 6"` → mismatch, `3" x 4"` vs `4" x 3"` → match (sorted); (4) yards (single dimension). `_within_10pct` (10 % tolerance) at module level. **Pack-count adjustment**: if Amazon size ÷ pack count ≈ vendor size → no mismatch. **Attr override**: structured `attributes.size` checked as fallback for volume/weight. The regex uses `(?<![.\d])` (not `\b`) so `.5 oz` parses as 0.5 not 5. |
+| **Gender mismatch** | BOTH titles carry an explicit gender marker (men/women/male/female/etc.) that contradict each other. If only one side specifies gender → no penalty. **Unisex exception**: if either title contains both male AND female terms simultaneously ("for Women and Men", "Boys & Girls"), it is treated as unisex → no mismatch with any title. |
+| **Media format** | Amazon title contains a media format indicator (`DVD`, `Blu-ray`, `audiobook`, `VHS`, `CD-ROM`, etc.) as a whole word. Fires in **both CPG and medical mode** — no legitimate medical/CPG vendor supplies DVDs or audiobooks. Stored as `scores.media_format_mismatch`. Regex: `_MEDIA_FORMAT_RE` in `runner.py`. Applied in `_upsert_candidate`, `_rescore_pipeline`, and the Quick Search endpoint. |
+| **Color mismatch** | Both sides specify a colour from `_COLOR_WORDS` frozenset and they don't overlap. Amazon source: **structured `attributes.color` attribute ONLY** — title/description fallback was removed because CPG product names ("Red Collection") and scent ingredients ("Black Currant") caused false positives. If the SP-API color attribute is empty, no color mismatch is flagged. |
+
+`_COLOR_WORDS` is narrow by design — only unambiguous colors. Excluded: cream, olive, tan, lime, coral, amber, peach, ivory, gold, silver, beige (these are product-type or scent words in CPG).
+
+### Category distance hard-reject
+
+`services/analytics/product_categorizer.py` — verbatim copy from `AmazonAsinResearch1`. Maps product titles to one of 26 named categories in a 2D coordinate space (x = health↔mechanical, y = specialized↔consumer). Key exports: `categorize(title, sales_rank_category="") -> Category`, `category_distance(a, b) -> float`, `UNKNOWN`.
+
+When BOTH source and Amazon categories are known (not `UNKNOWN`), Euclidean distance is computed:
+- **Both CPG and Medical mode**: distance ≥ 5.0 → hard reject
+
+Both modes use the same 5.0 threshold. Medical mode previously used 4.0 but that incorrectly rejected legitimate medical PPE (isolation gowns, suture kits) that Amazon lists under "Industrial & Scientific" — those have dist=4.0 from Medical/Healthcare. True wrong matches (Automotive, Food/Beverage) have dist ≥ 5.4.
+
+Applied in both `_upsert_candidate` and `_rescore_pipeline`. Variable names: `_src_cat`, `_amz_cat`, `_dist`, `category_mismatch` (rescore uses `_src_cat_r`, `_amz_cat_r`, `_cat_mismatch_r`).
+
+When `category_mismatch=True`, `scores["category_mismatch"] = True` is stored in the data_json so the UI can display "Category mismatch" as the reason instead of the misleading BSR fallback.
+
+**Category check rewrite (2026-05-14)**: The category check no longer infers a category from the vendor title (vendor titles are often abbreviated codes that don't classify reliably). Instead:
+- **Medical mode**: `MEDICAL` is used as the reference. The Amazon item's **BSR category only** (`sales_rank_category`) is mapped to a category via `_SRC_KEYWORD_MAP`. If the mapped category is ≥ 5.0 from MEDICAL → hard reject. If BSR is empty or unrecognised → UNKNOWN → skip check (no false positives).
+- **CPG mode**: check skipped entirely (too many legitimate CPG categories to restrict).
+- Variable names changed: `_amz_bsr_cat` / `_amz_bsr_cat_r` (rescore).
+
+**`_SRC_KEYWORD_MAP` BSR additions**:
+- `"sports & outdoors"` → `INDUSTRIAL` (dist=4.0, passes) — hot/cold packs, braces live here
+- `"home & kitchen"` / `"kitchen & dining"` → `PERSONAL_CARE` (dist=4.12, passes) — washcloths, toothbrush holders
+- `"electronics"` / `"computers &"` → `ELECTRONICS` (dist=6.71, rejects)
+- `"grocery"` / `"gourmet food"` → `FOOD` (dist=6.32, rejects)
+
+**`"rod"` substring fix**: Changed `("rod", HOME)` to `("rod ", HOME)` (trailing space). Without it, the word "rod" matched the substring inside "p**rod**ucts", causing "Office Products" and "Hair Care Products" to map to HOME and be falsely rejected.
+
+**`_PHRASE_MAP` additions (medical supplies)**: `"pill count"`, `"pill counting"`, `"pill tray"`, `"counting tray"`, `"counting dish"` are all mapped to `MEDICAL` and placed before the `"spatula"` → `HOME` entry, preventing pharmacy dispensing trays from being mis-categorized as kitchen items.
+
+**IMPORTANT — pyc cache after categorizer edits**: When `product_categorizer.py` is modified, you must delete ALL `.pyc` files from `services/analytics/__pycache__/` and restart the server, otherwise uvicorn may load a stale compiled version. Always clear ALL pycs in that directory (`Remove-Item __pycache__\*.pyc`) before restarting.
+
+### Brand normalization (analytics)
+
+`_normalize_brand(brand)` + `_brands_match(src, amz)` (in `matcher.py`) treat brand strings as equal when they differ only by spacing/punctuation ("Shea Moisture"="SheaMoisture"), corporate suffix ("Cardinal Health"="Cardinal" — `_BRAND_NOISE_WORDS` strips inc/llc/ltd/corp/co/health/healthcare/medical/pharma/labs/industries/products/brands/group/holdings/international/usa/global/the/…), prefix containment (≥5 chars), or minor spelling (fuzzy ≥88 on normalized forms: "Moleskine"="Moleskin"). A `_brands_match` hit sets `brand_score=BRAND_MAX` and `brand_confirmed=True`. Plain fuzzy ≥90 also sets `brand_confirmed=True`. `brand_confirmed` is returned in the scores dict.
+
+### Same-item confirmation floors (analytics)
+
+Computed in `calculate_confidence` AFTER the brand+title VERIFIED_FLOOR and BEFORE the hard-reject caps (so contradictions still override). `_size_match(src, amz, size_attr)` = positive counterpart to `_size_mismatch`: True when both sides have a parseable size (volume/weight/linear inches·cm·mm) agreeing within 10% (same per-unit/pack division as `_size_mismatch`); returned as `size_match`.
+
+| Condition | Result |
+|---|---|
+| `brand_score == BRAND_MAX (40)` AND `best_title_ratio >= 80%` | floor `confidence` at **90** (verified) |
+| `upc_match` AND (`brand_confirmed` OR `size_match`) | `confidence` = **100** (definitive) |
+| `brand_confirmed` AND `size_match` | floor `confidence` at **90** (verified — "same brand + same size = same item") |
+
+All three run before pack_mismatch (soft-cap 80 → Review) and the hard-reject caps (size/gender/colour/count/scent/category/media → 29 → Not Approved), so a genuine contradiction still wins. **Tradeoff**: brand+size→verified does not detect product-type differences sharing a brand+size (e.g. same-brand shampoo vs body lotion at 13oz both verify) — intentional per user instruction; the AI check is the product-type safety net. Floors apply to both new runs and rescores (both call `calculate_confidence`) — existing runs need a rescore to pick them up.
+
+### Soft-reject cap (pack mismatch)
+
+When the Amazon listing covers multiple vendor units (e.g. vendor sells singles, Amazon lists "Pack of 6"), cap at **80.0** → `review`. The user can decide if the multi-pack price works.
+
+UPC-confirmed matches with a pack mismatch → 80 (not 100), landing in Review.
+
+### Hard-reject override precedence
+
+`hard_reject` always takes priority — including over a UPC match. There is **no** `upc_confirmed` shortcut in either `_upsert_candidate` or `_rescore_pipeline`; both were removed because they caused UPC-matched wrong products (e.g. Old Spice body wash → Crest toothpaste) to be verified despite failing size_mismatch.
+
+```python
+hard_reject = size_mismatch OR gender_mismatch OR color_mismatch
+
+if hard_reject:      verdict = "not_approved"   # overrides even UPC match
+elif conf >= 90:       verdict = "verified"
+elif conf >= 35 OR pack_mismatch:  verdict = "review"
+else:                  verdict = "not_approved"
+```
+
+---
+
+## Analytics tab — pipeline (`services/analytics/runner.py`)
+
+### UPC normalisation
+
+Vendor catalogs often export UPC-A without the leading zero (11 digits instead of 12). `services/analytics/parser.py` zero-pads any 11-digit all-numeric UPC at parse time so the full 12-digit form is used everywhere: SP-API search, confidence scoring, and DB storage. This is done in the parser (not the runner) so the fix applies to both new runs and rescores.
+
+### Tier 1 UPC/EAN search — three-pass strategy (`_tier1_upc`)
+
+`_all_id_forms(v)` converts any barcode to all its equivalent forms (12-digit UPC-A, 13-digit EAN-13, 14-digit GTIN-14) so the `id_to_rows` lookup succeeds regardless of which form SP-API returns.
+
+| Pass | Inputs | id_type | Reason |
+|---|---|---|---|
+| 1 | All 12-digit UPCs | `UPC` | Standard UPC-A search |
+| 2 | Same 12-digit UPCs prepended with "0" | `EAN` | Amazon indexes many CPG products under EAN-13 even when the label shows UPC-A |
+| 3 | Any 13-digit values from vendor catalog | `EAN` | Vendor may export EAN-13 in the UPC column; searching as `UPC` type silently fails |
+
+Return-side matching uses `_all_id_forms` on every UPC/EAN/GTIN the SP-API returns, so 12↔13↔14 digit mismatches between catalog and Amazon are resolved automatically.
+
+### Brand extraction phase (pre-search)
+
+Before any SP-API search, `services/analytics/brand_extractor.py` runs GPT-4o-mini on every vendor title to extract structured fields:
+- `brand` — cleaner than raw catalog brand column
+- `product_type` — product category (e.g. "deodorant", "dish soap")
+- `model` — specific variant/model name
+- `size` — size string
+- `pack_info` — pack count or null
+
+Stored in `analytics_catalog_rows.extracted_json` (additive migration). Used by:
+- **Tier 3**: builds `"{brand} {product_type} {model}"` queries instead of raw title → better Amazon search relevance
+- **Matcher**: uses `extracted.brand` as primary brand signal (overrides raw catalog text)
+- **Matcher**: injects `product_type` + `model` as `additional_keywords` for scoring boost
+- **AI Check**: includes `extracted_brand` and `product_type` in prompt context
+- **Rescore**: loads stored extracted fields — no re-extraction needed
+
+Only runs when **both** `OPENAI_API_KEY` is present **and** the `ai_clean_titles` checkbox is checked. Skipped gracefully if either is missing. Runs in parallel (4 workers, 20 titles per GPT-4o-mini call).
+
+### 3-tier SP-API search
+
+1. **Tier 1 — UPC batch**: `search_by_identifiers` up to 20 UPCs per call.
+2. **Tier 2 — Item ID keyword**: one `search_by_keywords` call per unique Item ID.
+3. **Tier 3 — Title keyword**: paginated `search_by_keywords` per unique title. Uses extracted brand+product_type when available; falls back to raw title.
+
+### Max BSR (Best Seller Rank) cap
+
+- Stored on `analytics_runs.max_rank INTEGER DEFAULT 0`.
+- When `max_rank > 0`, any candidate whose `sales_rank > max_rank` is forced to `not_approved` **after** the confidence verdict is computed.
+- NULL/unknown rank is never penalised.
+- Set at run creation (wizard step 4) or overridden on rescore.
+- Flows through: `start_analytics_run` → `_create_run` → `_run_pipeline` → `_upsert_candidate`.
+- Rescore: `start_rescore(run_id, title_col, brand_col, max_rank)` persists the new max_rank to the run row before launching the thread.
+
+### Sales rank extraction
+
+`_extract_sales_rank(raw)` parses SP-API `salesRanks[].classificationRanks` and `displayGroupRanks`. Returns `(main_rank, main_category, all_ranks)`. **`main_rank` is the highest rank number across all entries** — the largest number = broadest/top-level category = the main BSR Amazon displays on the product page (subcategory ranks are always smaller numbers). `normalize_amazon_item()` populates `sales_rank`, `sales_rank_category`, `sales_ranks` on the normalized dict. Persisted in `analytics_candidates.sales_rank`.
+
+### Rescore pipeline
+
+`start_rescore(run_id, title_col, brand_col, max_rank)` kicks off `_rescore_pipeline` in a daemon thread. Re-scores every candidate using the chosen title column from raw catalog data. All verdict logic (hard rejects + max_rank cap) is re-applied identically to the initial run.
+
+During rescore, `sales_rank` is re-extracted from `amazon_data["_raw"]` (the stored SP-API payload) when `amazon_data["sales_rank"]` is missing — this backfills rank for runs created before rank extraction was added. The `analytics_candidates.sales_rank` DB column is also updated in the rescore batch write.
+
+---
+
+## Analytics tab — API endpoints (`routers/analytics.py`)
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/analytics/preview` | Returns first 25 raw rows for wizard header-row picker |
+| GET | `/api/analytics/status` | SP-API credentials probe |
+| POST | `/api/analytics/runs` | Create run; form fields include `max_rank` |
+| GET | `/api/analytics/runs` | List all runs (includes `max_rank` column) |
+| GET | `/api/analytics/runs/{id}` | Run detail + paginated candidates. Params: `limit`, `offset`, `verdict`, `max_rank` (display filter) |
+| POST | `/api/analytics/runs/{id}/candidates/verdict` | Single verdict override |
+| POST | `/api/analytics/runs/{id}/candidates/bulk_verdict` | Bulk verdict override |
+| POST | `/api/analytics/runs/{id}/rescore` | Body: `title_col`, `brand_col`, `max_rank` |
+| POST | `/api/analytics/runs/{id}/control` | `pause` / `stop` / `resume` |
+| DELETE | `/api/analytics/runs/{id}` | Stop + delete run |
+| GET | `/api/analytics/runs/{id}/export` | Four-sheet Excel download (Approved / Review / Not Approved / Not Found). Query params: `min_rank`, `max_rank`, `skip_null_rank` mirror the toolbar BSR filter. |
+| POST | `/api/analytics/quick-search` | **Transient single-item search.** Body: `{upc, itemid, title, brand, vetting_mode, max_rank, min_rank}`. Runs all 3 SP-API tiers, scores in-memory, returns `{candidates: [...], total: N}`. No DB writes. At least one of upc/itemid/title required. Requires SP-API credentials. |
+| GET | `/api/analytics/runs/{id}/ai_check/estimate` | Returns `{candidate_count, model, cost_usd_est, duration_ms_est, already_running}`. Query param: `verdict` — single value, comma-separated list (e.g. `"review,not_approved"`), or `"all"`. |
+| POST | `/api/analytics/runs/{id}/ai_check` | Body: `{verdict}`. `verdict` may be comma-separated or `"all"`. Starts background AI check. Progress tracked via `ai_check_status/done/total` on `analytics_runs`. |
+| POST | `/api/analytics/runs/{id}/ai_check/apply` | Applies AI verdicts to actual candidate verdicts: `ai_verdict='approve'` → `verdict='verified'`; `ai_verdict='reject'` → `verdict='not_approved'`; uncertain left unchanged. Returns `{approved: N, rejected: N, counts: {...}}`. |
+
+Candidate ORDER BY: `confidence DESC, row_idx, asin` — all tabs default to highest confidence first.
+
+---
+
+## Brand Analytics — API endpoints (`routers/brand_analytics.py`)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/brand-analytics/library` | List brand_library entries |
+| `POST` | `/api/brand-analytics/library` | Upsert entry (UNIQUE on name) |
+| `DELETE` | `/api/brand-analytics/library/{id}` | Remove entry |
+| `POST` | `/api/brand-analytics/discover` | AI sub-brand discovery; auto-saves to library; returns `{cached, result}` |
+| `POST` | `/api/brand-analytics/runs` | Create + start run. Body: `{name, search_type, search_terms[], min_rank, max_rank, pages_per_brand, force_refresh}`. Returns `{cached, run_id}` or cache notice. |
+| `GET` | `/api/brand-analytics/runs` | List runs (newest first) with `item_count` |
+| `GET` | `/api/brand-analytics/runs/{id}` | Run detail + paginated items. Params: `limit`, `offset`, `search`, `sort_key`, `sort_dir`. Returns `{run, items, total_items, filtered_count, stats}`. |
+| `POST` | `/api/brand-analytics/runs/{id}/control` | Body `{action}` = pause/stop/resume |
+| `DELETE` | `/api/brand-analytics/runs/{id}` | Stop + delete run + items |
+| `PATCH` | `/api/brand-analytics/runs/{id}/items/{asin}` | Body `{mpn?, upc?, ean?, gtin?}` — manual identifier edit. Only explicitly-provided fields are updated (uses `model_fields_set`). Corrections also written to `asin_identifier_overrides` for global persistence. |
+| `POST` | `/api/brand-analytics/runs/{id}/ai_fill` | Start AI Fill background thread (uses claude-haiku; GPT-4o-mini fallback) |
+| `GET` | `/api/brand-analytics/runs/{id}/export` | Excel download (columns: Brand, ASIN, Title, BSR, BSR Category, UPC, EAN, GTIN, MPN, AI UPC, AI EAN, AI GTIN, AI MPN) |
+| `GET` | `/api/brand-analytics/runs/{id}/categories` | Returns `{categories:[{category, count}]}` grouped by bsr_category, ordered by count desc. NULL mapped to `(No category)`. |
+| `POST` | `/api/brand-analytics/runs/{id}/filter-categories` | Body `{remove_categories:[...]}`. Permanently deletes items whose bsr_category matches. `(No category)` removes NULL rows. Returns `{deleted, remaining}`. |
+
+### Cache freshness logic
+- `last_asin_updated_at` < 7 days → returns `{cached:true, age_days, run_id, message}` — UI shows "Use Cached" / "Re-run"
+- `last_asin_updated_at` 7–150 days → returns `{cached:true, stale:true, age_days, run_id}` — UI shows choice modal
+- > 150 days → auto re-runs (falls through)
+- `force_refresh: true` in POST body skips cache check entirely
+
+### Brand runner details (`services/analytics/brand_runner.py`)
+- Reuses `normalize_amazon_item()` from `runner.py` — same SP-API normalization
+- Post-filter: `rapidfuzz.fuzz.token_set_ratio(amazon_brand, search_brand) >= 70`
+- Control: `_BRAND_RUN_CONTROL` dict (pause/stop/resume), same pattern as `runner.py`
+- AI Fill: uses `claude-haiku-4-5-20251001` (Anthropic) or `gpt-4o-mini` (fallback) per item; progress tracked via `ai_fill_done/total` on `brand_analytics_runs`
+- **Global ASIN identifier overrides**: `_upsert_item` reads `asin_identifier_overrides` before the DB write and applies any stored corrections (mpn/upc/ean/gtin). User-corrected values always win over SP-API data.
+- **Keyword cleaning**: `_keyword_for_search(brand_name)` strips ` by ` (e.g. "Cryotherapy by DonJoy" → "Cryotherapy DonJoy") for cleaner Amazon keyword searches, while keeping the original name for brand fuzzy-matching.
+- **Pack/UOM extraction**: `_extract_pack_qty` (item_package_quantity / number_of_items / title regex) and `_extract_uom_qty` (unit_count / unit_count_type / title regex) populate `pack_qty`/`uom_qty` columns.
+- **Unlimited pages**: `pages_per_brand = 0` means no page cap; progress bar shows pulse animation instead of fraction.
+
+## Brand Analytics — UI (`static/app.js` + `static/index.html`)
+
+- **Sidebar nav**: "Brand Analytics" item with tag icon below "ROI & Cost"
+- **`#view-brand-analytics`**: list view with entry card + past runs table
+- **`#view-brand-analytics-run`**: detail view with progress card (indigo), AI Fill progress card (green), freshness banner, stats row (5 cards), filter/search toolbar, sortable BSR column, paginated items table, inline edit via `#ba-edit-modal`
+- **`#ba-wizard-modal`**: 4-step wizard: Input (Brand/Manufacturer toggle + name + datalist autocomplete from library) → Sub-brands (Discover button → checkboxes) → Configure (BSR limits, pages/brand, run name) → Confirm (summary + Start)
+- **`#ba-cache-modal`**: choice modal when cached results exist — "Use Cached" opens existing run, "Re-run Search" forces `force_refresh:true`
+- **Universal Library panel**: renamed from "Abbreviation Library" → "Library" (sidebar button + panel header). Added `.lib-type-tabs` with Abbreviations / Brands / Manufacturers tabs. Brand/manufacturer CRUD calls `/api/brand-analytics/library`. Library data loaded into `state.brandAnalytics.library` for wizard autocomplete.
+- **`state.brandAnalytics`**: `runs[]`, `run{id, data, poll, page, pageSize, search, sortKey, sortDir}`, `library[]`, `wizard{step, searchType, inputName, discoveredBrands[], minRank, maxRank, pagesPerBrand, cacheInfo, saveToLibrary}`
+
+---
+
+## Analytics tab — UI (analytics section of `static/app.js` + `static/index.html`)
+
+- **All tabs (Approved / Review / Not Approved)** default sort: confidence DESC.
+- **BSR column** in candidates table. Shown as formatted integer or "—".
+- **Amazon Title** shown in "Review Before Export" export modal.
+- **Min/Max BSR fields** in wizard step 4 (`#awiz-min-rank`, `#awiz-max-rank`) — applied at run creation. Min BSR: rank below this (too popular) → Not Approved. Max BSR: rank above this (too slow-moving) → Not Approved.
+- **Min/Max BSR fields** in rescore modal (`#analytics-rescore-min-rank`, `#analytics-rescore-max-rank`) — pre-populated from run's stored values; changing them updates the run on confirm.
+- **BSR display filter** in the results toolbar: `#analytics-run-rank-min` (Min), `#analytics-run-rank-max` (Max), `#analytics-run-rank-skip-null` (hide unranked checkbox). Client-side only — filters the already-loaded page of candidates without a server round-trip. Reset when opening a new run.
+- **`_verdictReason(c)`** in `app.js` — computes human-readable rejection reason: size/gender/color/category mismatch > BSR cap > low confidence. BSR reason ("BSR X > max / < min") is only shown when the run's `max_rank`/`min_rank` is > 0 AND the candidate's rank actually violates it. Items rejected by `category_mismatch` (stored in `data_json.scores.category_mismatch`) show "Category mismatch"; items rejected by hard rejects with no stored flag show "Category or quality mismatch".
+- **CPG/Medical toggle** in wizard step 4 (`#awiz-mode-cpg`, `#awiz-mode-medical`, class `vetting-mode-btn`). Stored as `state.awiz.vettingMode`; submitted as `vetting_mode` form field. Saved to `analytics_runs.vetting_mode`. Displayed as coloured badge (green=CPG, blue=Medical) in the run list and run detail header. Resets to CPG on wizard open. Controls MPN bonus tiers and category distance threshold in scoring.
+- **AI Check button** (`#analytics-run-ai-check`) — visible when run is complete/paused/stopped. Opens `#analytics-ai-check-modal` where user picks verdict filter via **three checkboxes** (`#ai-check-filter-review`, `#ai-check-filter-not-approved`, `#ai-check-filter-approved`; Review is checked by default), sees cost estimate, then starts AI batch check. Button shows live progress ("Checking 45/200…") while running; polling continues via `fetchAnalyticsRunDetail`. On completion, AI verdict badges appear inline in the Verdict column: `✓ AI` (approve, green), `✗ AI` (reject, red), `? AI` (uncertain, grey), with reasoning in a tooltip.
+- **Apply AI Decisions button** (`#analytics-run-ai-apply`) — visible only when `ai_check_status === 'done'`. Calls `POST .../ai_check/apply`; maps AI approve → Verified, AI reject → Not Approved, leaves uncertain unchanged. Refreshes run detail and shows alert with counts. After applying, button changes to "✓ AI Applied" (disabled, `.btn-applied` green style) and `run.ai_decisions_applied === 1`. Starting a new AI check resets the flag to 0 and the button reverts to "Apply AI Decisions".
+- **AI verdict fields** on `analytics_candidates`: `ai_verdict` (approve/reject/uncertain), `ai_reasoning` (≤300 chars). Not shown if null. Does not change the scored verdict until "Apply AI Decisions" is clicked.
+
+---
+
+## Match-from-Keepa mode (`services/keepa_matcher.py`)
+
+New matching pipeline for scans where the vendor catalog has no pre-assigned ASINs. The Keepa export acts as the local Amazon database.
+
+### How it works
+1. User enables "Match from Keepa" toggle in the wizard step 2 (sets `match_from_keepa=True` on the scan, ASIN column not required).
+2. User chooses methods: UPC, Item ID/MPN, Title (any combination).
+3. After Keepa upload, user clicks "Run Verification" → hits `POST /api/scans/{id}/match` instead of `/verify`.
+4. `find_candidates()` builds three indexes from the Keepa export (UPC digit index, MPN fuzzy index, title list) and searches for up to 8 candidates per catalog row using the selected methods.
+5. All candidates are scored using the same `score_row()` engine as the normal verify flow.
+6. Candidates saved to `scan_candidates` table; best-per-row also saved to `scan_results` for stats/export compat.
+7. UI shows a candidates table grouped by catalog row. User approves one per row (others auto-discarded).
+8. Approving a candidate: syncs `scan_results[row_idx]` so the normal export/stats pipeline works unchanged.
+9. Unmatched rows → `Not Approved`, `review_status="No match found"`.
+
+### Constraint: 1 ASIN per scan
+`get_asin_approved_for_scan(scan_id, asin)` checks if an ASIN is already approved for another row. The approve endpoint returns HTTP 409 if violated.
+
+### New endpoints
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/api/scans/{id}/match` | Run match-from-Keepa pipeline (replaces `/verify` for match-mode scans) |
+| GET | `/api/scans/{id}/candidates` | List all candidates + catalog rows for the scan |
+| POST | `/api/scans/{id}/candidates/{cand_id}/verdict` | Approve or discard a candidate; body: `{verdict, review_status}` |
+
+### New `create_scan` fields
+`match_from_keepa: str = Form("false")`, `match_methods: str = Form("[]")` — appended by the wizard as `"true"/"false"` and a JSON array string.
+
+### Wizard UI
+- Toggle `#map-match-toggle` in step 2; reveals `#map-match-methods` checkboxes (`#match-method-upc`, `#match-method-item-id`, `#match-method-title`).
+- ASIN column dropdown becomes optional when toggle is on.
+- State tracked in `state.wizard.matchFromKeepa` (bool) and `state.wizard.matchMethods` (array).
+- Stored to `state.cpg.matchFromKeepa` / `state.cpg.matchMethods` after wizard submit.
+
+### Candidates UI
+`renderCandidatesView()` + `_renderCandidateRows()` + `_setCandidateVerdict()` in `app.js`.
+- Renders `#scan-candidates-section` (dynamically created div inserted before `#scan-summary-section`).
+- Table grouped by row index; rowspan for vendor title and row number across multiple candidates.
+- Approve → green highlight, others for same row discarded. Undo available.
+- After approve/discard: re-fetches candidates from server and re-renders.
+
+## Verify flow — scoring engine (`services/confidence.py`)
+
+Different scorer from analytics. Do not modify analytics matcher for verify-flow bugs and vice versa.
+
+### Signal weights (verify flow)
+
+```
+UPC/EAN     55 pts   exact match only
+Item ID     10 pts   fuzzy + suffix variant allowed
+Brand        5 pts   exact or fuzzy vs Amazon Brand/Manufacturer
+Title       25 pts   token_set_ratio across all Amazon text fields + attribute bonus/penalty
+Pack         5 pts   catalog pack vs Amazon "Unit Details: Unit Value"
+```
+Total possible: 100.
+
+### Identifier floors (verify flow only)
+
+Two floors applied before the ASIN floor, in order:
+
+1. **UPC + Item ID → Review floor**: if `upc.matched` AND `item_id.matched` AND no product-type mismatch → `confidence = max(confidence, review_threshold)`.
+
+2. **Item ID + Brand → Review floor** *(no UPC)*: if `item_id.matched` AND `brand.matched` AND NOT `upc.matched` AND no product-type mismatch → `confidence = max(confidence, review_threshold)`. Handles MPN-identified products where the UPC differs (case-pack vs unit UPC) or is absent. Brand match prevents coincidental part-number collisions across brands.
+
+3. **UPC + Brand + no contradiction → Approved floor**: if `upc.matched` AND `brand.matched` AND `" — "` not in title detail → `confidence = max(confidence, approved_threshold)`. Vendor shorthand titles score low but that is not a contradiction.
+
+Category mismatch detection for floors 1 & 2: `" — "` exists in title detail AND text after it contains `"type "` (e.g. `"type dish soap vs paper towel"`).
+
+### ASIN floor (verify flow only)
+
+When the catalog row has an ASIN **and** title similarity ≥ **30%** (was 40%), confidence is floored at the Approved threshold — regardless of UPC match. Threshold is 30% because pre-researched ASINs may carry different marketing names for the same product (e.g. "Green Heritage Pro" vs "Pacific Blue Select by Georgia-Pacific PRO" — same MPN, same brand, only 32% title similarity).
+
+---
+
+## Database schema (15 tables)
+
+| Table | Purpose |
+|---|---|
+| `scans` | One row per scan, lifecycle state machine |
+| `scan_catalog_rows` | Parsed catalog rows per scan |
+| `scan_amazon_rows` | Keepa/Amazon rows per scan, keyed by ASIN |
+| `scan_results` | Per-row verdict + full JSON signals |
+| `analytics_runs` | Analytics run metadata, incl. `max_rank`, `min_rank`, `vetting_mode` (TEXT DEFAULT 'cpg'), `ai_check_status`, `ai_check_done`, `ai_check_total`, `duplicate_rows_removed` (INTEGER DEFAULT 0 — duplicate catalog rows stripped at run creation), `ai_decisions_applied` (INTEGER DEFAULT 0 — set to 1 when Apply AI Decisions is clicked; reset to 0 when a new AI check is started) |
+| `scan_candidates` | Per-candidate matches for match-from-Keepa scans. PK: `id`. Unique: `(scan_id, row_idx, asin)`. Columns: `confidence`, `verdict`, `review_status`, `match_method`, `data_json`. |
+| `analytics_catalog_rows` | Source rows per analytics run |
+| `analytics_candidates` | SP-API candidate matches with verdicts; incl. `sales_rank`, `ai_verdict`, `ai_reasoning` |
+| `keepa_imports` | Global Keepa cache keyed by ASIN (legacy cross-scan pool) |
+| `amazon_imports` | Global Amazon export cache keyed by ASIN |
+| `blacklisted_pairs` | Rejected UPC/ASIN pairs — written by verify UI buttons AND analytics verdict endpoint. Loaded at run/rescore/verify start to auto-reject pairs. |
+| `verified_items` | Approved UPC/ASIN pairs — written by verify UI buttons AND analytics verdict endpoint. Loaded at run/rescore/verify start to auto-approve pairs (confidence floor applies). |
+| `global_asin_cache` | SP-API normalized data for every ASIN ever fetched (no `_raw`). Written by `_upsert_candidate` on every analytics run. Used to avoid redundant SP-API calls in future. |
+| `attribute_cache` | Normalised attributes per (UPC, ASIN) — verify flow |
+| `abbreviation_library` | Categorised abbreviation/full-form entries |
+| `settings` | threshold_verified (default 85), threshold_review (default 35) |
+| `brand_library` | Brand/manufacturer entity store: sub-brands, aliases, discovered_by (ai/user). UNIQUE on name. |
+| `brand_analytics_runs` | One run per brand search. Tracks status, progress, BSR limits, pages_per_brand, ai_fill_status/done/total, last_asin_updated_at. |
+| `brand_analytics_items` | One row per (run_id, asin). Stores BSR, UPC/EAN/GTIN/MPN (from SP-API or global overrides) and ai_mpn/ai_upc/ai_ean/ai_gtin (from AI Fill). UNIQUE(run_id, asin). |
+| `asin_identifier_overrides` | Global per-ASIN user corrections for mpn/upc/ean/gtin. PRIMARY KEY on asin. Written by PATCH endpoint; read by `_upsert_item` in brand_runner so every future brand run for this ASIN uses the corrected values. |
+
+### Pair manager integration
+
+Both flows share a global `blacklisted_pairs` + `verified_items` pair store:
+
+**Verify flow** (`routers/scans.py`):
+- `blacklisted_pairs` loaded at scan start. If `(upc, asin)` is blacklisted → verdict forced to "Not Approved", `review_status="Pair Blacklisted"`.
+- `verified_items` loaded at scan start. If `(upc, asin)` is verified AND `confidence >= 40` AND verdict wasn't already "Not Approved" → verdict forced to "Approved", `review_status="Pair Verified"`.
+- Approve/Promote UI buttons → write to `verified_items`. Discard/Reject UI buttons → write to `blacklisted_pairs`. (Handled by existing `/api/verified` + `/api/blacklist` endpoints.)
+- Export: saves only manually handled pairs. Approved rows saved only when `review_status` is one of `{"Manually Approved", "Reviewed", "Pair Verified", "ai-accepted"}`. Not Approved rows saved only when `review_status` is `"Manually Rejected"` or `"Pair Blacklisted"`. Auto-scored rows (empty `review_status`) are never persisted.
+
+**Analytics flow** (`services/analytics/runner.py` + `routers/analytics.py`):
+- `blacklisted_pairs` + `verified_items` loaded before the vetting loop and before rescore. Same override logic as verify flow (blacklist → not_approved; verified + no hard_reject + conf ≥ 35 → verified).
+- Analytics verdict override endpoint: any manual verdict change to `not_approved` → writes to `blacklisted_pairs`; any change to `verified` → writes to `verified_items`. UPC looked up from `analytics_catalog_rows`.
+- All fetched ASIN normalized data saved to `global_asin_cache` via `_upsert_candidate`.
+
+### Additive migrations in `database.py` `init_db()`
+
+Run on every startup; safe to re-run. Current migrations:
+- `abbreviation_library.added_by` — TEXT DEFAULT 'system'
+- `analytics_candidates.sales_rank` — INTEGER
+- `analytics_runs.max_rank` — INTEGER DEFAULT 0
+- `analytics_runs.min_rank` — INTEGER DEFAULT 0
+- `analytics_candidates.ai_verdict` — TEXT
+- `analytics_candidates.ai_reasoning` — TEXT
+- `analytics_runs.ai_check_status` — TEXT
+- `analytics_runs.ai_check_done` — INTEGER DEFAULT 0
+- `analytics_runs.ai_check_total` — INTEGER DEFAULT 0
+- `analytics_runs.vetting_mode` — TEXT DEFAULT 'cpg'
+- `analytics_runs.brand_col` — TEXT DEFAULT '' (column name or literal text value used as brand at wizard/rescore time)
+- `analytics_runs.brand_mode` — TEXT DEFAULT 'col' ('col' = column lookup, 'text' = literal override)
+- `scans.match_from_keepa` — INTEGER DEFAULT 0
+- `scans.match_methods` — TEXT DEFAULT NULL (JSON array e.g. `["upc","item_id","title"]`)
+- `global_asin_cache` — CREATE TABLE IF NOT EXISTS (asin PK, data_json, updated_at)
+- `analytics_runs.ai_decisions_applied` — INTEGER DEFAULT 0
+
+---
+
+## Attribute extraction (`services/extractor.py`)
+
+Two functions called from multiple places:
+
+- **`rule_extract(title, abbreviations)`** — regex-based. Returns `{product_type, size {value, unit, raw}, pack_count, variant {scent, color, flavor, form}, form, normalised_title}`. Uses `SIZE_RE` covering oz, lb, g, kg, ml, l, gal, fl oz.
+- **`amz_extract(amz_row, abbreviations)`** — for Keepa/Excel rows. Combines all `_AMZ_TEXT_FIELDS` into a blob, then overrides with dedicated columns (Color, Scent, Flavor, Size). Use this for verify-flow Amazon rows, not for SP-API normalized dicts.
+- **`ai_extract(title, abbreviations, extra_context)`** — GPT-4o with JSON schema. Returns same shape plus `expanded_title` and `new_abbreviations`.
+
+The abbreviation library is loaded via `database.flat_library()` (5-min in-memory cache). Always pass the library to `rule_extract` / `amz_extract` so vendor-specific abbreviations are expanded before attribute detection.
+
+---
+
+## Performance optimisations in place
+
+- **SQLite WAL mode** — concurrent reads don't block writes.
+- **PRAGMA tuning** (2026-05-18): `synchronous=NORMAL` (safe with WAL, faster fsync), `cache_size=-32768` (32 MB page cache), `temp_store=MEMORY` (temp tables in RAM). Applied in `_connect()`.
+- **Indexes** (2026-04-27 + 2026-05-18): `scan_catalog_rows(scan_id)`, `scan_amazon_rows(scan_id)`, `scan_results(upc, asin)`, `analytics_catalog_rows(run_id)`, `analytics_candidates(run_id, verdict)`, `analytics_candidates(sales_rank)`, `brand_analytics_items(asin)`.
+- **Library cache** — `flat_library()` is cached in-memory with 5-min TTL; invalidated on any write.
+- **Batch blacklist** — `load_blacklist_set()` loads all pairs once; verify loop uses O(1) set lookup.
+- **Parallelised AI extraction** — when `ai_mode=True`, all per-row GPT-4o calls run in `ThreadPoolExecutor(max_workers=6)`.
+- **GZip middleware** — responses ≥ 1 KB are compressed.
+- **Shared file parser** — `services/file_parser.py` is the single source of truth for Excel/CSV ingestion.
+- **runner.py single-pass catalog parsing** (2026-05-18): `_rescore_pipeline` now builds `catalog_map`, `title_by_row`, and `brand_by_row` in one loop (was two loops, double-parsing `data_json`).
+- **brand_runner.py single connection per upsert** (2026-05-18): `_upsert_item` reads `asin_identifier_overrides` and writes `brand_analytics_items` in one locked connection (was two).
+- **brand_runner.py batched AI Fill progress** (2026-05-18): item update and run progress counter written in one connection per item (was two separate connections).
+- **Job store TTL eviction** (2026-05-18): `eligibility.py` and `storage_fees.py` evict completed/error jobs older than 1 hour on every `_get_job()` call.
+
+---
+
+## Known scaling limitations (SQLite single-writer)
+
+For true multi-hundred-user concurrency, the current bottleneck is SQLite's single-writer lock. Future migration path:
+1. Replace `_LOCK + sqlite3` with SQLAlchemy async + PostgreSQL.
+2. Add Redis for library/threshold caching.
+3. Run multiple uvicorn workers behind a reverse proxy (nginx/caddy).
+
+---
+
+## Unused / legacy code to be aware of
+
+- **`routers/verify.py` `POST /api/verify`** — legacy single-shot flow. Do not remove until UI is fully migrated.
+- **`keepa_imports` / `amazon_imports` tables** — global cross-scan ASIN cache. Still populated but not actively queried by v3 scan flow.
+- **`attribute_cache` table** — keyed by (UPC, ASIN). Used by verify flow. Analytics uses a different approach: attributes are embedded in `analytics_candidates.data_json.scores`.
+
+---
+
+## Conventions
+
+- All route handlers are `async def`. Blocking work (OpenAI, heavy computation) must be offloaded to `asyncio.to_thread()` or `ThreadPoolExecutor` — never block the event loop inline.
+- DB reads don't need `_LOCK` (WAL handles concurrent reads). Only writes use `with _LOCK, _connect()`.
+- The `UPC` field from Excel comes in as `int`. Always coerce: `str(row.get("UPC") or "").strip()`.
+- Export layout is 20 fixed columns — see `routers/export.py` `OUTPUT_COLUMNS`. Column order matters.
+- `app.js` uses the `api()` helper for all fetch calls. Retries once on network error; throws `Error(detail)` on non-2xx.
+- Analytics background threads are daemon threads — they die with the uvicorn process. Long-running runs survive server restarts via `resume_run()`.
+
+---
+
+## Environment variables
+
+| Variable | Required | Used by |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Optional | `services/ai_recheck.py`, `services/analytics/ai_check.py`, `services/analytics/brand_extractor.py` — **preferred** over OpenAI |
+| `OPENAI_API_KEY` | Optional | `services/extractor.py` (ai_extract), `services/ai_recheck.py` (fallback), `runner.py` (title cleaning), `services/analytics/ai_check.py` (fallback), `services/analytics/brand_extractor.py` (fallback) |
+| `SP_API_REFRESH_TOKEN` | Optional | `services/spapi/auth.py` |
+| `SP_API_CLIENT_ID` | Optional | `services/spapi/auth.py` |
+| `SP_API_CLIENT_SECRET` | Optional | `services/spapi/auth.py` |
+| `SP_API_MARKETPLACE_ID` | Optional | `services/spapi/config.py` (default: ATVPDKIKX0DER / US) |
+
+---
+
+## Running locally
+
+```bash
+python -m venv .venv && source .venv/Scripts/activate
+pip install -r requirements.txt
+python main.py          # → http://127.0.0.1:8000
+```
+
+For production (multiple workers):
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+SQLite WAL supports multiple readers; writes serialise through `_LOCK`. With 4 workers, write-heavy operations queue — acceptable for moderate load.
