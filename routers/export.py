@@ -16,6 +16,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel
 
+import services.database as database
+from services.safety import safe_spreadsheet_value
+
 router = APIRouter()
 
 
@@ -163,7 +166,7 @@ async def export(payload: ExportPayload) -> StreamingResponse:
 
         fill = _row_fill(row)
         for c_idx, val in enumerate(values, start=1):
-            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell = ws.cell(row=r_idx, column=c_idx, value=safe_spreadsheet_value(val))
             cell.font = body_font
             cell.alignment = Alignment(vertical="center", wrap_text=True)
             # Duplicate flag cell highlighted in yellow regardless of verdict fill.
@@ -183,12 +186,28 @@ async def export(payload: ExportPayload) -> StreamingResponse:
     ws2.column_dimensions["B"].width = 40
     ws2.freeze_panes = "A2"
     for idx, entry in enumerate(payload.abbreviations, start=2):
-        ws2.cell(row=idx, column=1, value=entry.get("abbr"))
-        ws2.cell(row=idx, column=2, value=entry.get("full"))
+        ws2.cell(row=idx, column=1, value=safe_spreadsheet_value(entry.get("abbr")))
+        ws2.cell(row=idx, column=2, value=safe_spreadsheet_value(entry.get("full")))
 
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
+
+    # Persist only manually handled pairs — skip auto-scored rows.
+    _SAVE_VERIFIED  = {"Manually Approved", "Reviewed", "Pair Verified", "ai-accepted"}
+    _SAVE_BLACKLIST = {"Manually Rejected", "Pair Blacklisted"}
+    for row in payload.results:
+        upc  = str(row.get("UPC/EAN") or "").strip()
+        asin = str(row.get("ASIN") or "").strip()
+        if not upc or not asin:
+            continue
+        v  = (row.get("verdict") or "").lower()
+        rs = (row.get("review_status") or "").strip()
+        if v in ("approved", "verified") and rs in _SAVE_VERIFIED:
+            database.save_verified(upc, asin, row, rs)
+        elif v in ("not approved", "not_approved") and rs in _SAVE_BLACKLIST:
+            failed = list((row.get("signals") or {}).keys())
+            database.add_to_blacklist(upc, asin, row.get("confidence"), failed)
 
     headers = {
         "Content-Disposition": "attachment; filename=catalog_verification_results.xlsx"

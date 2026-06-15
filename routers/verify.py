@@ -26,6 +26,7 @@ from services import database
 from services.confidence import score_row
 from services.extractor import ai_extract, rule_extract
 from services.file_parser import parse_file
+from services.safety import read_upload_limited
 
 router = APIRouter()
 
@@ -37,9 +38,9 @@ router = APIRouter()
 CATALOG_COLUMNS = ["UPC/EAN", "Item ID", "Vendor Title", "Brand", "ASIN"]
 
 
-def _rows_to_dicts(data: bytes) -> list[dict]:
+def _rows_to_dicts(filename: str, data: bytes) -> list[dict]:
     """Parse an Excel/CSV file and return rows as dicts keyed by header."""
-    headers, rows = parse_file("file.xlsx", data)
+    headers, rows = parse_file(filename, data)
     return [
         {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
         for row in rows
@@ -96,15 +97,15 @@ async def verify(
 
     thresholds = database.get_thresholds()
 
-    catalog_bytes = await catalog_file.read()
-    amazon_bytes = await amazon_file.read()
+    catalog_bytes = await read_upload_limited(catalog_file)
+    amazon_bytes = await read_upload_limited(amazon_file)
 
     try:
-        catalog_rows = _rows_to_dicts(catalog_bytes)
+        catalog_rows = _rows_to_dicts(catalog_file.filename or "", catalog_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Catalog parse failed: {exc}")
     try:
-        amazon_rows = _rows_to_dicts(amazon_bytes)
+        amazon_rows = _rows_to_dicts(amazon_file.filename or "", amazon_bytes)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Amazon parse failed: {exc}")
 

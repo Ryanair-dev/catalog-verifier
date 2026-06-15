@@ -1,28 +1,30 @@
 """
 Brand field extraction for analytics runs.
 
-Before searching Amazon, runs GPT-4o-mini on each vendor product title to
-extract structured fields: brand, product_type, model, size, pack_info.
-These fields are stored per catalog row and used to:
+Before searching Amazon, runs AI on each vendor product title to extract
+structured fields: brand, product_type, model, size, pack_info.
+
+Uses Claude Haiku (ANTHROPIC_API_KEY) when available; falls back to
+GPT-4o-mini (OPENAI_API_KEY) otherwise.
+
+Extracted fields are stored per catalog row and used to:
   - Build more targeted Tier 3 keyword queries (brand + product_type)
   - Improve brand scoring in the matcher (extracted brand > raw catalog text)
   - Provide richer context to the AI verdict step
-
-Mirrors AmazonAsinResearch1/app/services/brand_extractor.py but uses
-OpenAI instead of Anthropic, and stores results in analytics_catalog_rows.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
 
-BATCH_SIZE = 20        # titles per GPT-4o-mini call
-MAX_WORKERS = 4        # parallel calls
+BATCH_SIZE  = 20   # titles per call
+MAX_WORKERS = 4    # parallel calls
 
 _SYSTEM = (
     "You are a CPG product data extractor. Given a numbered list of vendor "
@@ -35,16 +37,74 @@ _SYSTEM = (
     "  size         — size/volume/weight string (e.g. '3.4 oz', '56 fl oz'); "
     "null if absent\n"
     "  pack_info    — pack count if listed (e.g. 'pack of 3'); null if single\n\n"
-    "Respond ONLY with a JSON array — one object per title in the SAME ORDER:\n"
+    "Respond ONLY with a raw JSON array — no markdown, no code blocks — "
+    "one object per title in the SAME ORDER:\n"
     '[{"brand":"...","product_type":"...","model":null,"size":"...","pack_info":null}]'
 )
 
 
-def _extract_batch(client, titles: list[str]) -> list[dict]:
-    """
-    Call GPT-4o-mini for a batch of titles.
-    Returns a list of dicts (same length as titles), with empty dicts on error.
-    """
+# --------------------------------------------------------------------------- #
+# JSON extraction helper
+# --------------------------------------------------------------------------- #
+
+def _extract_json_list(text: str) -> list:
+    text = text.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+        for key in ("results", "items", "data"):
+            if isinstance(parsed.get(key), list):
+                return parsed[key]
+        return []
+    except Exception:
+        pass
+    m = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
+    if m:
+        try:
+            parsed = json.loads(m.group(1).strip())
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            pass
+    m = re.search(r"\[[\s\S]+\]", text)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            pass
+    return []
+
+
+# --------------------------------------------------------------------------- #
+# Per-batch extraction
+# --------------------------------------------------------------------------- #
+
+def _extract_batch_claude(client, titles: list[str]) -> list[dict]:
+    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(titles))
+    for attempt in range(3):
+        try:
+            resp = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1024,
+                system=_SYSTEM,
+                messages=[{"role": "user", "content": numbered}],
+                temperature=0,
+            )
+            raw   = resp.content[0].text if resp.content else "[]"
+            items = _extract_json_list(raw)
+            while len(items) < len(titles):
+                items.append({})
+            return [_normalise(items[i]) for i in range(len(titles))]
+        except Exception as exc:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+            else:
+                log.warning("[brand_extractor] claude batch failed: %s", exc)
+    return [{} for _ in titles]
+
+
+def _extract_batch_openai(client, titles: list[str]) -> list[dict]:
     numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(titles))
     for attempt in range(3):
         try:
@@ -57,8 +117,7 @@ def _extract_batch(client, titles: list[str]) -> list[dict]:
                 response_format={"type": "json_object"},
                 temperature=0,
             )
-            raw = resp.choices[0].message.content or "{}"
-            # Model sometimes wraps the array in {"results": [...]}
+            raw    = resp.choices[0].message.content or "{}"
             parsed = json.loads(raw)
             if isinstance(parsed, list):
                 items = parsed
@@ -71,7 +130,6 @@ def _extract_batch(client, titles: list[str]) -> list[dict]:
                 )
                 if not isinstance(items, list):
                     items = []
-            # Pad / trim to match batch length
             while len(items) < len(titles):
                 items.append({})
             return [_normalise(items[i]) for i in range(len(titles))]
@@ -79,15 +137,13 @@ def _extract_batch(client, titles: list[str]) -> list[dict]:
             if attempt < 2:
                 time.sleep(2 ** attempt)
             else:
-                log.warning("[brand_extractor] batch failed: %s", exc)
+                log.warning("[brand_extractor] openai batch failed: %s", exc)
     return [{} for _ in titles]
 
 
 def _normalise(raw: dict) -> dict:
-    """Coerce raw GPT output to a clean, predictable shape."""
     def _s(v) -> str:
         return str(v).strip() if v else ""
-
     return {
         "brand":        _s(raw.get("brand")),
         "product_type": _s(raw.get("product_type")),
@@ -96,6 +152,10 @@ def _normalise(raw: dict) -> dict:
         "pack_info":    _s(raw.get("pack_info")),
     }
 
+
+# --------------------------------------------------------------------------- #
+# Public entry point
+# --------------------------------------------------------------------------- #
 
 def extract_brands(
     rows: list,          # list of SourceRow
@@ -107,19 +167,41 @@ def extract_brands(
     Returns {row_idx: {brand, product_type, model, size, pack_info}}.
     Rows without a title are skipped (empty dict).
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        log.info("[brand_extractor] OPENAI_API_KEY not set — skipping extraction")
+    # Try Anthropic first, then OpenAI
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    openai_key    = os.getenv("OPENAI_API_KEY")
+
+    client       = None
+    use_claude   = False
+    _extract_fn  = None
+
+    if anthropic_key:
+        try:
+            import anthropic
+            client      = anthropic.Anthropic(api_key=anthropic_key)
+            use_claude  = True
+            _extract_fn = _extract_batch_claude
+        except Exception:
+            pass
+
+    if client is None and openai_key:
+        try:
+            from openai import OpenAI
+            client      = OpenAI(api_key=openai_key)
+            _extract_fn = _extract_batch_openai
+        except Exception:
+            pass
+
+    if client is None:
+        log.info("[brand_extractor] no AI API key set — skipping extraction")
         return {}
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-    except ImportError:
-        log.warning("[brand_extractor] openai package not installed — skipping")
-        return {}
+    log.info(
+        "[brand_extractor] using %s for run %s",
+        "Claude Haiku" if use_claude else "GPT-4o-mini",
+        run_id,
+    )
 
-    # Build ordered list of (row_idx, title) for rows that have a title
     items_to_extract = [(r.row_idx, r.title) for r in rows if r.title]
     total = len(items_to_extract)
     if not total:
@@ -128,7 +210,6 @@ def extract_brands(
     result: dict[int, dict] = {}
     done = 0
 
-    # Split into batches and submit in parallel
     batches = [
         items_to_extract[i:i + BATCH_SIZE]
         for i in range(0, total, BATCH_SIZE)
@@ -136,7 +217,7 @@ def extract_brands(
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         future_to_batch = {
-            pool.submit(_extract_batch, client, [t for _, t in batch]): batch
+            pool.submit(_extract_fn, client, [t for _, t in batch]): batch
             for batch in batches
         }
         for fut in as_completed(future_to_batch):

@@ -47,6 +47,8 @@ from services import ai_recheck, database
 from services.confidence import score_row
 from services.extractor import ai_extract, apply_abbreviations, rule_extract
 from services.file_parser import parse_file
+from services.keepa_matcher import find_candidates
+from services.safety import read_upload_limited
 
 router = APIRouter()
 
@@ -83,6 +85,7 @@ def _apply_mapping(
     item_idx = col_index(mapping.get("item_id_col"))
     title_idx = col_index(mapping.get("title_col"))
     asin_idx = col_index(mapping.get("asin_col"))
+    brand_col_idx = col_index(mapping.get("brand_col"))
     attr_indexes = [
         (name, col_index(name)) for name in (mapping.get("attr_cols") or [])
     ]
@@ -97,11 +100,17 @@ def _apply_mapping(
                 v = cell(row, idx)
                 if v not in (None, ""):
                     attrs[col_name] = v
+        # brand_col overrides brand_literal when present
+        brand_val = None
+        if brand_col_idx is not None:
+            brand_val = str(cell(row, brand_col_idx) or "").strip() or None
+        if not brand_val:
+            brand_val = brand_literal or None
         out.append({
             "UPC/EAN": cell(row, upc_idx),
             "Item ID": cell(row, item_idx),
             "Vendor Title": cell(row, title_idx),
-            "Brand": brand_literal or None,
+            "Brand": brand_val,
             "ASIN": cell(row, asin_idx),
             "_attributes": attrs,
         })
@@ -183,8 +192,10 @@ def _guess_abbr_category(full: str) -> str:
 async def scan_preview(catalog_file: UploadFile = File(...)) -> dict:
     """Return the first 10 rows + detected headers for the import wizard."""
     try:
-        data = await catalog_file.read()
+        data = await read_upload_limited(catalog_file)
         headers, rows = parse_file(catalog_file.filename or "", data)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
     if not headers:
@@ -219,19 +230,34 @@ async def create_scan(
     marketplace: str = Form("US"),
     condition: str = Form("New"),
     ai_mode: str = Form("false"),
+    match_from_keepa: str = Form("false"),
+    match_methods: str = Form("[]"),
 ) -> dict:
     try:
         mapping_obj = _json.loads(mapping)
     except _json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Malformed mapping JSON")
 
-    data = await catalog_file.read()
+    try:
+        methods_list = _json.loads(match_methods)
+        if not isinstance(methods_list, list):
+            methods_list = []
+    except _json.JSONDecodeError:
+        methods_list = []
+
+    data = await read_upload_limited(catalog_file)
     try:
         headers, rows = parse_file(catalog_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
-    required_cols = ("upc_col", "item_id_col", "title_col", "asin_col")
+    match_mode = str(match_from_keepa).lower() in ("1", "true", "yes", "on")
+
+    # ASIN column is only required in normal mode; match-from-Keepa doesn't need it
+    if match_mode:
+        required_cols = ("upc_col", "item_id_col", "title_col")
+    else:
+        required_cols = ("upc_col", "item_id_col", "title_col", "asin_col")
     missing = [k for k in required_cols if not mapping_obj.get(k)]
     if missing:
         raise HTTPException(
@@ -254,6 +280,8 @@ async def create_scan(
         catalog_filename=catalog_file.filename,
         catalog_count=len(mapped_rows),
         ai_mode=ai_on,
+        match_from_keepa=match_mode,
+        match_methods=methods_list if match_mode else [],
     )
     database.save_scan_catalog_rows(scan_id, mapped_rows)
 
@@ -303,7 +331,7 @@ async def attach_amazon(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    data = await amazon_file.read()
+    data = await read_upload_limited(amazon_file)
     try:
         headers, rows = parse_file(amazon_file.filename or "", data)
     except Exception as exc:  # noqa: BLE001
@@ -350,8 +378,9 @@ async def run_verify(scan_id: int) -> dict:
     use_ai = bool(scan.get("ai_mode"))
 
     dupes = _find_duplicates(catalog_rows, "Item ID")
-    # Load blacklist once — avoids one DB query per catalog row.
+    # Load pair-manager sets once — avoids per-row DB queries.
     blacklist_set = database.load_blacklist_set()
+    verified_set  = database.load_verified_set()
     # Build a token set from the library for O(1) membership checks instead of
     # per-token DB queries inside the AI learning loop.
     known_tokens: set[str] = {e["abbr"].lower() for e in abbr_list}
@@ -461,6 +490,18 @@ async def run_verify(scan_id: int) -> dict:
             else None
         )
 
+        # Pair manager overrides — applied after scoring.
+        pair_verdict = score["verdict"]
+        pair_status  = ""
+        is_blacklisted = upc and asin and (upc, asin) in blacklist_set
+        is_verified    = upc and asin and (upc, asin) in verified_set
+        if is_blacklisted:
+            pair_verdict = "Not Approved"
+            pair_status  = "Pair Blacklisted"
+        elif is_verified and score["confidence"] >= 40 and score["verdict"] != "Not Approved":
+            pair_verdict = "Approved"
+            pair_status  = "Pair Verified"
+
         results.append({
             "UPC": row.get("UPC/EAN"),
             "ItemID": row.get("Item ID"),
@@ -470,13 +511,13 @@ async def run_verify(scan_id: int) -> dict:
             "Brand": row.get("Brand"),
             "ASIN": row.get("ASIN"),
             "Confidence": score["confidence"],
-            "Verdict": score["verdict"],
+            "Verdict": pair_verdict,
             "original_verdict": score["verdict"],
-            "review_status": "",
+            "review_status": pair_status,
             "signals": score["signals"],
             "amz_pack": score["amz_pack"],
             "duplicate": str(row.get("Item ID") or "").strip() in dupes,
-            "blacklisted": (upc, asin) in blacklist_set,
+            "blacklisted": bool(is_blacklisted),
             "notes": score["notes"],
             "_attributes": row.get("_attributes") or {},
             "ai_suggestion": None,
@@ -496,6 +537,168 @@ async def run_verify(scan_id: int) -> dict:
         "duplicate_item_ids": sorted(dupes),
         "ai_added": ai_added,
         "stats": stats,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Match-from-Keepa pipeline (separate from normal verify)
+# --------------------------------------------------------------------------- #
+
+@router.post("/scans/{scan_id}/match")
+async def run_match(scan_id: int) -> dict:
+    """Run the match-from-Keepa pipeline for scans created with match_from_keepa=True."""
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    if not scan.get("match_from_keepa"):
+        raise HTTPException(status_code=400, detail="Scan was not created in match-from-Keepa mode")
+    if scan["status"] == "pending":
+        raise HTTPException(status_code=400, detail="Keepa data not yet attached")
+
+    database.update_scan(scan_id, status="verifying")
+
+    abbr_list  = database.flat_library()
+    thresholds = database.get_thresholds()
+    catalog_rows = database.load_scan_catalog_rows(scan_id)
+    keepa_index  = database.load_scan_amazon_rows(scan_id)   # asin → row
+    methods      = scan.get("match_methods") or ["upc", "item_id", "title"]
+
+    candidates = find_candidates(
+        catalog_rows=catalog_rows,
+        keepa_rows=keepa_index,
+        methods=methods,
+        abbr_list=abbr_list,
+        thresholds=thresholds,
+    )
+
+    database.save_scan_candidates(scan_id, candidates)
+
+    # Populate scan_results with best candidate per row for stats/export compat.
+    best_by_row: dict[int, dict] = {}
+    for c in candidates:
+        idx = c["row_idx"]
+        if idx not in best_by_row or c["Confidence"] > best_by_row[idx]["Confidence"]:
+            best_by_row[idx] = c
+
+    results = [best_by_row[i] for i in sorted(best_by_row)]
+    database.save_scan_results(scan_id, results)
+    stats = database.recompute_scan_stats(scan_id)
+    database.update_scan(scan_id, status="verified_unreviewed")
+
+    return {
+        "scan":       database.get_scan(scan_id),
+        "candidates": database.load_scan_candidates(scan_id),
+        "thresholds": thresholds,
+        "stats":      stats,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Candidate-level verdict (match-from-Keepa mode)
+# --------------------------------------------------------------------------- #
+
+class CandidateVerdict(BaseModel):
+    verdict: str        # "Approved" | "Not Approved"
+    review_status: str = ""
+
+
+@router.post("/scans/{scan_id}/candidates/{cand_id}/verdict")
+async def set_candidate_verdict(
+    scan_id: int, cand_id: int, body: CandidateVerdict,
+) -> dict:
+    """
+    Approve or discard a single candidate.
+
+    Approving a candidate:
+      - Sets its verdict to Approved and review_status to 'Approved'
+      - Discards all other candidates for the same row
+      - Prevents approving the same ASIN for a different row in this scan
+      - Updates scan_results[row_idx] to this candidate (for export compat)
+
+    Discarding a candidate:
+      - Sets its verdict to Not Approved and review_status to 'Discarded'
+    """
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    cand = database.get_scan_candidate(cand_id)
+    if not cand or cand["scan_id"] != scan_id:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    verdict = body.verdict.strip()
+    if verdict not in ("Approved", "Not Approved"):
+        raise HTTPException(status_code=400, detail="verdict must be Approved or Not Approved")
+
+    row_idx = cand["row_idx"]
+    asin    = cand["asin"]
+
+    if verdict == "Approved":
+        # Enforce: one ASIN per scan — check if already approved elsewhere
+        already_row = database.get_asin_approved_for_scan(scan_id, asin)
+        if already_row is not None and already_row != row_idx:
+            raise HTTPException(
+                status_code=409,
+                detail=f"ASIN {asin} is already approved for row {already_row} in this scan",
+            )
+
+        # Update this candidate
+        updated = dict(cand)
+        updated["Verdict"] = "Approved"
+        updated["review_status"] = "Approved"
+        database.update_scan_candidate(cand_id, "Approved", "Approved", updated)
+
+        # Discard all other candidates for this row with a single targeted UPDATE
+        with database._LOCK, database._connect() as conn:
+            conn.execute(
+                "UPDATE scan_candidates SET verdict='Not Approved', review_status='Discarded' "
+                "WHERE scan_id=? AND row_idx=? AND id!=? AND review_status!='Discarded'",
+                (scan_id, row_idx, cand_id),
+            )
+
+        # Sync scan_results row so export and stats reflect the approval
+        result_data = dict(updated)
+        database.update_scan_result_row(scan_id, row_idx, "Approved", "Approved", result_data)
+
+    else:
+        # Discard
+        updated = dict(cand)
+        updated["Verdict"] = "Not Approved"
+        updated["review_status"] = body.review_status or "Discarded"
+        database.update_scan_candidate(
+            cand_id, "Not Approved", updated["review_status"], updated,
+        )
+        row_candidates = [
+            c for c in database.load_scan_candidates(scan_id)
+            if c.get("row_idx") == row_idx and c.get("review_status") != "Discarded"
+        ]
+        replacement = max(
+            row_candidates,
+            key=lambda c: float(c.get("Confidence", c.get("confidence", 0)) or 0),
+            default=updated,
+        )
+        replacement_verdict = replacement.get("Verdict") or replacement.get("verdict") or "Not Approved"
+        replacement_status = replacement.get("review_status") or ""
+        database.update_scan_result_row(
+            scan_id, row_idx, replacement_verdict, replacement_status, replacement,
+        )
+
+    stats = database.recompute_scan_stats(scan_id)
+    database.update_scan(scan_id, status="verified_partial")
+    return {"ok": True, "stats": stats}
+
+
+@router.get("/scans/{scan_id}/candidates")
+async def list_candidates(scan_id: int) -> dict:
+    scan = database.get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    catalog_rows = database.load_scan_catalog_rows(scan_id)
+    candidates   = database.load_scan_candidates(scan_id)
+    return {
+        "scan":        scan,
+        "candidates":  candidates,
+        "catalog_rows": catalog_rows,
     }
 
 
@@ -524,7 +727,7 @@ async def update_row(scan_id: int, row_idx: int, body: RowOverride) -> dict:
         new_status = (
             "verified_partial"
             if stats["reviewed"] < (stats["verified"] + stats["review"] + stats["not_approved"])
-            else "verified_partial"
+            else "verified_complete"
         )
         database.update_scan(scan_id, status=new_status)
     return {"ok": True, "stats": stats}
@@ -535,14 +738,12 @@ async def mark_exported(scan_id: int) -> dict:
     scan = database.get_scan(scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
-    database.update_scan(
-        scan_id, status="verified_complete",
-        exported_at=_json.dumps(None),  # will be set by SQL CURRENT_TIMESTAMP below
-    )
-    # A second pass to stamp exported_at — update_scan will accept the column.
+    # Single atomic update — status + exported_at set together to avoid race condition
     with database._LOCK, database._connect() as conn:
         conn.execute(
-            "UPDATE scans SET exported_at=CURRENT_TIMESTAMP WHERE id=?",
+            "UPDATE scans SET status='verified_complete', "
+            "exported_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=?",
             (scan_id,),
         )
     return {"scan": database.get_scan(scan_id)}

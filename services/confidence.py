@@ -379,13 +379,45 @@ def score_row(
 
     confidence = round(weighted, 1)
 
+    title_detail = title.get("detail") or ""
+    title_has_contradiction = " — " in title_detail
+    # "type X vs Y" in the notes means the product categories differ — a UPC/MPN
+    # collision on a completely different product type.
+    title_has_type_mismatch = "type " in title_detail.split(" — ", 1)[-1] if title_has_contradiction else False
+
+    # UPC + Item ID both strongly matched and no category mismatch → floor at
+    # Review.  Strong identifier hits are meaningful evidence even when title /
+    # brand scoring is weak, but they are not conclusive on their own.
+    if upc["matched"] and item["matched"] and not title_has_type_mismatch:
+        review_val = float((effective_thresholds or {}).get("review", REVIEW_MIN))
+        confidence = max(confidence, review_val)
+
+    # Item ID matched + Brand matched (no UPC) → floor at Review.
+    # Handles products identified by MPN/part-number where the UPC differs
+    # (e.g. case-pack vs unit UPC) or is absent.  Brand match prevents
+    # coincidental part-number collisions across brands from triggering this.
+    if item["matched"] and brand["matched"] and not upc["matched"] and not title_has_type_mismatch:
+        review_val = float((effective_thresholds or {}).get("review", REVIEW_MIN))
+        confidence = max(confidence, review_val)
+
+    # When UPC and brand both confirm the match and no signal contradictions exist
+    # (the title scorer appends notes like "size X vs Y" or "color X vs Y" when
+    # it detects mismatches), floor at Approved.  Vendor shorthand titles score
+    # low simply because they omit words — that is not a contradiction.
+    if upc["matched"] and brand["matched"] and not title_has_contradiction:
+        floor_val = (effective_thresholds or {}).get("verified", VERIFIED_MIN)
+        confidence = max(confidence, float(floor_val))
+
     # When the catalog supplies an explicit ASIN that matched an Amazon record
-    # and the title similarity is ≥ 40%, the item identity is confirmed.
+    # and the title similarity is ≥ 30%, the item identity is confirmed.
+    # Threshold is 30% (not 40%) because pre-researched ASINs may carry different
+    # marketing names for the same physical product (e.g. "Green Heritage Pro" vs
+    # "Pacific Blue Select by Georgia-Pacific PRO" — same MPN, same brand).
     # Covers two cases:
     #   1. UPC mismatch — typically a multi-pack bundle with a different bundle UPC.
     #   2. no_data (Keepa export lacks UPC) — identity confirmed via ASIN + title.
     catalog_asin = str(catalog_row.get("ASIN") or "").strip()
-    if catalog_asin and title["score"] >= 40:
+    if catalog_asin and title["score"] >= 30:
         if not upc["matched"]:  # covers both no_data=True and plain mismatch
             asin_floor = (effective_thresholds or {}).get("verified", VERIFIED_MIN)
             confidence = max(confidence, float(asin_floor))

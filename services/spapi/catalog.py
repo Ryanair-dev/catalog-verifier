@@ -99,8 +99,19 @@ class CatalogAPI:
                 time.sleep(wait)
 
             elif resp.status_code == 403:
+                # Surface Amazon's actual reason — a 403 here is usually an
+                # expired LWA client secret or a missing app role, and the
+                # response body says which.  Without this, the generic
+                # "check roles" text sent users hunting in the wrong place.
+                detail = ""
+                try:
+                    errs = (resp.json() or {}).get("errors") or []
+                    if errs:
+                        detail = errs[0].get("details") or errs[0].get("message") or ""
+                except Exception:
+                    detail = resp.text[:200]
                 raise PermissionError(
-                    f"403 on {operation} — check SP-API app roles/scopes."
+                    f"403 on {operation}: {detail or 'access denied'}"
                 )
 
             elif resp.status_code == 400:
@@ -143,11 +154,17 @@ class CatalogAPI:
         page_token: str | None = None,
         page_size: int = 20,
         included_data: str = "summaries,identifiers,attributes,salesRanks",
+        max_retries: int = 5,
+        brand_names: list[str] | None = None,
     ) -> dict:
         """
         Keyword search — brand, title, MPN, or any free text.
         Pass `page_token` from a previous response's `pagination.nextToken`
         to walk through pages.
+
+        brand_names: if provided, restricts results to those brands only
+        (SP-API brandNames filter). This gives far more complete brand
+        coverage than keyword search alone.
         """
         params = {
             "marketplaceIds": self.marketplace_id,
@@ -157,8 +174,44 @@ class CatalogAPI:
         }
         if page_token:
             params["pageToken"] = page_token
-        resp = self._get("/catalog/2022-04-01/items", params, "searchCatalogItems")
+        if brand_names:
+            params["brandNames"] = ",".join(brand_names)
+        resp = self._get("/catalog/2022-04-01/items", params, "searchCatalogItems",
+                         max_retries=max_retries)
         return resp.json()
+
+    def search_by_brand_names(
+        self,
+        brand_names: list[str],
+        page_token: str | None = None,
+        page_size: int = 20,
+        included_data: str = "summaries,identifiers,attributes,salesRanks",
+        max_retries: int = 5,
+    ) -> dict:
+        """
+        Pure brand-name catalog dump — **no keyword filter applied**.
+
+        Returns ALL products whose Amazon brand field matches any of the
+        supplied brand_names (SP-API OR filter).  Far more exhaustive than
+        keyword+brandNames because Amazon's keyword filter is not also applied,
+        so products that don't have the brand name in their title/description
+        are still returned.
+
+        SP-API allows brandNames as a standalone required field (no keywords
+        needed) per the Catalog Items v2022-04-01 spec.
+        """
+        params = {
+            "marketplaceIds": self.marketplace_id,
+            "brandNames":     ",".join(brand_names),
+            "includedData":   included_data,
+            "pageSize":       page_size,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        return self._get(
+            "/catalog/2022-04-01/items", params, "searchCatalogItems",
+            max_retries=max_retries,
+        ).json()
 
     def search_all_pages(
         self,

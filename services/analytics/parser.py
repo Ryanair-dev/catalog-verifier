@@ -7,7 +7,7 @@ decision and yields a clean list of source rows ready for SP-API search
 and confidence scoring.
 
 Supported formats:
-  * .xlsx / .xls / .xlsm  (openpyxl)
+  * .xlsx / .xlsm         (openpyxl)
   * .csv / .tsv           (stdlib csv)
 
 The parser deliberately does *not* try to auto-detect the header row --
@@ -76,8 +76,11 @@ class SourceRow:
 # --------------------------------------------------------------------------- #
 
 
-def _raw_rows(filename: str, data: bytes) -> list[list[Any]]:
-    """Pull rows-as-arrays. No header assumption."""
+def _raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
+    """Pull rows-as-arrays. No header assumption.
+
+    Pass ``sheet_name`` to read a specific Excel sheet; omit to use the active sheet.
+    """
     name = (filename or "").lower()
     if name.endswith(".csv") or name.endswith(".tsv"):
         text = data.decode("utf-8-sig", errors="replace")
@@ -85,10 +88,12 @@ def _raw_rows(filename: str, data: bytes) -> list[list[Any]]:
         reader = csv.reader(io.StringIO(text), dialect=dialect)
         return [list(r) for r in reader]
 
-    # Default: Excel via openpyxl (handles .xlsx / .xlsm / newer .xls
-    # technically not but the wizard's preview endpoint also uses openpyxl).
+    # Default: Excel via openpyxl (.xlsx / .xlsm). Legacy binary .xls is not supported.
     wb = load_workbook(io.BytesIO(data), data_only=True)
-    ws = wb.active
+    if sheet_name and sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+    else:
+        ws = wb.active
     return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
@@ -137,6 +142,7 @@ def parse_source_rows(
     header_row_idx: int,
     mapping: dict,
     brand: str,
+    sheet_name: str = "",
 ) -> list[SourceRow]:
     """
     Parse a vendor file into SourceRow objects.
@@ -155,7 +161,7 @@ def parse_source_rows(
       A list of SourceRow dicts, skipping any row where UPC, Item ID, and
       Title are all blank (those are almost always spacer rows).
     """
-    all_rows = _raw_rows(filename, data)
+    all_rows = _raw_rows(filename, data, sheet_name=sheet_name)
     if not all_rows:
         return []
 

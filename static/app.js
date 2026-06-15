@@ -18,6 +18,103 @@
   const $  = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => root.querySelectorAll(s);
 
+  // ---------- Animation helpers -------------------------------------------
+
+  /**
+   * Staggered entrance animation for stat value cards.
+   * Each .summary-stat-value fades in and rises from 20px below, staggered
+   * by 80ms per card so they ripple in left-to-right.
+   * Safe to call on every poll — only runs when values actually changed or
+   * the caller passes force=true.
+   */
+  function _animateStats(container) {
+    const els = (container || document).querySelectorAll(".summary-stat-value");
+    els.forEach((el, i) => {
+      el.style.opacity   = "0";
+      el.style.transform = "translateY(20px)";
+      setTimeout(() => {
+        el.style.opacity   = "1";
+        el.style.transform = "translateY(0)";
+      }, 80 + i * 80);
+    });
+  }
+
+  /**
+   * Animate progress bar fills from 0 → their target width so the CSS
+   * transition (width 0.9s ease) plays visibly instead of jumping.
+   * Reads the inline style already set on the element, resets to 0%,
+   * then restores after one paint tick.
+   */
+  function _animateProgressBars(container) {
+    const fills = (container || document).querySelectorAll(
+      ".rp-fill, .analytics-run-inline-bar .fill, .confidence-bar .fill, .progress .bar"
+    );
+    fills.forEach(el => {
+      const target = el.style.width || "0%";
+      el.style.transition = "none";
+      el.style.width = "0%";
+      // Force a reflow so the browser registers the 0% before restoring
+      void el.offsetWidth;
+      el.style.transition = "";
+      el.style.width = target;
+    });
+  }
+
+  // ---------- Toast notifications -----------------------------------------
+  // Usage: showToast("message")                          — info (blue)
+  //        showToast("message", "success")               — green
+  //        showToast("message", "error")                 — red
+  //        showToast("message", "warning")               — amber
+  //        showToast(<html string>, "success", 8000)     — custom duration ms
+  (function _initToastContainer() {
+    if (document.getElementById("toast-stack")) return;
+    const el = document.createElement("div");
+    el.id = "toast-stack";
+    document.body.appendChild(el);
+  })();
+
+  function showToast(message, type = "info", duration = 4500) {
+    const stack = document.getElementById("toast-stack");
+    if (!stack) { console.warn("[toast]", message); return; }
+
+    const icons = {
+      success: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`,
+      error:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
+      warning: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+      info:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
+    };
+
+    const t = document.createElement("div");
+    t.className = `toast toast-${type}`;
+    // Message goes in via textContent (never innerHTML) — toast text routinely
+    // echoes server errors and uploaded-file content, which must not execute.
+    t.innerHTML = `
+      <span class="toast-icon">${icons[type] || icons.info}</span>
+      <span class="toast-msg"></span>
+      <button class="toast-close" aria-label="Dismiss">×</button>`;
+    t.querySelector(".toast-msg").textContent = String(message);
+
+    t.querySelector(".toast-close").addEventListener("click", () => _dismissToast(t));
+    stack.appendChild(t);
+
+    // Trigger entrance animation — double RAF ensures the browser has
+    // painted the element before adding the class, so the CSS transition fires.
+    requestAnimationFrame(() => requestAnimationFrame(() => t.classList.add("toast-visible")));
+
+    const timer = setTimeout(() => _dismissToast(t), duration);
+    t._toastTimer = timer;
+  }
+
+  function _dismissToast(t) {
+    clearTimeout(t._toastTimer);
+    t.classList.remove("toast-visible");
+    t.classList.add("toast-hiding");
+    // Safety net: if transitionend never fires (e.g. hidden tab, no animation),
+    // remove the element after 600 ms so it never gets stuck.
+    const fallback = setTimeout(() => t.remove(), 600);
+    t.addEventListener("transitionend", () => { clearTimeout(fallback); t.remove(); }, { once: true });
+  }
+
   // ---------- App state ---------------------------------------------------
   const state = {
     // history view
@@ -70,6 +167,46 @@
     currentView: "cpg",       // "cpg" | "history" | "scan" | "pairs"
     aiMode: false,
     resultsPage: 1,
+
+    // Library panel active tab
+    libActiveType: "abbreviations",  // "abbreviations" | "brands" | "manufacturers"
+
+    // Brand Analytics
+    brandAnalytics: {
+      runs: [],
+      runsPoll: null,
+      run: {
+        id: null,
+        data: null,
+        poll: null,
+        page: 1,
+        pageSize: 50,
+        search: "",
+        sortKey: "bsr",
+        sortDir: "asc",
+      },
+      library: [],
+      wizard: {
+        step: 1,
+        searchType: "brand",
+        vettingMode: "cpg",
+        inputName: "",
+        discoveredBrands: [],  // [{name, selected}]
+        minRank: 0,
+        maxRank: 0,
+        pagesPerBrand: 10,
+        cacheInfo: null,
+        saveToLibrary: true,
+      },
+    },
+
+    // Eligibility Checker
+    eligibility: {
+      jobId: null,
+      poll: null,
+      jobStatus: null,   // null | "running" | "complete" | "error"
+      downloaded: false,
+    },
 
     // CPG (classic) flow
     cpg: {
@@ -385,21 +522,50 @@
       const el = $(`.sidebar .nav-item[data-view='${view}']`);
       if (el) el.classList.add("active");
     }
-    $("#view-cpg").classList.toggle("hidden",     view !== "cpg");
-    $("#view-history").classList.toggle("hidden", view !== "history");
-    $("#view-scan").classList.toggle("hidden",    view !== "scan");
-    $("#view-pairs").classList.toggle("hidden",   view !== "pairs");
-    const va = $("#view-analytics"); if (va) va.classList.toggle("hidden", view !== "analytics");
-    // Detail view is only shown via openAnalyticsRunDetail — sidebar always
-    // lands you on the list, never the detail pane.
-    const vr = $("#view-analytics-run"); if (vr) vr.classList.add("hidden");
+
+    // Map each view name to its DOM element
+    const viewMap = {
+      "cpg":            $("#view-cpg"),
+      "history":        $("#view-history"),
+      "scan":           $("#view-scan"),
+      "pairs":          $("#view-pairs"),
+      "analytics":      $("#view-analytics"),
+      "analytics-run":  $("#view-analytics-run"),
+      "brand-analytics":     $("#view-brand-analytics"),
+      "brand-analytics-run": $("#view-brand-analytics-run"),
+      "quick-search":   $("#view-quick-search"),
+    };
+
+    // Views that are never shown directly via switchView (only via openXxxDetail)
+    const detailOnly = new Set(["analytics-run", "brand-analytics-run"]);
+
+    Object.entries(viewMap).forEach(([name, el]) => {
+      if (!el) return;
+      if (detailOnly.has(name)) {
+        el.classList.add("hidden");
+        return;
+      }
+      if (name === view) {
+        el.classList.remove("hidden");
+        // Trigger entrance animation — remove first in case it's still running
+        el.classList.remove("view-enter-anim");
+        void el.offsetWidth;  // force reflow
+        el.classList.add("view-enter-anim");
+        el.addEventListener("animationend", () => el.classList.remove("view-enter-anim"), { once: true });
+      } else {
+        el.classList.add("hidden");
+      }
+    });
+
     if (view === "pairs") $("#pairs-search").focus();
     if (view === "history") loadHistory();
     if (view === "analytics") loadAnalyticsRuns();
+    if (view === "brand-analytics") loadBrandAnalyticsRuns();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
     }
+    if (view !== "brand-analytics") _clearBARPoll();
   }
 
   // View-aware DOM id helper: pick the right set of IDs for the current view.
@@ -521,14 +687,19 @@
       state.scan = j.scan;
       state.results = (j.results || []).map(r => ({ ...r, barcode_db: r.barcode_db || null, barcode_loading: false }));
       if (j.thresholds) state.thresholds = j.thresholds;
-      // switchView MUST run before renderScanView() so rid() resolves to the
-      // scan-detail prefixed IDs (#scan-results-body, …) instead of the CPG
-      // view's DOM. Previously this was inverted and the data was written
-      // into the hidden CPG view — the scan-detail view appeared empty.
       switchView("scan", null);
-      renderScanView();
+      if (j.scan?.match_from_keepa) {
+        // Load candidates for match-mode scans
+        const jc = await api(`/api/scans/${scanId}/candidates`);
+        state.candidates = jc.candidates || [];
+        renderScanView();
+        if (state.candidates.length > 0) renderCandidatesView();
+      } else {
+        state.candidates = [];
+        renderScanView();
+      }
     } catch (e) {
-      alert("Could not open scan: " + e.message);
+      showToast("Could not open scan: " + e.message, "error");
     }
   }
 
@@ -545,6 +716,16 @@
     ].filter(Boolean);
     $("#scan-meta").textContent = subparts.join(" · ");
     $("#scan-ai-badge").classList.toggle("hidden", !s.ai_mode);
+    // Match-mode badge
+    let matchBadge = $("#scan-match-badge");
+    if (!matchBadge) {
+      matchBadge = document.createElement("span");
+      matchBadge.id = "scan-match-badge";
+      matchBadge.style.cssText = "margin-left:8px;padding:2px 9px;font-size:11px;font-weight:700;border-radius:12px;background:#ede9fe;color:#5b21b6;vertical-align:middle;";
+      matchBadge.textContent = "Match from Keepa";
+      $("#scan-ai-badge")?.parentNode?.appendChild(matchBadge);
+    }
+    matchBadge.classList.toggle("hidden", !s.match_from_keepa);
 
     // Banners
     $("#scan-pending-banner").classList.toggle("hidden", s.status !== "pending");
@@ -553,8 +734,22 @@
     // Progress section
     $("#scan-progress-section").classList.toggle("hidden", s.status !== "verifying");
 
-    // Summary + results
-    const hasResults = state.results.length > 0 && String(s.status).startsWith("verified");
+    const isMatchMode = !!s.match_from_keepa;
+    const hasCandidates = isMatchMode && (state.candidates || []).length > 0 && String(s.status).startsWith("verified");
+    const hasResults = !isMatchMode && state.results.length > 0 && String(s.status).startsWith("verified");
+
+    // Candidates section (match mode)
+    let candSection = $("#scan-candidates-section");
+    if (!candSection) {
+      candSection = document.createElement("div");
+      candSection.id = "scan-candidates-section";
+      candSection.className = "hidden";
+      const refSection = $("#scan-summary-section");
+      refSection?.parentNode?.insertBefore(candSection, refSection);
+    }
+    candSection.classList.toggle("hidden", !hasCandidates);
+
+    // Summary + results (normal mode)
     $("#scan-summary-section").classList.toggle("hidden", !hasResults);
     $("#scan-results-section").classList.toggle("hidden", !hasResults);
     if (hasResults) {
@@ -562,8 +757,8 @@
       renderResults();
     }
 
-    $("#scan-review-btn").disabled = !hasResults;
-    $("#scan-export-btn").disabled = !hasResults;
+    $("#scan-review-btn").disabled  = !hasResults;
+    $("#scan-export-btn").disabled  = !hasResults;
     const scanAiBtn = $("#scan-ai-recheck-btn");
     scanAiBtn.disabled = !hasResults;
     scanAiBtn.classList.toggle("hidden", !hasResults);
@@ -587,11 +782,23 @@
     state.scan = { ...s, status: "verifying" };
     $("#scan-ready-banner").classList.add("hidden");
     $("#scan-progress-section").classList.remove("hidden");
-    updateProgress(0, s.catalog_count || 1, "Scoring products…");
+    const isMatchMode = !!s.match_from_keepa;
+    updateProgress(0, s.catalog_count || 1, isMatchMode ? "Matching from Keepa…" : "Scoring products…");
     startEta(s.catalog_count || 1, s.ai_mode ? "ai" : "rule");
 
     try {
-      const j = await api(`/api/scans/${s.id}/verify`, { method: "POST" });
+      let j;
+      if (isMatchMode) {
+        j = await api(`/api/scans/${s.id}/match`, { method: "POST" });
+        state.scan = j.scan;
+        state.candidates = j.candidates || [];
+        state.results = [];
+        if (j.thresholds) state.thresholds = j.thresholds;
+        renderScanView();
+        renderCandidatesView();
+        return;
+      }
+      j = await api(`/api/scans/${s.id}/verify`, { method: "POST" });
       state.scan = j.scan;
       state.results = (j.results || []).map(r => ({ ...r, barcode_db: null, barcode_loading: true }));
       if (j.thresholds) state.thresholds = j.thresholds;
@@ -635,7 +842,7 @@
       $("#scan-progress-section").classList.add("hidden");
     } catch (err) {
       stopEta();
-      alert("Verification failed: " + err.message);
+      showToast("Verification failed: " + err.message, "error");
       $("#scan-progress-section").classList.add("hidden");
       openScan(s.id); // reload
     }
@@ -703,6 +910,155 @@
     if (label) {
       const lbl = $(rid("progress-label"));
       if (lbl) lbl.textContent = label;
+    }
+  }
+
+  // ---------- Candidates view (match-from-Keepa mode) ---------------------
+  function renderCandidatesView() {
+    const section = $("#scan-candidates-section");
+    if (!section) return;
+    section.classList.remove("hidden");
+
+    const candidates = state.candidates || [];
+    const scan = state.scan;
+
+    // Group by row_idx
+    const byRow = {};
+    candidates.forEach(c => {
+      const idx = c.row_idx;
+      if (!byRow[idx]) byRow[idx] = [];
+      byRow[idx].push(c);
+    });
+
+    const rowIndices = Object.keys(byRow).map(Number).sort((a, b) => a - b);
+    const totalRows  = rowIndices.length;
+    const approved   = candidates.filter(c => c.review_status === "Approved").length;
+    const pending    = rowIndices.filter(i => !byRow[i].some(c => c.review_status === "Approved")).length;
+    const methods    = (scan?.match_methods || []).join(", ") || "upc, item_id, title";
+
+    section.innerHTML = `
+      <div style="padding:16px 0 8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+          <div>
+            <span style="font-size:15px;font-weight:700;color:#1e293b;">Candidate Matches</span>
+            <span style="margin-left:10px;font-size:12px;color:#64748b;">Methods: ${escapeHtml(methods)}</span>
+          </div>
+          <div style="display:flex;gap:12px;font-size:12px;color:#64748b;">
+            <span><b style="color:#166534;">${approved}</b> approved</span>
+            <span><b style="color:#92400e;">${pending}</b> pending review</span>
+            <span><b style="color:#374151;">${totalRows}</b> catalog rows</span>
+          </div>
+        </div>
+        <div id="candidates-table-wrap" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;white-space:nowrap;">#</th>
+                <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;">Vendor Title</th>
+                <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;">ASIN</th>
+                <th style="padding:8px 12px;text-align:left;color:#64748b;font-weight:600;">Amazon Title</th>
+                <th style="padding:8px 12px;text-align:center;color:#64748b;font-weight:600;">Method</th>
+                <th style="padding:8px 12px;text-align:center;color:#64748b;font-weight:600;">Conf.</th>
+                <th style="padding:8px 12px;text-align:center;color:#64748b;font-weight:600;">Status</th>
+                <th style="padding:8px 12px;text-align:center;color:#64748b;font-weight:600;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="candidates-tbody">
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+
+    _renderCandidateRows(byRow, rowIndices);
+  }
+
+  function _renderCandidateRows(byRow, rowIndices) {
+    const tbody = $("#candidates-tbody");
+    if (!tbody) return;
+
+    const rows = [];
+    rowIndices.forEach((rowIdx, i) => {
+      const group = byRow[rowIdx] || [];
+      const hasApproved = group.some(c => c.review_status === "Approved");
+      const vendorTitle = group[0]?.Title || "";
+
+      group.forEach((cand, ci) => {
+        const isApproved  = cand.review_status === "Approved";
+        const isDiscarded = cand.review_status === "Discarded";
+        const isNoMatch   = !cand.asin;
+        const conf = Math.round(cand.Confidence || cand.confidence || 0);
+        const confColor = conf >= 85 ? "#166534" : conf >= 35 ? "#92400e" : "#b91c1c";
+        const methodLabel = { upc: "UPC", item_id: "MPN", title: "Title", none: "—" }[cand.match_method] || cand.match_method || "—";
+        const rowBg = isApproved ? "#f0fdf4" : isDiscarded ? "#fafafa" : (ci === 0 && !hasApproved) ? "#fff" : "#fafafa";
+        const opacity = isDiscarded ? "0.45" : "1";
+
+        const statusHtml = isApproved
+          ? `<span style="padding:2px 8px;border-radius:10px;background:#dcfce7;color:#166534;font-size:11px;font-weight:700;">Approved</span>`
+          : isDiscarded
+          ? `<span style="padding:2px 8px;border-radius:10px;background:#f1f5f9;color:#94a3b8;font-size:11px;font-weight:700;">Discarded</span>`
+          : isNoMatch
+          ? `<span style="padding:2px 8px;border-radius:10px;background:#fef2f2;color:#b91c1c;font-size:11px;font-weight:700;">No match</span>`
+          : `<span style="padding:2px 8px;border-radius:10px;background:#fef9c3;color:#713f12;font-size:11px;font-weight:700;">Pending</span>`;
+
+        const actionHtml = isNoMatch ? `<span style="color:#94a3b8;font-size:11px;">—</span>`
+          : isApproved ? `<button class="btn-cand-discard text-xs" data-cand-id="${cand._cand_id}" style="padding:3px 10px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer;font-size:11px;">Undo</button>`
+          : isDiscarded ? `<button class="btn-cand-approve text-xs" data-cand-id="${cand._cand_id}" style="padding:3px 10px;border-radius:6px;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;cursor:pointer;font-size:11px;font-weight:600;">Approve</button>`
+          : `<div style="display:flex;gap:4px;justify-content:center;">
+               <button class="btn-cand-approve" data-cand-id="${cand._cand_id}" style="padding:3px 10px;border-radius:6px;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;cursor:pointer;font-size:11px;font-weight:600;">Approve</button>
+               <button class="btn-cand-discard" data-cand-id="${cand._cand_id}" style="padding:3px 10px;border-radius:6px;border:1px solid #fecaca;background:#fef2f2;color:#b91c1c;cursor:pointer;font-size:11px;font-weight:600;">Discard</button>
+             </div>`;
+
+        // Show vendor title only on first candidate of each row group
+        const titleCell = ci === 0
+          ? `<td style="padding:8px 12px;color:#1e293b;font-weight:500;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" rowspan="${group.length}">${escapeHtml(vendorTitle)}</td>`
+          : "";
+        const rowNumCell = ci === 0
+          ? `<td style="padding:8px 12px;color:#94a3b8;font-size:11px;text-align:center;" rowspan="${group.length}">${rowIdx + 1}</td>`
+          : "";
+
+        rows.push(`<tr style="background:${rowBg};opacity:${opacity};border-bottom:1px solid #e2e8f0;">
+          ${rowNumCell}
+          ${titleCell}
+          <td style="padding:8px 12px;font-family:monospace;font-size:11px;color:#4b5563;white-space:nowrap;">${escapeHtml(cand.asin || "—")}</td>
+          <td style="padding:8px 12px;color:#374151;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(cand.AmzTitle || "")}</td>
+          <td style="padding:8px 12px;text-align:center;"><span style="padding:2px 7px;border-radius:8px;background:#ede9fe;color:#5b21b6;font-size:10px;font-weight:700;">${escapeHtml(methodLabel)}</span></td>
+          <td style="padding:8px 12px;text-align:center;font-weight:700;color:${confColor};">${isNoMatch ? "—" : conf + "%"}</td>
+          <td style="padding:8px 12px;text-align:center;">${statusHtml}</td>
+          <td style="padding:8px 12px;text-align:center;">${actionHtml}</td>
+        </tr>`);
+      });
+    });
+
+    tbody.innerHTML = rows.join("");
+
+    // Wire approve/discard buttons
+    tbody.querySelectorAll(".btn-cand-approve").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const candId = Number(btn.dataset.candId);
+        await _setCandidateVerdict(candId, "Approved");
+      });
+    });
+    tbody.querySelectorAll(".btn-cand-discard").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const candId = Number(btn.dataset.candId);
+        await _setCandidateVerdict(candId, "Not Approved");
+      });
+    });
+  }
+
+  async function _setCandidateVerdict(candId, verdict) {
+    if (!state.scan) return;
+    try {
+      const j = await api(`/api/scans/${state.scan.id}/candidates/${candId}/verdict`, {
+        method: "POST",
+        body: JSON.stringify({ verdict, review_status: verdict === "Approved" ? "Approved" : "Discarded" }),
+      });
+      // Refresh candidates from server
+      const jc = await api(`/api/scans/${state.scan.id}/candidates`);
+      state.candidates = jc.candidates || [];
+      renderCandidatesView();
+    } catch (e) {
+      showToast("Could not update candidate: " + e.message, "error");
     }
   }
 
@@ -800,7 +1156,7 @@
       renderSummary();
       renderResults();
     } catch (e) {
-      alert("Could not apply suggestion: " + e.message);
+      showToast("Could not apply suggestion: " + e.message, "error");
     }
   }
 
@@ -896,13 +1252,13 @@
           <div class="signal-score ${signalTone({score: row.Confidence})}">${fmtConfidence(row.Confidence)}</div>
           <div class="confidence-bar"><div class="fill ${confBarClass}" style="width: ${Math.max(3, row.Confidence)}%"></div></div>
         </td>
-        <td>${verdictBadge}</td>
         <td>${statusTag}</td>
         <td style="max-width:220px;">${buildAiSuggestionCell(row, realIdx)}</td>
         <td class="text-xs" style="max-width:200px;color:#6b7480;">${escapeHtml(reasonText)}</td>
-        ${signalCell(s.upc)}${signalCell(s.item_id)}${signalCell(s.brand)}${signalCell(s.title)}${signalCell(s.pack)}
-        <td class="text-center">${row.amz_pack == null ? '—' : row.amz_pack}</td>
+        ${signalCell(s.upc)}${itemIdMpnCell(row, s.item_id)}${signalCell(s.brand)}${signalCell(s.title)}
+        <td class="text-center font-mono text-xs">${row.amz_pack == null ? '—' : row.amz_pack}</td>
         <td>${barcodeHTML}</td>
+        <td>${verdictBadge}</td>
         <td>
           <button class="row-action-btn clear-cache" data-upc="${escapeHtml(String(row.UPC || ''))}" data-asin="${escapeHtml(row.ASIN || '')}">Clear cache</button>
         </td>`;
@@ -949,8 +1305,28 @@
     const tone = signalTone(s);
     return `<td>
       <div class="signal-cell">
-        <span class="signal-score ${tone}">${s.score}%</span>
+        <span class="signal-score ${tone}">${Math.round(s.score)}%</span>
         <span class="text-[11px]" title="${escapeHtml(s.detail || '')}">${escapeHtml((s.detail || "").slice(0, 50))}</span>
+      </div>
+    </td>`;
+  }
+
+  function itemIdMpnCell(row, s) {
+    const catId = escapeHtml(row.ItemID || '—');
+    let amzMpn = '';
+    if (s && s.detail) {
+      const m = s.detail.match(/^(?:Exact|Variant|Fuzzy):\s*(.+?)(?:\s+\(\d+%\))?$/);
+      if (m) amzMpn = escapeHtml(m[1]);
+    }
+    const tone = s ? signalTone(s) : '';
+    const scoreBadge = s ? `<span class="signal-score ${tone}">${Math.round(s.score)}%</span>` : '';
+    return `<td>
+      <div class="signal-cell">
+        ${scoreBadge}
+        <div class="text-[11px]" style="color:#6b7480;line-height:1.4;">
+          <span style="font-weight:500;">Cat:</span> ${catId}
+          ${amzMpn ? `<br><span style="font-weight:500;">Amz:</span> ${amzMpn}` : ''}
+        </div>
       </div>
     </td>`;
   }
@@ -1200,6 +1576,8 @@
       fdScan.append("mapping", JSON.stringify(mapping));
       fdScan.append("name", scanName);
       fdScan.append("ai_mode", cpg.aiMode ? "true" : "false");
+      fdScan.append("match_from_keepa", cpg.matchFromKeepa ? "true" : "false");
+      fdScan.append("match_methods", JSON.stringify(cpg.matchMethods || ["upc", "item_id", "title"]));
       const jScan = await api("/api/scans", { method: "POST", body: fdScan, form: true });
       const scanId = jScan.scan.id;
 
@@ -1210,25 +1588,38 @@
       fdAmz.append("amazon_source", cpg.amazonSource);
       await api(`/api/scans/${scanId}/amazon`, { method: "POST", body: fdAmz, form: true });
 
-      // 3) Run verification (status → verified_unreviewed = "To be reviewed")
-      // We don't know the row count until the scan is created, so start ETA
-      // now based on jScan.scan.catalog_count.
+      // 3) Run verification or match pipeline
       const nRows = jScan.scan.catalog_count || 1;
-      updateProgress(0, nRows, "Scoring products…");
+      updateProgress(0, nRows, cpg.matchFromKeepa ? "Matching from Keepa…" : "Scoring products…");
       startEta(nRows, cpg.aiMode ? "ai" : "rule");
-      const jVer = await api(`/api/scans/${scanId}/verify`, { method: "POST" });
-      state.scan = jVer.scan;
-      state.results = (jVer.results || []).map(r => ({
-        ...r, barcode_db: null, barcode_loading: true,
-      }));
-      if (jVer.thresholds) state.thresholds = jVer.thresholds;
-      if (Array.isArray(jVer.ai_added)) jVer.ai_added.forEach(a => showToast(a));
+
+      let jVer;
+      if (cpg.matchFromKeepa) {
+        jVer = await api(`/api/scans/${scanId}/match`, { method: "POST" });
+        state.scan = jVer.scan;
+        state.candidates = jVer.candidates || [];
+        state.results = [];
+        if (jVer.thresholds) state.thresholds = jVer.thresholds;
+        // Show candidates view instead of results table
+        renderCandidatesView();
+      } else {
+        startEta(nRows, cpg.aiMode ? "ai" : "rule");
+        jVer = await api(`/api/scans/${scanId}/verify`, { method: "POST" });
+        state.scan = jVer.scan;
+        state.results = (jVer.results || []).map(r => ({
+          ...r, barcode_db: null, barcode_loading: true,
+        }));
+        if (jVer.thresholds) state.thresholds = jVer.thresholds;
+        if (Array.isArray(jVer.ai_added)) jVer.ai_added.forEach(a => showToast(a));
+      }
 
       state.resultsPage = 1;
-      $("#summary-section")?.classList.remove("hidden");
-      $("#results-table-wrap")?.classList.remove("hidden");
-      renderSummary();
-      renderResults();
+      if (!cpg.matchFromKeepa) {
+        $("#summary-section")?.classList.remove("hidden");
+        $("#results-table-wrap")?.classList.remove("hidden");
+        renderSummary();
+        renderResults();
+      }
 
       // 4) Barcode lookups — 6 workers, update progress + results as we go.
       //
@@ -1286,7 +1677,7 @@
     } catch (err) {
       stopEta();
       $("#progress-section")?.classList.add("hidden");
-      alert("Verification failed: " + err.message);
+      showToast("Verification failed: " + err.message, "error");
     }
   }
 
@@ -1305,6 +1696,7 @@
     fileName: $("#wizard-file-name"),
     fileSize: $("#wizard-file-size"),
     brand: $("#map-brand"),
+    brandCol: $("#map-brand-col"),
     upc: $("#map-upc"),
     itemId: $("#map-item-id"),
     title: $("#map-title"),
@@ -1334,20 +1726,78 @@
     state.wizard = {
       step: 1, file: null, preview: null, dataStart: null,
       mapping: {
-        brand: "", upc_col: "", item_id_col: "",
+        brand: "", brand_col: "", upc_col: "", item_id_col: "",
         title_col: "", asin_col: "", attr_cols: [],
       },
+      brandMode: "text",
       name: "", ai_mode: false,
+      matchFromKeepa: false,
+      matchMethods: ["upc", "item_id", "title"],
     };
     wizEl.drop.classList.remove("loaded");
     wizEl.fileCard.classList.add("hidden");
     wizEl.input.value = "";
     wizEl.brand.value = "";
+    wizEl.brand.classList.remove("hidden");
+    wizEl.brandCol?.classList.add("hidden");
+    document.querySelectorAll(".map-brand-mode-btn").forEach(b => {
+      const active = b.dataset.mode === "text";
+      b.style.background = active ? "#3b82f6" : "#f8fafc";
+      b.style.color      = active ? "#fff"    : "#64748b";
+      b.classList.toggle("active", active);
+    });
+    $("#map-brand-note").textContent = "Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.";
     wizEl.detailName.value = "";
     wizEl.detailAI.checked = false;
+    // Reset match-from-Keepa toggle
+    const matchToggle = $("#map-match-toggle");
+    if (matchToggle) matchToggle.checked = false;
+    $("#map-match-methods")?.classList.add("hidden");
   }
 
   wizEl.close.addEventListener("click", closeWizard);
+
+  // Brand mode toggle (free text vs column picker)
+  document.querySelectorAll(".map-brand-mode-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      state.wizard.brandMode = mode;
+      document.querySelectorAll(".map-brand-mode-btn").forEach(b => {
+        const active = b.dataset.mode === mode;
+        b.style.background = active ? "#3b82f6" : "#f8fafc";
+        b.style.color      = active ? "#fff"    : "#64748b";
+        b.classList.toggle("active", active);
+      });
+      wizEl.brand.classList.toggle("hidden", mode === "col");
+      wizEl.brandCol?.classList.toggle("hidden", mode !== "col");
+      const note = $("#map-brand-note");
+      if (note) note.textContent = mode === "col"
+        ? "Select the column that contains the brand name for each row."
+        : "Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.";
+      if (mode === "col") populateBrandColSelect();
+    });
+  });
+
+  // Match-from-Keepa toggle
+  $("#map-match-toggle")?.addEventListener("change", (e) => {
+    state.wizard.matchFromKeepa = e.target.checked;
+    $("#map-match-methods")?.classList.toggle("hidden", !e.target.checked);
+    // When toggled on, ASIN column becomes irrelevant — clear it
+    if (e.target.checked) {
+      state.wizard.mapping.asin_col = "";
+      if (wizEl.asin) wizEl.asin.value = "";
+    }
+    updateWizardNextState();
+  });
+  ["#match-method-upc", "#match-method-item-id", "#match-method-title"].forEach(sel => {
+    $(sel)?.addEventListener("change", () => {
+      state.wizard.matchMethods = [
+        ...( $("#match-method-upc")?.checked     ? ["upc"]     : [] ),
+        ...( $("#match-method-item-id")?.checked ? ["item_id"] : [] ),
+        ...( $("#match-method-title")?.checked   ? ["title"]   : [] ),
+      ];
+    });
+  });
 
   // Step 1: Drop zone
   wizEl.drop.addEventListener("click", () => wizEl.input.click());
@@ -1385,7 +1835,7 @@
       wizEl.detailName.value = state.wizard.name;
       renderWizardStep();
     } catch (e) {
-      alert("Could not preview file: " + e.message);
+      showToast("Could not preview file: " + e.message, "error");
       state.wizard.file = null;
       wizEl.fileCard.classList.add("hidden");
       wizEl.drop.classList.remove("loaded");
@@ -1444,7 +1894,8 @@
     const w = state.wizard;
     let ok = true;
     if (step === 1) ok = !!w.file && !!w.preview;
-    if (step === 2) ok = !!w.mapping.upc_col && !!w.mapping.item_id_col && !!w.mapping.title_col;
+    if (step === 2) ok = !!w.mapping.upc_col && !!w.mapping.item_id_col && !!w.mapping.title_col
+                         && (w.matchFromKeepa || !!w.mapping.asin_col);
     if (step === 3) ok = (wizEl.detailName.value || "").trim().length > 0;
     wizEl.next.disabled = !ok;
   }
@@ -1499,6 +1950,26 @@
       state.wizard.mapping.brand = wizEl.brand.value;
       renderMappingPreview();
     };
+
+    // Brand column select (populated separately)
+    if (state.wizard.brandMode === "col") populateBrandColSelect();
+  }
+
+  function populateBrandColSelect() {
+    const sel = wizEl.brandCol;
+    if (!sel) return;
+    const headers = state.wizard.preview?.headers || [];
+    const current = state.wizard.mapping.brand_col || "";
+    sel.innerHTML = `<option value="">Select column…</option>` +
+      headers.map(h => `<option value="${escapeHtml(h)}"${h === current ? " selected" : ""}>${escapeHtml(h)}</option>`).join("");
+    if (!current) {
+      const match = headers.find(h => /brand|manufacturer/i.test(h));
+      if (match) { state.wizard.mapping.brand_col = match; sel.value = match; }
+    }
+    sel.onchange = () => {
+      state.wizard.mapping.brand_col = sel.value;
+      renderMappingPreview();
+    };
   }
 
   function renderAttrPills() {
@@ -1527,7 +1998,7 @@
     const start = state.wizard.dataStart || 0;
     const slice = preview.slice(start, start + 3);
     const cols = [
-      ["Brand",        () => m.brand || "—"],
+      ["Brand",        (r) => m.brand_col ? getCell(headers, r, m.brand_col) : (m.brand || "—")],
       ["UPC/EAN",      (r) => getCell(headers, r, m.upc_col)],
       ["Item ID",      (r) => getCell(headers, r, m.item_id_col)],
       ["Vendor Title", (r) => getCell(headers, r, m.title_col)],
@@ -1566,17 +2037,20 @@
     if (!w.file) return;
     state.cpg.catalogFile = w.file;
     state.cpg.catalogMapping = {
-      brand: w.mapping.brand,
-      upc_col: w.mapping.upc_col,
+      brand:       w.brandMode === "col" ? "" : (w.mapping.brand || ""),
+      brand_col:   w.brandMode === "col" ? (w.mapping.brand_col || "") : "",
+      upc_col:     w.mapping.upc_col,
       item_id_col: w.mapping.item_id_col,
-      title_col: w.mapping.title_col,
-      asin_col: w.mapping.asin_col,
-      attr_cols: w.mapping.attr_cols,
-      data_start: w.dataStart || 0,
+      title_col:   w.mapping.title_col,
+      asin_col:    w.mapping.asin_col,
+      attr_cols:   w.mapping.attr_cols,
+      data_start:  w.dataStart || 0,
     };
-    state.cpg.scanName = (wizEl.detailName.value || "").trim() || w.file.name.replace(/\.[^.]+$/, "");
-    state.cpg.aiMode   = !!wizEl.detailAI.checked;
-    state.cpg.catalogReady = true;
+    state.cpg.scanName       = (wizEl.detailName.value || "").trim() || w.file.name.replace(/\.[^.]+$/, "");
+    state.cpg.aiMode         = !!wizEl.detailAI.checked;
+    state.cpg.matchFromKeepa = !!w.matchFromKeepa;
+    state.cpg.matchMethods   = w.matchMethods || ["upc", "item_id", "title"];
+    state.cpg.catalogReady   = true;
     // Reflect in CPG view
     const drop = $("#catalog-drop");
     if (drop) {
@@ -1664,7 +2138,7 @@
         await loadHistory();
       }
     } catch (e) {
-      alert("Upload failed: " + e.message);
+      showToast("Upload failed: " + e.message, "error");
     } finally {
       amEl.save.disabled = false;
       amEl.save.innerHTML = "Attach &amp; continue";
@@ -1696,7 +2170,7 @@
         await loadHistory();
       }
     } catch (e) {
-      alert("Could not delete: " + e.message);
+      showToast("Could not delete: " + e.message, "error");
     }
   });
 
@@ -1714,7 +2188,7 @@
       if (j.thresholds) state.thresholds = j.thresholds;
       await exportFlow();
     } catch (e) {
-      alert(e.message);
+      showToast(e.message, "error");
     }
   }
 
@@ -1767,7 +2241,7 @@
         await loadHistory();
       }
     } catch (err) {
-      alert("Export failed: " + err.message);
+      showToast("Export failed: " + err.message, "error");
     }
   }
 
@@ -1847,11 +2321,11 @@
         <td style="max-width: 300px;"><div class="text-xs" style="color:#475569;">${escapeHtml(row.AmzTitle || "")}</div></td>
         <td class="font-semibold">${fmtConfidence(row.Confidence)}</td>
         <td><span class="badge ${badgeClass(row.Verdict)}">${row.Verdict}</span></td>
-        <td class="text-xs">${s.upc ? s.upc.score + "%" : ""}</td>
-        <td class="text-xs">${s.item_id ? s.item_id.score + "%" : ""}</td>
-        <td class="text-xs">${s.brand ? s.brand.score + "%" : ""}</td>
-        <td class="text-xs">${s.title ? s.title.score + "%" : ""}</td>
-        <td class="text-xs">${s.pack ? s.pack.score + "%" : ""}</td>
+        <td class="text-xs">${s.upc ? Math.round(s.upc.score) + "%" : ""}</td>
+        ${itemIdMpnCell(row, s.item_id)}
+        <td class="text-xs">${s.brand ? Math.round(s.brand.score) + "%" : ""}</td>
+        <td class="text-xs">${s.title ? Math.round(s.title.score) + "%" : ""}</td>
+        <td class="text-xs">${s.pack ? Math.round(s.pack.score) + "%" : ""}</td>
         <td class="text-right">${actionButton(row)}</td>`;
       body.appendChild(tr);
     });
@@ -1867,7 +2341,7 @@
     try {
       await applyTransition(row, action);
     } catch (err) {
-      alert("Action failed: " + err.message);
+      showToast("Action failed: " + err.message, "error");
     }
     renderReview();
     renderResults();
@@ -1921,14 +2395,128 @@
     renderResults();
   });
 
+  // ── Centralized panel helpers ────────────────────────────────────────────
+  let _activePanel = null;
+  function _openPanel(panelId) {
+    if (_activePanel && _activePanel !== panelId) {
+      $("#" + _activePanel)?.classList.remove("open");
+    }
+    _activePanel = panelId;
+    $("#" + panelId)?.classList.add("open");
+    $("#panel-overlay")?.classList.add("visible");
+  }
+  function _closeActivePanel() {
+    if (_activePanel) {
+      $("#" + _activePanel)?.classList.remove("open");
+      _activePanel = null;
+    }
+    $("#panel-overlay")?.classList.remove("visible");
+  }
+  $("#panel-overlay")?.addEventListener("click", _closeActivePanel);
+
   // ========================================================================
-  //  Abbreviation Library (reworked)
+  //  Universal Library panel
   // ========================================================================
   $("#open-abbr-btn").addEventListener("click", () => {
-    $("#abbr-panel").classList.add("open");
-    if (state.categories.length === 0) loadLibrary();
+    _openPanel("abbr-panel");
+    _switchLibTab(state.libActiveType);
+    if (state.libActiveType === "abbreviations" && state.categories.length === 0) loadLibrary();
+    if (state.libActiveType === "brands" || state.libActiveType === "manufacturers") loadBrandLibrary();
   });
-  $("#abbr-close").addEventListener("click", () => $("#abbr-panel").classList.remove("open"));
+  $("#abbr-close").addEventListener("click", () => _closeActivePanel());
+
+  // Top-level library type tab switching
+  $$(".lib-type-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      state.libActiveType = tab.dataset.libType;
+      _switchLibTab(state.libActiveType);
+      if (state.libActiveType === "abbreviations" && state.categories.length === 0) loadLibrary();
+      if (state.libActiveType === "brands" || state.libActiveType === "manufacturers") loadBrandLibrary();
+    });
+  });
+
+  function _switchLibTab(type) {
+    $$(".lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.libType === type));
+    $("#lib-tab-abbreviations").classList.toggle("hidden", type !== "abbreviations");
+    $("#lib-tab-brands").classList.toggle("hidden", type !== "brands");
+    $("#lib-tab-manufacturers").classList.toggle("hidden", type !== "manufacturers");
+  }
+
+  // Brand library CRUD
+  async function loadBrandLibrary() {
+    try {
+      const j = await api("/api/brand-analytics/library");
+      state.brandAnalytics.library = j.entries || [];
+      renderBrandLibraryTab("brand");
+      renderBrandLibraryTab("manufacturer");
+    } catch(e) { /* silent */ }
+  }
+
+  function renderBrandLibraryTab(type) {
+    const entries = state.brandAnalytics.library.filter(e => e.entity_type === type);
+    const listEl = type === "brand" ? $("#bl-brands-list") : $("#bl-mfrs-list");
+    if (!listEl) return;
+    if (!entries.length) {
+      listEl.innerHTML = `<div class="text-sm" style="color:#94a3b8;padding:8px 0;">No ${type}s saved yet.</div>`;
+      return;
+    }
+    listEl.innerHTML = entries.map(e => `
+      <div class="brand-lib-row">
+        <div class="flex-1">
+          <div class="brand-lib-row-name">${escapeHtml(e.name)}</div>
+          <div class="brand-lib-row-meta">
+            ${e.sub_brands?.length ? `Sub-brands: ${e.sub_brands.map(s=>escapeHtml(s)).join(", ")}` : "No sub-brands"}
+            ${e.aliases?.length ? ` · Aliases: ${e.aliases.map(a=>escapeHtml(a)).join(", ")}` : ""}
+          </div>
+        </div>
+        <span class="brand-lib-badge ${e.discovered_by === 'ai' ? 'ai' : 'user'}">${e.discovered_by === 'ai' ? 'AI' : 'User'}</span>
+        <button class="icon-btn" data-del-lib="${e.id}" title="Delete">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>
+    `).join("");
+    listEl.querySelectorAll("[data-del-lib]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await api(`/api/brand-analytics/library/${btn.dataset.delLib}`, {method:"DELETE"});
+        loadBrandLibrary();
+      });
+    });
+  }
+
+  // Add brand
+  $("#bl-brand-add")?.addEventListener("click", async () => {
+    const name = $("#bl-brand-name").value.trim();
+    if (!name) return;
+    const aliases = $("#bl-brand-aliases").value.split(",").map(a=>a.trim()).filter(Boolean);
+    const parent  = $("#bl-brand-parent").value.trim() || null;
+    try {
+      await api("/api/brand-analytics/library", {
+        method: "POST",
+        body: {entity_type:"brand", name, parent_manufacturer: parent, aliases, sub_brands:[]},
+      });
+      $("#bl-brand-name").value = ""; $("#bl-brand-aliases").value = ""; $("#bl-brand-parent").value = "";
+      $("#bl-brand-feedback").textContent = "Brand added.";
+      setTimeout(() => { $("#bl-brand-feedback").textContent = ""; }, 2000);
+      loadBrandLibrary();
+    } catch(e) { $("#bl-brand-feedback").textContent = e.message; }
+  });
+
+  // Add manufacturer
+  $("#bl-mfr-add")?.addEventListener("click", async () => {
+    const name = $("#bl-mfr-name").value.trim();
+    if (!name) return;
+    const aliases = $("#bl-mfr-aliases").value.split(",").map(a=>a.trim()).filter(Boolean);
+    try {
+      await api("/api/brand-analytics/library", {
+        method: "POST",
+        body: {entity_type:"manufacturer", name, aliases, sub_brands:[]},
+      });
+      $("#bl-mfr-name").value = ""; $("#bl-mfr-aliases").value = "";
+      $("#bl-mfr-feedback").textContent = "Manufacturer added.";
+      setTimeout(() => { $("#bl-mfr-feedback").textContent = ""; }, 2000);
+      loadBrandLibrary();
+    } catch(e) { $("#bl-mfr-feedback").textContent = e.message; }
+  });
 
   // Synthetic tab value — not a real backend category. When active, the panel
   // shows every entry across every real category. Add-entry still requires
@@ -2121,7 +2709,7 @@
           state.abbrDeleteCandidate = null;
           await loadLibrary();
         } catch (e) {
-          alert(e.message);
+          showToast(e.message, "error");
         }
       });
     });
@@ -2218,7 +2806,7 @@
   //  AI auto-add toasts
   // ========================================================================
   const MAX_TOASTS = 3;
-  function showToast({ abbr, full, category }) {
+  function _showAILearnedToast({ abbr, full, category }) {
     const stack = $("#toast-stack");
     // FIFO cap
     while (stack.children.length >= MAX_TOASTS) {
@@ -2252,8 +2840,8 @@
       $("#threshold-review").value = state.thresholds.review;
     } catch {}
   }
-  $("#open-settings-btn").addEventListener("click", () => $("#settings-panel").classList.add("open"));
-  $("#settings-close").addEventListener("click", () => $("#settings-panel").classList.remove("open"));
+  $("#open-settings-btn").addEventListener("click", () => _openPanel("settings-panel"));
+  $("#settings-close").addEventListener("click", () => _closeActivePanel());
   $("#settings-save").addEventListener("click", async () => {
     const v = Number($("#threshold-verified").value);
     const r = Number($("#threshold-review").value);
@@ -2263,7 +2851,7 @@
       $("#settings-feedback").textContent = "Saved. Re-run any scan to apply.";
       setTimeout(() => $("#settings-feedback").textContent = "", 3000);
     } catch (e) {
-      alert("Failed: " + e.message);
+      showToast("Failed: " + e.message, "error");
     }
   });
 
@@ -2278,11 +2866,17 @@
     if (!q) {
       $("#pairs-empty").classList.remove("hidden");
       $("#pairs-results").classList.add("hidden");
+      $("#plib-results").classList.add("hidden");
       return;
     }
-    let j;
-    try { j = await api("/api/pairs/search", { method: "POST", body: { query: q } }); }
-    catch (e) { alert(e.message); return; }
+    // Search blacklist and Pair Library in parallel.
+    let j = { results: [] }, lib = { results: [] };
+    try {
+      [j, lib] = await Promise.all([
+        api("/api/pairs/search",          { method: "POST", body: { query: q } }),
+        api("/api/pairs/library/search",  { method: "POST", body: { query: q } }),
+      ]);
+    } catch (e) { showToast(e.message, "error"); return; }
 
     const body = $("#pairs-body");
     body.innerHTML = "";
@@ -2304,15 +2898,163 @@
       });
       body.querySelectorAll(".row-action-btn.unlock").forEach(btn =>
         btn.addEventListener("click", async (e) => {
-          await api("/api/pairs/unlock", { method: "POST", body: {
-            upc: e.currentTarget.dataset.upc, asin: e.currentTarget.dataset.asin,
-          }});
+          const { upc, asin } = e.currentTarget.dataset;
+          try {
+            await api("/api/pairs/unlock", { method: "POST", body: { upc, asin } });
+          } catch (err) {
+            showToast(`Unlock failed: ${err.message}`, "error");
+            return;
+          }
           searchPairs();
         }));
     }
+
+    // Pair Library matches — card only shown when there are hits.
+    const libBody = $("#plib-results-body");
+    if (libBody) {
+      libBody.innerHTML = "";
+      const rows = lib.results || [];
+      rows.forEach(r => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="font-mono">${escapeHtml(r.asin)}</td>
+          <td class="font-mono">${escapeHtml(r.upc || "—")}</td>
+          <td class="font-mono text-xs">${escapeHtml(r.upc_aliases || "")}</td>
+          <td class="font-mono text-xs">${escapeHtml(r.mpn || "")}</td>
+          <td class="font-mono text-xs">${escapeHtml(r.ean || "")}</td>
+          <td class="text-xs">${escapeHtml(r.brand || "")}</td>
+          <td class="text-xs" style="color:#6b7480;">${escapeHtml((r.updated_at || "").slice(0, 10))}</td>`;
+        libBody.appendChild(tr);
+      });
+      $("#plib-results").classList.toggle("hidden", rows.length === 0);
+    }
+
     $("#pairs-empty").classList.add("hidden");
     $("#pairs-results").classList.remove("hidden");
   }
+
+  // ---- Pair Library: stats + brand datalist -------------------------------
+  async function loadPairLibStats() {
+    try {
+      const s = await api("/api/pairs/library/stats");
+      const el = $("#plib-stats");
+      if (el) el.textContent =
+        `${(s.pairs || 0).toLocaleString()} ASINs · ${(s.identifiers || 0).toLocaleString()} identifiers · ${(s.brands || []).length} brands`;
+      const dl = $("#plib-brands-datalist");
+      if (dl) dl.innerHTML = (s.brands || [])
+        .map(b => `<option value="${escapeHtml(b.brand)}">${escapeHtml(b.brand)} (${b.count})</option>`)
+        .join("");
+    } catch (_e) { /* stats are cosmetic — never block the page */ }
+  }
+  loadPairLibStats();
+
+  // ---- Pair Library: template downloads -----------------------------------
+  $("#plib-import-template")?.addEventListener("click", () => {
+    window.location.href = "/api/pairs/library/template?kind=import";
+  });
+  $("#plib-lookup-template")?.addEventListener("click", () => {
+    window.location.href = "/api/pairs/library/template?kind=lookup";
+  });
+
+  // ---- Pair Library: import ------------------------------------------------
+  $("#plib-import-btn")?.addEventListener("click", () => {
+    const inp = $("#plib-import-file");
+    inp.value = "";
+    inp.click();
+  });
+  $("#plib-import-file")?.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const resEl = $("#plib-import-result");
+    resEl.textContent = "Importing…";
+    const fd = new FormData();
+    fd.append("pairs_file", file, file.name);
+    let j;
+    try {
+      j = await api("/api/pairs/library/import", { method: "POST", body: fd, form: true });
+    } catch (err) {
+      resEl.textContent = "";
+      showToast(`Import failed: ${err.message}`, "error", 8000);
+      return;
+    }
+    const bits = [
+      `${j.pairs_created} new`, `${j.pairs_updated} updated`,
+      `${j.ids_added} identifiers added`,
+    ];
+    if (j.blacklist_cleared)  bits.push(`${j.blacklist_cleared} unblacklisted`);
+    if (j.skipped_total)      bits.push(`${j.skipped_total} skipped`);
+    resEl.textContent = `Last import: ${j.rows} rows — ${bits.join(", ")}.`;
+    if (j.skipped_total) {
+      const first = (j.skipped || []).slice(0, 3)
+        .map(s => `row ${s.row}: ${s.reason}`).join("; ");
+      showToast(`Imported with ${j.skipped_total} skipped row(s) — ${first}`, "warning", 9000);
+    } else {
+      showToast(`Pair Library import complete — ${j.rows} rows processed.`, "success");
+    }
+    loadPairLibStats();
+  });
+
+  // ---- Pair Library: export by brand ---------------------------------------
+  // fetch-based download so a 404 (empty library / unknown brand) shows a
+  // toast instead of saving the JSON error body as a garbage file.
+  $("#plib-export-btn")?.addEventListener("click", async () => {
+    const brand = $("#plib-brand-input").value.trim();
+    const url = `/api/pairs/library/export${brand ? "?brand=" + encodeURIComponent(brand) : ""}`;
+    let resp;
+    try { resp = await fetch(url); }
+    catch (err) { showToast(`Export failed: ${err.message}`, "error"); return; }
+    if (!resp.ok) {
+      let msg = `${resp.status} ${resp.statusText}`;
+      try { const ej = await resp.json(); if (ej.detail) msg = String(ej.detail); } catch {}
+      showToast(msg, "warning", 7000);
+      return;
+    }
+    const blob = await resp.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = `pair_library_${brand || "all"}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(objUrl);
+  });
+
+  // ---- Pair Library: lookup & export ----------------------------------------
+  $("#plib-lookup-btn")?.addEventListener("click", () => {
+    const inp = $("#plib-lookup-file");
+    inp.value = "";
+    inp.click();
+  });
+  $("#plib-lookup-file")?.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const resEl = $("#plib-lookup-result");
+    resEl.textContent = "Matching…";
+    const fd = new FormData();
+    fd.append("lookup_file", file, file.name);
+    // Raw fetch (not api()) — we need BOTH the xlsx blob and the X-Plib-* headers.
+    let resp;
+    try { resp = await fetch("/api/pairs/library/lookup-export", { method: "POST", body: fd }); }
+    catch (err) { resEl.textContent = ""; showToast(`Lookup failed: ${err.message}`, "error"); return; }
+    if (!resp.ok) {
+      let msg = `${resp.status} ${resp.statusText}`;
+      try { const ej = await resp.json(); if (ej.detail) msg = String(ej.detail); } catch {}
+      resEl.textContent = "";
+      showToast(`Lookup failed: ${msg}`, "error", 8000);
+      return;
+    }
+    const matched  = resp.headers.get("X-Plib-Matched")  || "0";
+    const added    = resp.headers.get("X-Plib-Added")    || "0";
+    const notFound = resp.headers.get("X-Plib-Notfound") || "0";
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "pair_lookup_results.xlsx";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    resEl.textContent = `Last lookup: ${matched} matched, ${added} added to library, ${notFound} not found.`;
+    showToast(`Lookup done — ${matched} matched, ${added} new pairs saved, ${notFound} not found.`, "success", 7000);
+    if (Number(added) > 0) loadPairLibStats();
+  });
 
   // ========================================================================
   //  AI Re-check (OpenAI second-pass verdicts)
@@ -2342,7 +3084,7 @@
 
   function openAIRecheckModal() {
     if (!state.scan || state.results.length === 0) {
-      alert("Run a verification first — the AI re-check works on existing results.");
+      showToast("Run a verification first — the AI re-check works on existing results.", "error");
       return;
     }
     // Refresh bucket counts. Accept both "Approved" and the legacy "Verified".
@@ -2504,12 +3246,12 @@
       $("#ai-recheck-run").disabled = false;
       $("#ai-recheck-run").textContent = "Run again";
       if (withSuggestion === 0 && !j.failed?.length) {
-        showToast({
+        _showAILearnedToast({
           abbr: "No matching rows",
           full: "Check the bucket selection — none of your rows are in those verdict buckets.",
         });
       } else if (j.rechecked > 0) {
-        showToast({
+        _showAILearnedToast({
           abbr: `${j.rechecked} AI suggestion${j.rechecked === 1 ? "" : "s"} added`,
           full: `See the 'AI Suggestion' column. Accept ones you agree with.`,
         });
@@ -2601,6 +3343,89 @@
   }
   $("#awiz-title-ai-clean")?.addEventListener("change", _updateAiCostHint);
 
+  // Shared helper — sync CPG/Medical toggle across all wizard steps
+  function _awizSetVettingMode(mode) {
+    if (state.awiz) state.awiz.vettingMode = mode;
+
+    // --- Step 4 buttons (class="vetting-mode-btn" + data-mode) ---
+    document.querySelectorAll(".vetting-mode-btn[data-mode]").forEach(b => {
+      const active = b.dataset.mode === mode;
+      b.style.background = active ? "#3b82f6" : "#f8fafc";
+      b.style.color      = active ? "#fff"    : "#64748b";
+      b.classList.toggle("active", active);
+    });
+    const step4Hint = $("#awiz-mode-hint");
+    if (step4Hint) {
+      step4Hint.textContent = mode === "medical"
+        ? "Medical: MPN is primary identifier (+40 pts exact match, +25 pts partial). Tighter category filter."
+        : "CPG: UPC is primary identifier (+50 pts). MPN gives +20 pts bonus when match ≥70%.";
+    }
+
+    // --- Step 3 buttons (awiz-map-mode-cpg / awiz-map-mode-medical) ---
+    const s3cpg = $("#awiz-map-mode-cpg"), s3med = $("#awiz-map-mode-medical");
+    if (s3cpg && s3med) {
+      const isMed = mode === "medical";
+      s3cpg.style.background = !isMed ? "var(--purple-600,#5b42b8)" : "transparent";
+      s3cpg.style.color      = !isMed ? "#fff" : "#64748b";
+      s3med.style.background = isMed  ? "var(--purple-600,#5b42b8)" : "transparent";
+      s3med.style.color      = isMed  ? "#fff" : "#64748b";
+    }
+
+    // --- Step 3 label emphasis: primary gets *, secondary gets "optional" hint ---
+    const upcReq    = $("#awiz-upc-req"),    upcOpt    = $("#awiz-upc-opt");
+    const itemReq   = $("#awiz-itemid-req"), itemOpt   = $("#awiz-itemid-opt");
+    const upcWrap   = $("#awiz-map-upc-wrap"), itemWrap = $("#awiz-map-itemid-wrap");
+    const isMedical = mode === "medical";
+    if (upcReq)  upcReq.classList.toggle("hidden", isMedical);
+    if (upcOpt)  upcOpt.classList.toggle("hidden", !isMedical);
+    if (itemReq) itemReq.classList.toggle("hidden", !isMedical);
+    if (itemOpt) itemOpt.classList.toggle("hidden", isMedical);
+    // Subtle background highlight on the primary field's wrapper
+    if (upcWrap && itemWrap) {
+      upcWrap.style.padding    = "8px 10px";
+      itemWrap.style.padding   = "8px 10px";
+      upcWrap.style.borderRadius  = "8px";
+      itemWrap.style.borderRadius = "8px";
+      upcWrap.style.background  = !isMedical ? "var(--purple-50,#f4f0ff)"  : "transparent";
+      itemWrap.style.background = isMedical  ? "var(--purple-50,#f4f0ff)"  : "transparent";
+      upcWrap.style.border      = !isMedical ? "1.5px solid var(--purple-100,#e6e0fa)" : "1.5px solid transparent";
+      itemWrap.style.border     = isMedical  ? "1.5px solid var(--purple-100,#e6e0fa)" : "1.5px solid transparent";
+    }
+
+    // Step 3 hint text
+    const s3hint = $("#awiz-map-hint");
+    if (s3hint) {
+      s3hint.textContent = isMedical
+        ? "Medical catalog — Item ID / Part Number is the primary search identifier. Map UPC too if your catalog has it."
+        : "CPG catalog — UPC / EAN is the primary search identifier. Map Item ID too if your catalog has it.";
+    }
+
+    // Step 3 catalog-type toggle inline hint
+    const mapModeHint = $("#awiz-map-mode-hint");
+    if (mapModeHint) {
+      mapModeHint.innerHTML = isMedical
+        ? '<strong style="color:var(--purple-700);">Medical</strong> — Item ID / Part Number is the primary search identifier.'
+        : '<strong style="color:var(--purple-700);">CPG</strong> — UPC/EAN is the primary search identifier.';
+    }
+  }
+
+  // CPG / Medical vetting-mode toggle — step 4 buttons
+  document.querySelectorAll(".vetting-mode-btn[data-mode]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      if (!mode) return;
+      _awizSetVettingMode(mode);
+    });
+  });
+
+  // CPG / Medical vetting-mode toggle — step 3 buttons
+  ["awiz-map-mode-cpg", "awiz-map-mode-medical"].forEach(id => {
+    $(`#${id}`)?.addEventListener("click", () => {
+      const mode = $(`#${id}`)?.dataset.mode;
+      if (mode) _awizSetVettingMode(mode);
+    });
+  });
+
   // Probe SP-API credentials so the header pill matches reality.
   async function probeSPAPIStatus() {
     const okPill   = $("#analytics-sp-api-pill");
@@ -2656,7 +3481,10 @@
           <div class="analytics-run-row" data-run-id="${r.id}">
             <div class="flex items-center justify-between gap-3">
               <div class="flex-1 min-w-0">
-                <div class="font-medium text-sm truncate" style="color: var(--purple-800);">${escapeHtml(r.name || "Untitled run")}</div>
+                <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
+                  ${escapeHtml(r.name || "Untitled run")}
+                  <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
+                </div>
                 <div class="text-xs mt-0.5" style="color: #6b7480;">
                   ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
                   <span style="color: var(--green-600);">${r.verified_count || 0} verified</span> ·
@@ -2738,6 +3566,7 @@
     rankMin: 0,
     rankMax: 0,
     skipNullRank: false,
+    aiFilter: "all",
   };
 
   function _clearAnalyticsRunPoll() {
@@ -2749,6 +3578,7 @@
 
   async function openAnalyticsRunDetail(runId) {
     state.analyticsRun.id = runId;
+    state.analyticsRun._firstRender = true;   // triggers entrance animations on first render only
     // Reset per-run view state so the previous run's tab/search/sort
     // don't bleed into the next one.
     state.analyticsRun.tab = "Approved";
@@ -2759,25 +3589,35 @@
     state.analyticsRun.rankMin = 0;
     state.analyticsRun.rankMax = 0;
     state.analyticsRun.skipNullRank = false;
+    state.analyticsRun.aiFilter = "all";
     const sb = $("#analytics-run-search"); if (sb) sb.value = "";
     const rrMin = $("#analytics-run-rank-min"); if (rrMin) rrMin.value = "";
     const rrMax = $("#analytics-run-rank-max"); if (rrMax) rrMax.value = "";
     const rrSkip = $("#analytics-run-rank-skip-null"); if (rrSkip) rrSkip.checked = false;
     state.currentView = "analytics-run";
 
-    // Hide all other views, show ours. We don't touch the sidebar selection —
-    // the user is still under the "Analytics" nav item.
+    // Show the loading screen, hide the run detail content.
     $$("main > div").forEach(el => el.classList.add("hidden"));
-    $("#view-analytics-run")?.classList.remove("hidden");
+    const loadingEl = $("#analytics-run-loading");
+    if (loadingEl) { loadingEl.classList.remove("hidden"); loadingEl.style.display = "flex"; }
 
     // Reset UI shell before the first fetch so there's no stale data flash.
     $("#analytics-run-title").textContent = "Loading…";
     $("#analytics-run-subtitle").textContent = "";
-    $("#analytics-run-candidates-body").innerHTML = "";
-    $("#analytics-run-candidates-empty").classList.add("hidden");
-    $("#analytics-run-export").disabled = true;
+    const runView = $("#view-analytics-run");
+    if (runView) runView.classList.add("hidden");
 
     await fetchAnalyticsRunDetail();
+
+    // Hide loading screen, show content with entrance animation.
+    if (loadingEl) { loadingEl.classList.add("hidden"); loadingEl.style.display = "none"; }
+    if (runView) {
+      runView.classList.remove("hidden");
+      runView.classList.remove("view-enter-anim");
+      void runView.offsetWidth;
+      runView.classList.add("view-enter-anim");
+      runView.addEventListener("animationend", () => runView.classList.remove("view-enter-anim"), { once: true });
+    }
   }
 
   async function fetchAnalyticsRunDetail() {
@@ -2794,12 +3634,15 @@
       state.analyticsRun._lastStatus = j.run?.status;
       renderAnalyticsRunDetail(j);
 
-      // Auto-fetch current verdict tab if page data isn't loaded yet.
-      // This covers: initial open, and the moment a run/rescore finishes
-      // (status change clears tabPageData above, so next poll refills it).
+      // Auto-fetch current verdict tab when:
+      //   • no page data exists yet (initial open, or status change cleared the cache), OR
+      //   • page data exists but aiVerdictCounts hasn't been populated (e.g. an AI check
+      //     just finished while the user was on this tab — candidates are loaded but
+      //     scoped AI counts are stale/missing).
       const currentTab = state.analyticsRun.tab;
-      if (currentTab !== "All" && !((state.analyticsRun.tabPageData || {})[currentTab])) {
-        await _fetchVerdictPage(currentTab, 1);
+      const _curEntry = (state.analyticsRun.tabPageData || {})[currentTab];
+      if (currentTab !== "All" && (!_curEntry || _curEntry.aiVerdictCounts == null)) {
+        await _fetchVerdictPage(currentTab, state.analyticsRun.page || 1);
       }
 
       // Poll while active or while AI check is running.
@@ -2842,17 +3685,46 @@
     const v  = (c.verdict || "").toLowerCase();
     const conf = c.confidence || 0;
 
-    // Hard-reject signals (checked before confidence)
-    if (sc.size_mismatch)   return "Size mismatch";
-    if (sc.gender_mismatch) return "Gender mismatch";
-    if (sc.color_mismatch)  return "Color mismatch";
+    // ASIN conflict: same ASIN matched to multiple catalog rows — can't auto-verify
+    if (c.conflict_capped) return "ASIN conflict";
 
-    // BSR cap overrides everything else — check before pack_mismatch so it
-    // isn't masked. If conf ≥ 35 the score alone would put this in Review or
-    // higher, so something external (rank) must have forced not_approved.
+    // Auto-promoted: was stored as not_approved but had no hard-reject flags
+    // and confidence ≥ 35 — bumped to review at API response time.
+    if (c.auto_promoted) return `Score ${Math.round(conf)}% — needs review`;
+
+    // AI decision applied: review_status is set by apply_ai_decisions and takes
+    // priority over the generic fallback so the user sees WHY it changed.
+    const rs = (c.review_status || "").toLowerCase();
+    if (rs === "ai-rejected") {
+      const reasoning = (c.ai_reasoning || "").trim();
+      return reasoning ? `AI: ${reasoning.slice(0, 100)}` : "AI rejected";
+    }
+    if (rs === "ai-accepted") {
+      return "AI approved";
+    }
+
+    // Hard-reject signals (checked before confidence)
+    if (sc.size_mismatch)          return "Size mismatch";
+    if (sc.apparel_size_mismatch)  return "Size mismatch (S/M/L)";
+    if (sc.count_mismatch)         return "Count mismatch";
+    if (sc.shade_mismatch)         return "Shade/color mismatch";
+    if (sc.gender_mismatch)        return "Gender mismatch";
+    if (sc.color_mismatch)         return "Color mismatch";
+    if (sc.scent_mismatch)         return "Scent/variant mismatch";
+    if (sc.media_format_mismatch)  return "Media format (DVD/Blu-ray/etc.)";
+    if (sc.category_mismatch)      return "Category mismatch";
+
+    // BSR cap: only show rank reason when the run actually has a cap set
+    // AND the candidate's rank violates it.
     if (v === "not_approved" && conf >= 35) {
       const rank = c.sales_rank;
-      return rank != null ? `BSR ${Number(rank).toLocaleString()} > max` : "Rank cap";
+      const runMaxRank = state.analyticsRun?.data?.run?.max_rank || 0;
+      const runMinRank = state.analyticsRun?.data?.run?.min_rank || 0;
+      if (rank != null && runMaxRank > 0 && rank > runMaxRank)
+        return `BSR ${Number(rank).toLocaleString()} > max`;
+      if (rank != null && runMinRank > 0 && rank < runMinRank)
+        return `BSR ${Number(rank).toLocaleString()} < min`;
+      return "Category or quality mismatch";
     }
 
     // Pack mismatch → capped at 80 → review
@@ -2930,7 +3802,13 @@
     const run  = j.run || {};
     const cand = Array.isArray(j.candidates) ? j.candidates : [];
 
-    $("#analytics-run-title").textContent = run.name || "Untitled run";
+    const modeLabel = run.vetting_mode === "medical" ? "Medical" : "CPG";
+    const modeBadgeColor = run.vetting_mode === "medical" ? "#dbeafe" : "#f0fdf4";
+    const modeBadgeText  = run.vetting_mode === "medical" ? "#1d4ed8" : "#166534";
+    const titleEl = $("#analytics-run-title");
+    if (titleEl) {
+      titleEl.innerHTML = `${escapeHtml(run.name || "Untitled run")}&nbsp;<span style="display:inline-block;padding:2px 9px;font-size:11px;font-weight:700;border-radius:12px;vertical-align:middle;background:${modeBadgeColor};color:${modeBadgeText};">${modeLabel}</span>`;
+    }
     const started = run.created_at ? new Date(run.created_at + "Z") : null;
     const when = started ? `started ${started.toLocaleString()}` : "";
     const methods = Array.isArray(run.search_methods) ? run.search_methods.join(" · ") : "";
@@ -3024,6 +3902,36 @@
     $("#analytics-run-stat-review").textContent     = run.review_count || 0;
     $("#analytics-run-stat-rejected").textContent   = run.not_approved_count || 0;
 
+    // Entrance animations — run once when the view first opens
+    if (state.analyticsRun._firstRender) {
+      state.analyticsRun._firstRender = false;
+      const summaryRow = $("#analytics-run-summary-row");
+      if (summaryRow) _animateStats(summaryRow);
+      _animateProgressBars(document.getElementById("view-analytics-run"));
+    }
+
+    // Dedup warning banner — shown when duplicate catalog rows were stripped
+    let dedupBanner = $("#analytics-run-dedup-banner");
+    const dedupCount = run.duplicate_rows_removed || 0;
+    if (dedupCount > 0) {
+      if (!dedupBanner) {
+        dedupBanner = document.createElement("div");
+        dedupBanner.id = "analytics-run-dedup-banner";
+        dedupBanner.style.cssText = "margin:8px 0;padding:8px 14px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;font-size:0.82rem;color:#92400e;display:flex;align-items:center;gap:8px;";
+        dedupBanner.innerHTML = `<span style="font-size:1.1em;">⚠</span> <span id="analytics-run-dedup-text"></span>`;
+        const statsRow = $("#analytics-run-stat-catalog")?.closest(".run-stats-row") || $("#analytics-run-progress-card");
+        statsRow?.insertAdjacentElement("afterend", dedupBanner);
+      }
+      $("#analytics-run-dedup-text").textContent =
+        `${dedupCount.toLocaleString()} duplicate catalog row${dedupCount === 1 ? " was" : "s were"} removed before searching — the vendor catalog contained identical Item IDs listed multiple times.`;
+      dedupBanner.style.display = "flex";
+    } else if (dedupBanner) {
+      dedupBanner.style.display = "none";
+    }
+
+    // Store ASIN conflicts map for use in renderAnalyticsRunCandidates
+    state.analyticsRun._asinConflicts = j.asin_conflicts || {};
+
     // Tab badge counts — use the run-level totals from the DB so they're
     // accurate even when only a subset of candidates is loaded.
     $("#analytics-run-count-Approved").textContent = run.verified_count     ?? 0;
@@ -3048,12 +3956,49 @@
       const aiErr = aiStatus.startsWith("error");
 
       aiBtn.classList.toggle("hidden", !canAi);
+      const applyBtn = $("#analytics-run-ai-apply");
+      if (applyBtn) {
+        applyBtn.classList.toggle("hidden", !aiDone);
+        const alreadyApplied = run.ai_decisions_applied === 1;
+        applyBtn.disabled = alreadyApplied;
+        if (alreadyApplied) {
+          applyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> AI Applied`;
+          applyBtn.classList.add("btn-applied");
+        } else {
+          applyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Apply AI Decisions`;
+          applyBtn.classList.remove("btn-applied");
+        }
+      }
+
+      // AI progress card
+      const aiCard = $("#analytics-run-ai-progress-card");
+      if (aiCard) {
+        aiCard.classList.toggle("hidden", !aiRunning);
+        if (aiRunning) {
+          const aiDoneN  = run.ai_check_done  || 0;
+          const aiTotalN = run.ai_check_total || 0;
+          const pct = aiTotalN > 0 ? Math.min(100, (aiDoneN / aiTotalN) * 100) : 0;
+          const bar = $("#analytics-run-ai-progress-bar");
+          if (bar) bar.style.width = pct + "%";
+          const counts = $("#analytics-run-ai-progress-counts");
+          if (counts) counts.textContent = aiTotalN > 0
+            ? `${aiDoneN.toLocaleString()} / ${aiTotalN.toLocaleString()}`
+            : "Starting…";
+          const sub = $("#analytics-run-ai-progress-sub");
+          if (sub) sub.textContent = aiTotalN > 0
+            ? `${Math.round(pct)}% complete`
+            : "Reviewing candidates";
+        }
+      }
+
+      // Stop AI button — only visible while AI check is running
+      const aiStopBtn = $("#analytics-run-ai-stop");
+      if (aiStopBtn) aiStopBtn.classList.toggle("hidden", !aiRunning);
+
       if (aiRunning) {
         const aiDoneN = run.ai_check_done || 0;
         const aiTotalN = run.ai_check_total || 0;
-        aiBtn.textContent = aiTotalN > 0
-          ? `Checking ${aiDoneN.toLocaleString()}/${aiTotalN.toLocaleString()}…`
-          : "Checking…";
+        aiBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;animation:spin 1.2s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> ${aiTotalN > 0 ? `Checking ${aiDoneN.toLocaleString()}/${aiTotalN.toLocaleString()}…` : "Checking…"}`;
         aiBtn.disabled = true;
         aiBtn.style.opacity = "0.7";
         // Keep polling while AI check is running
@@ -3107,12 +4052,16 @@
     });
   }
 
-  // Navigate to page p — fetches from server when on a verdict tab.
+  // Navigate to page p — fetches from server when on a verdict tab,
+  // or when on "All" tab with an active AI filter.
   async function _onPageClick(p) {
     state.analyticsRun.page = p;
     const tab = state.analyticsRun.tab;
+    const aiFilter = state.analyticsRun.aiFilter || "all";
     if (tab !== "All") {
       await _fetchVerdictPage(tab, p);
+    } else if (aiFilter !== "all") {
+      await _fetchVerdictPage("All", p);
     }
     renderAnalyticsRunCandidates();
     $("#analytics-run-candidates-body")?.closest(".overflow-auto")?.scrollTo(0, 0);
@@ -3121,22 +4070,34 @@
   // Fetch one page of verdict-filtered candidates from the server and store
   // in tabPageData. Shows "Loading…" immediately while the request is in flight.
   async function _fetchVerdictPage(tab, page) {
-    const verdict = _TAB_TO_VERDICT[tab];
-    if (!verdict) return;
+    const verdict = _TAB_TO_VERDICT[tab]; // undefined for "All" tab — that's ok
     const id = state.analyticsRun.id;
     const pageSize = state.analyticsRun.pageSize || 50;
     const offset = (page - 1) * pageSize;
+    const aiFilter = state.analyticsRun.aiFilter || "all";
+    const searchQ = (state.analyticsRun.search || "").trim();
     state.analyticsRun.tabLoading = tab;
     renderAnalyticsRunCandidates();
     try {
-      const url = `/api/analytics/runs/${id}?verdict=${encodeURIComponent(verdict)}&limit=${pageSize}&offset=${offset}`;
+      let url = `/api/analytics/runs/${id}?limit=${pageSize}&offset=${offset}`;
+      if (verdict) url += `&verdict=${encodeURIComponent(verdict)}`;
+      if (aiFilter !== "all") url += `&ai_verdict=${encodeURIComponent(aiFilter)}`;
+      if (searchQ) url += `&search=${encodeURIComponent(searchQ)}`;
       const j = await api(url);
       if (!state.analyticsRun.tabPageData) state.analyticsRun.tabPageData = {};
-      state.analyticsRun.tabPageData[tab] = { serverPage: page, candidates: j.candidates || [] };
+      state.analyticsRun.tabPageData[tab] = {
+        serverPage: page,
+        aiFilter: aiFilter,           // store which filter was active so the count guard works
+        candidates: j.candidates || [],
+        aiFilteredCount: j.ai_filtered_count ?? null,
+        aiVerdictCounts: j.ai_verdict_counts ?? null,
+        aiFilter,
+      };
     } catch (e) {
       console.warn("[tab fetch]", e);
     } finally {
       state.analyticsRun.tabLoading = null;
+      renderAnalyticsRunCandidates();
     }
   }
 
@@ -3149,11 +4110,16 @@
     const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
     const isLoading = state.analyticsRun.tabLoading === tab;
 
-    // Need main data for "All", or a server page / loading state for verdict tabs.
-    if (!isVerdictTab && !j) return;
-    if (isVerdictTab && !tabPageEntry && !isLoading) return;
+    const _aiFilterActive = (state.analyticsRun.aiFilter || "all") !== "all";
+    const _searchActive   = !!(state.analyticsRun.search || "").trim();
+    // Use server-fetched tabPageData when: verdict tab, AI filter, OR search active.
+    const _useServerPage  = isVerdictTab || _aiFilterActive || _searchActive;
+    if (!_useServerPage && !j) return;
+    if (_useServerPage && !tabPageEntry && !isLoading) return;
 
-    const cand = isVerdictTab
+    // When using a server page (verdict/AI filter/search) candidates come from
+    // tabPageData; otherwise from the main "All" snapshot.
+    const cand = _useServerPage
       ? (tabPageEntry?.candidates || [])
       : (Array.isArray(j?.candidates) ? j.candidates : []);
 
@@ -3191,6 +4157,73 @@
         if (_rankMax > 0 && rank > _rankMax) return false;
         return true;
       });
+    }
+
+    // ---- AI verdict filter --------------------------------------------
+    const _aiFilter = state.analyticsRun.aiFilter || "all";
+    // AI verdict pill counts.
+    // Verdict tabs (Approved / Review / Not Approved): use tab-scoped counts from
+    // tabPageData so the pill labels reflect only THIS tab's AI-checked items.
+    // If the scoped data hasn't arrived yet (null pageEntry), fall back temporarily
+    // to whole-run counts so the pills remain visible while the fetch is in flight.
+    // An empty {} from the server means no items in this tab have AI verdicts —
+    // treat as null so the filter section is hidden rather than showing disabled buttons.
+    // All tab: whole-run counts are always correct.
+    const _pageEntry = isVerdictTab ? (state.analyticsRun.tabPageData || {})[tab] : null;
+    let _serverCounts = null;
+    if (isVerdictTab) {
+      if (_pageEntry?.aiVerdictCounts != null) {
+        const scoped = _pageEntry.aiVerdictCounts;
+        // Non-empty scoped counts → use them (correct tab-scoped labels).
+        // Empty {} → no AI verdicts on this tab → null so section is hidden.
+        _serverCounts = Object.keys(scoped).length > 0 ? scoped : null;
+      } else {
+        // Scoped data not yet fetched → temporarily show whole-run counts.
+        _serverCounts = state.analyticsRun.data?.ai_verdict_counts ?? null;
+      }
+    } else {
+      _serverCounts = state.analyticsRun.data?.ai_verdict_counts ?? null;
+    }
+    const _aiCounts = _serverCounts
+      ? { approve: _serverCounts.approve || 0, reject: _serverCounts.reject || 0, uncertain: _serverCounts.uncertain || 0 }
+      : (() => {
+          const c = { approve: 0, reject: 0, uncertain: 0 };
+          rows.forEach(r => { if (r.ai_verdict && c[r.ai_verdict] !== undefined) c[r.ai_verdict]++; });
+          return c;
+        })();
+    const _hasAiBadges = _aiCounts.approve + _aiCounts.reject + _aiCounts.uncertain > 0;
+    const aiFilterWrap = $("#analytics-run-ai-filter-wrap");
+    if (aiFilterWrap) {
+      aiFilterWrap.classList.toggle("hidden", !_hasAiBadges);
+      $$(".ai-filter-pill", aiFilterWrap).forEach(btn => {
+        const f = btn.dataset.aiFilter;
+        btn.classList.toggle("active", f === _aiFilter);
+        if (f === "all") {
+          btn.textContent = "All";
+          btn.disabled = false;
+          btn.style.opacity = "1";
+          btn.style.cursor = "pointer";
+        } else {
+          const label = f === "approve" ? "✓ Approved" : f === "reject" ? "✗ Rejected" : "? Uncertain";
+          const cnt = _aiCounts[f] || 0;
+          btn.textContent = cnt > 0 ? `${label} (${cnt.toLocaleString()})` : label;
+          btn.disabled = cnt === 0;
+          btn.style.opacity = cnt > 0 ? "1" : "0.4";
+          btn.style.cursor = cnt > 0 ? "pointer" : "not-allowed";
+          if (_aiFilter === f && cnt === 0) state.analyticsRun.aiFilter = "all";
+        }
+      });
+    }
+    // When an AI filter is active on a verdict tab, the server already filtered
+    // the returned candidates — no need to re-filter client-side.
+    if (_aiFilter !== "all" && !isVerdictTab) {
+      rows = rows.filter(c => c.ai_verdict === _aiFilter);
+    } else if (_aiFilter !== "all" && isVerdictTab) {
+      // Server-filtered: all candidates already have the correct ai_verdict.
+      // Still filter in case tabPageData was populated before filter was applied.
+      if (_pageEntry?.aiFilter !== _aiFilter) {
+        rows = rows.filter(c => c.ai_verdict === _aiFilter);
+      }
     }
 
     // ---- sort ---------------------------------------------------------
@@ -3237,16 +4270,22 @@
     // ---- pagination ---------------------------------------------------
     // For verdict tabs the server sends exactly one page; use DB counts for
     // the total so page buttons cover the full dataset.
+    // When an AI filter is active the server returns ai_filtered_count — use
+    // that so pagination reflects only the filtered set.
     const pageSize = state.analyticsRun.pageSize || 50;
     const page     = state.analyticsRun.page;
     let totalRows, totalPages, pageRows;
-    if (isVerdictTab) {
+    if (isVerdictTab || _aiFilterActive) {
       const run = j?.run || {};
+      // If the cached page was fetched with the same AI filter, use its count.
+      const pageEntry = (state.analyticsRun.tabPageData || {})[tab];
+      const aiFilteredCount = (pageEntry?.aiFilter === _aiFilter && pageEntry?.aiFilteredCount != null)
+        ? pageEntry.aiFilteredCount : null;
       const dbTotal = tab === "Approved"     ? (run.verified_count     ?? 0)
                     : tab === "Review"        ? (run.review_count       ?? 0)
                     : tab === "Not Approved"  ? (run.not_approved_count ?? 0)
-                    : cand.length;
-      totalRows  = dbTotal;
+                    : (run.total_candidates_found ?? cand.length);
+      totalRows  = _aiFilter !== "all" && aiFilteredCount != null ? aiFilteredCount : dbTotal;
       totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
       pageRows   = rows; // server already sent the right page
     } else {
@@ -3292,6 +4331,7 @@
       </div>`;
     };
 
+    const _asinConflicts = state.analyticsRun._asinConflicts || {};
     body.innerHTML = pageRows.map(c => {
       const src = srcByIdx[c.row_idx] || {};
       const conf = Math.round((c.confidence || 0) * 10) / 10;
@@ -3306,6 +4346,16 @@
       const sources = Array.isArray(c.sources) ? c.sources.join(", ") : "";
       const label  = _VERDICT_LABEL[v] || (c.verdict || "");
       const reason = _verdictReason(c);
+
+      // ASIN conflict badge: same ASIN matched to more than one catalog row
+      const conflictRows = _asinConflicts[c.asin];
+      const conflictTooltip = conflictRows
+        ? `This ASIN is also matched to row${conflictRows.length > 2 ? "s" : ""} ${conflictRows.filter(r => r !== c.row_idx).map(r => r + 1).join(", ")} — verify which catalog entry is correct`
+        : "";
+      const conflictBadge = conflictRows
+        ? `<span class="has-tooltip" data-tooltip="${escapeHtml(conflictTooltip)}" style="display:inline-block;margin-left:4px;padding:1px 6px;font-size:0.68rem;font-weight:700;border-radius:4px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:help;">⚠ Conflict</span>`
+        : "";
+
       return `
         <tr>
           <td class="text-xs">${escapeHtml(String(c.row_idx + 1))}</td>
@@ -3317,7 +4367,7 @@
             <div class="text-sm" style="color: var(--navy-800);">${escapeHtml(src.title || "")}</div>
             <div class="text-xs" style="color:#94a3b8;">${escapeHtml(src.brand || "")}</div>
           </td>
-          <td class="font-mono text-xs">${escapeHtml(c.asin || "")}</td>
+          <td class="font-mono text-xs">${escapeHtml(c.asin || "")}${conflictBadge}</td>
           <td style="max-width:300px;">
             <div class="text-sm" style="color: #475569;">${escapeHtml(amzTitle)}</div>
           </td>
@@ -3381,7 +4431,7 @@
     let verdict, review_status;
     switch (action) {
       case "approve": verdict = "verified";     review_status = "Reviewed";          break;
-      case "discard": verdict = "not_approved"; review_status = "";                  break;
+      case "discard": verdict = "not_approved"; review_status = "Manually Rejected"; break;
       case "promote": verdict = "verified";     review_status = "Manually Approved"; break;
       case "reject":  verdict = "not_approved"; review_status = "Manually Rejected"; break;
       default: return;
@@ -3392,7 +4442,7 @@
     try {
       await applyAnalyticsVerdict(row_idx, asin, verdict, review_status);
     } catch (err) {
-      alert("Couldn't update verdict: " + (err.message || err));
+      showToast("Couldn't update verdict: " + (err.message || err), "error");
       btn.disabled = false;
       btn.style.opacity = "1";
       return;
@@ -3454,7 +4504,7 @@
       await api(`/api/analytics/runs/${id}/control`, { method: "POST", body: { action } });
       await fetchAnalyticsRunDetail();
     } catch (e) {
-      alert("Control action failed: " + (e.message || e));
+      showToast("Control action failed: " + (e.message || e), "error");
     }
   }
 
@@ -3471,7 +4521,7 @@
       document.getElementById("view-analytics")?.classList.remove("hidden");
       await loadAnalyticsRuns();
     } catch (e) {
-      alert("Could not delete run: " + (e.message || e));
+      showToast("Could not delete run: " + (e.message || e), "error");
     }
   }
 
@@ -3493,6 +4543,21 @@
 
   // Re-score modal
   const _rescoreModal = $("#analytics-rescore-modal");
+  let _rescoreBrandMode = "text"; // "text" | "col"
+
+  function _applyRescoreBrandMode(mode) {
+    _rescoreBrandMode = mode;
+    const isCol = mode === "col";
+    $("#analytics-rescore-brand-text")?.classList.toggle("hidden", isCol);
+    $("#analytics-rescore-brand-col")?.classList.toggle("hidden", !isCol);
+    const btn = $("#analytics-rescore-brand-mode-btn");
+    if (btn) btn.textContent = isCol ? "type a brand instead" : "use a column instead";
+  }
+
+  $("#analytics-rescore-brand-mode-btn")?.addEventListener("click", () => {
+    _applyRescoreBrandMode(_rescoreBrandMode === "text" ? "col" : "text");
+  });
+
   $("#analytics-run-rescore")?.addEventListener("click", () => {
     // Populate dropdown from the raw column keys of the first catalog row.
     const catRows = state.analyticsRun?.data?.catalog_rows || [];
@@ -3512,8 +4577,22 @@
     ].join("") || `<option value="">— no columns found —</option>`;
     const sel = $("#analytics-rescore-col");
     if (sel) sel.innerHTML = colOpts;
+    // For the brand dropdown, filter out obviously non-brand columns
+    // (prices, dates, quantities, percentages) to reduce noise.
+    const firstRowForFilter = catRows[0] || {};
+    const firstRawForFilter = firstRowForFilter.raw || {};
+    function _isBrandLikeCol(key) {
+      if (/price|cost|qty|ytd|\$|%|adjustment|change|rank|unit price|special|packaging/i.test(key)) return false;
+      const v = firstRawForFilter[key];
+      if (v !== null && v !== undefined && v !== "" && !isNaN(parseFloat(String(v)))) return false;
+      return true;
+    }
+    const brandColOpts = [
+      ...builtins.map(b => `<option value="${escapeHtml(b.key)}">${escapeHtml(b.label)}</option>`),
+      ...rawCols.filter(_isBrandLikeCol).map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`),
+    ].join("");
     const brandSel = $("#analytics-rescore-brand-col");
-    if (brandSel) brandSel.innerHTML = `<option value="">— none (use wizard brand) —</option>` + colOpts;
+    if (brandSel) brandSel.innerHTML = `<option value="">— none (use wizard brand) —</option>` + brandColOpts;
     // Pre-populate min/max rank from the run's stored values.
     const storedMinRank = state.analyticsRun?.data?.run?.min_rank || 0;
     const storedMaxRank = state.analyticsRun?.data?.run?.max_rank || 0;
@@ -3521,6 +4600,44 @@
     if (mrMinInput) mrMinInput.value = storedMinRank > 0 ? String(storedMinRank) : "";
     const mrInput = $("#analytics-rescore-max-rank");
     if (mrInput) mrInput.value = storedMaxRank > 0 ? String(storedMaxRank) : "";
+    // Pre-populate brand from saved value (new runs) or auto-detect from catalog rows (old runs).
+    const storedBrandCol  = state.analyticsRun?.data?.run?.brand_col  || "";
+    const storedBrandMode = state.analyticsRun?.data?.run?.brand_mode || "col";
+    if (storedBrandCol) {
+      if (storedBrandMode === "text") {
+        _applyRescoreBrandMode("text");
+        const tb = $("#analytics-rescore-brand-text");
+        if (tb) tb.value = storedBrandCol;
+      } else {
+        _applyRescoreBrandMode("col");
+        if (brandSel) brandSel.value = storedBrandCol;
+      }
+    } else {
+      // Auto-detect from catalog rows for runs created before brand persistence was added.
+      const firstCatRow = (state.analyticsRun?.data?.catalog_rows || [])[0] || {};
+      const firstBrand  = (firstCatRow.brand || "").trim().toLowerCase();
+      const firstRaw    = firstCatRow.raw || {};
+      let detectedCol   = "";
+      if (firstBrand) {
+        for (const [key, val] of Object.entries(firstRaw)) {
+          if (String(val || "").trim().toLowerCase() === firstBrand) {
+            detectedCol = key;
+            break;
+          }
+        }
+      }
+      if (detectedCol) {
+        _applyRescoreBrandMode("col");
+        if (brandSel) brandSel.value = detectedCol;
+      } else if (firstBrand) {
+        // Brand was a fixed text override — use it directly.
+        _applyRescoreBrandMode("text");
+        const tb = $("#analytics-rescore-brand-text");
+        if (tb) tb.value = firstCatRow.brand;
+      } else {
+        _applyRescoreBrandMode("col");
+      }
+    }
     _rescoreModal?.classList.remove("hidden");
   });
   $("#analytics-rescore-cancel")?.addEventListener("click", () => {
@@ -3535,19 +4652,21 @@
     const id = state.analyticsRun.id;
     if (!id) return;
     try {
-      const brandCol = $("#analytics-rescore-brand-col")?.value || "";
-      const minRankRescore = Math.max(0, parseInt($("#analytics-rescore-min-rank")?.value || "0", 10) || 0);
-      const maxRankRescore = Math.max(0, parseInt($("#analytics-rescore-max-rank")?.value || "0", 10) || 0);
+      const brandCol = _rescoreBrandMode === "col"
+        ? ($("#analytics-rescore-brand-col")?.value || "")
+        : ($("#analytics-rescore-brand-text")?.value.trim() || "");
+      const minRankRescore = _parseRank($("#analytics-rescore-min-rank")?.value);
+      const maxRankRescore = _parseRank($("#analytics-rescore-max-rank")?.value);
       await api(`/api/analytics/runs/${id}/rescore`, {
         method: "POST",
-        body: { title_col: col, brand_col: brandCol, min_rank: minRankRescore, max_rank: maxRankRescore },
+        body: { title_col: col, brand_col: brandCol, brand_mode: _rescoreBrandMode, min_rank: minRankRescore, max_rank: maxRankRescore },
       });
       // Clear per-tab cache so next tab visit re-fetches with updated scores.
       state.analyticsRun.tabPageData = {};
       // Kick an immediate poll so the progress card appears without waiting 2s.
       await fetchAnalyticsRunDetail();
     } catch (e) {
-      alert("Re-score failed: " + (e.message || e));
+      showToast("Re-score failed: " + (e.message || e), "error");
     }
   });
 
@@ -3578,17 +4697,56 @@
     });
   });
 
-  // Search box — local filter, no round-trip.
+  // Search box — server-side fetch so ASINs/titles anywhere in the run
+  // are found, not just within the currently loaded page.
+  let _analyticsSearchTimer = null;
   $("#analytics-run-search")?.addEventListener("input", (e) => {
     state.analyticsRun.search = e.target.value || "";
     state.analyticsRun.page = 1;
-    renderAnalyticsRunCandidates();
+    // Clear any pending debounce timer
+    if (_analyticsSearchTimer) clearTimeout(_analyticsSearchTimer);
+    const q = state.analyticsRun.search.trim();
+    if (!q) {
+      // Empty — revert to normal tab data (clear search results from cache)
+      if (state.analyticsRun.tabPageData) {
+        Object.keys(state.analyticsRun.tabPageData).forEach(k => {
+          delete state.analyticsRun.tabPageData[k];
+        });
+      }
+      const tab = state.analyticsRun.tab;
+      if (tab !== "All") _fetchVerdictPage(tab, 1);
+      else renderAnalyticsRunCandidates();
+      return;
+    }
+    // Debounce 350ms then fetch server-side
+    _analyticsSearchTimer = setTimeout(async () => {
+      const tab = state.analyticsRun.tab;
+      // Clear cached page so the search results replace it
+      if (state.analyticsRun.tabPageData) {
+        Object.keys(state.analyticsRun.tabPageData).forEach(k => {
+          delete state.analyticsRun.tabPageData[k];
+        });
+      }
+      await _fetchVerdictPage(tab, 1);
+    }, 350);
   });
+
+  // Parse a rank input that may contain commas ("400,000"), spaces ("400 000"),
+  // or k/m suffixes ("400k" → 400000, "1.5m" → 1500000).
+  function _parseRank(v) {
+    const s = (v || "").trim().toLowerCase().replace(/[\s,]/g, "");
+    if (!s) return 0;
+    const num = parseFloat(s);
+    if (isNaN(num)) return 0;
+    if (s.endsWith("m")) return Math.max(0, Math.round(num * 1_000_000));
+    if (s.endsWith("k")) return Math.max(0, Math.round(num * 1_000));
+    return Math.max(0, Math.round(num));
+  }
 
   // BSR range filter — client-side display filter, no round-trip.
   function _applyRankFilter() {
-    state.analyticsRun.rankMin = Math.max(0, parseInt($("#analytics-run-rank-min")?.value || "0", 10) || 0);
-    state.analyticsRun.rankMax = Math.max(0, parseInt($("#analytics-run-rank-max")?.value || "0", 10) || 0);
+    state.analyticsRun.rankMin = _parseRank($("#analytics-run-rank-min")?.value);
+    state.analyticsRun.rankMax = _parseRank($("#analytics-run-rank-max")?.value);
     state.analyticsRun.skipNullRank = !!($("#analytics-run-rank-skip-null")?.checked);
     state.analyticsRun.page = 1;
     renderAnalyticsRunCandidates();
@@ -3596,6 +4754,25 @@
   $("#analytics-run-rank-min")?.addEventListener("change", _applyRankFilter);
   $("#analytics-run-rank-max")?.addEventListener("change", _applyRankFilter);
   $("#analytics-run-rank-skip-null")?.addEventListener("change", _applyRankFilter);
+
+  $("#analytics-run-ai-filter-wrap")?.addEventListener("click", async e => {
+    const btn = e.target.closest(".ai-filter-pill");
+    if (!btn || btn.disabled) return;
+    const newFilter = btn.dataset.aiFilter || "all";
+    if (newFilter === state.analyticsRun.aiFilter) return;
+    state.analyticsRun.aiFilter = newFilter;
+    state.analyticsRun.page = 1;
+    // Always refetch from server when filter changes — this covers verdict tabs
+    // AND the "All" tab (which also needs server-side filtering for completeness).
+    const tab = state.analyticsRun.tab;
+    if (state.analyticsRun.tabPageData) delete state.analyticsRun.tabPageData[tab];
+    if (newFilter !== "all" || tab !== "All") {
+      await _fetchVerdictPage(tab, 1);
+    } else {
+      // Resetting to "all" on "All" tab — just re-render from cached main data.
+      renderAnalyticsRunCandidates();
+    }
+  });
 
   // Sortable header clicks — toggle asc / desc on the current column, or
   // switch to a new column (default asc, except confidence which makes
@@ -3679,7 +4856,7 @@
       }
       renderAnalyticsRunDetail(data);
     } catch (err) {
-      alert("Bulk update failed: " + (err.message || err));
+      showToast("Bulk update failed: " + (err.message || err), "error");
     } finally {
       if (btn) { btn.disabled = false; btn.style.opacity = "1"; }
     }
@@ -3690,10 +4867,18 @@
   // ==========================================================================
   const _aiCheckModal = $("#analytics-ai-check-modal");
 
+  function _aiCheckSelectedVerdicts() {
+    const verdicts = [];
+    if ($("#ai-check-filter-review")?.checked)       verdicts.push("review");
+    if ($("#ai-check-filter-not-approved")?.checked) verdicts.push("not_approved");
+    if ($("#ai-check-filter-approved")?.checked)     verdicts.push("verified");
+    return verdicts.length === 0 || verdicts.length === 3 ? "all" : verdicts.join(",");
+  }
+
   async function _fetchAiCheckEstimate() {
     const id = state.analyticsRun.id;
     if (!id) return;
-    const verdict = $("#ai-check-verdict-filter")?.value || "review";
+    const verdict = _aiCheckSelectedVerdicts();
     const el = $("#ai-check-estimate");
     if (el) el.textContent = "Loading estimate…";
     try {
@@ -3709,15 +4894,36 @@
     }
   }
 
+  $("#analytics-run-ai-stop")?.addEventListener("click", async () => {
+    const btn = $("#analytics-run-ai-stop");
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg> Stopping…`;
+    try {
+      const result = await api(`/api/analytics/runs/${state.analyticsRun.id}/ai_check/stop`, { method: "POST", body: {} });
+      console.log("[stop] server response:", result);
+    } catch (e) {
+      console.error("[stop] request failed:", e);
+      showToast("Stop request failed: " + e.message, "error");
+    }
+    // Re-enable after a tick so it can't be double-clicked
+    setTimeout(() => { if (btn) { btn.disabled = false; } }, 1500);
+  });
+
   $("#analytics-run-ai-check")?.addEventListener("click", () => {
     _aiCheckModal?.classList.remove("hidden");
-    // Reset to default filter
-    const vf = $("#ai-check-verdict-filter");
-    if (vf) vf.value = "review";
+    // Reset to default: Review only checked
+    const r = $("#ai-check-filter-review");
+    const n = $("#ai-check-filter-not-approved");
+    const a = $("#ai-check-filter-approved");
+    if (r) r.checked = true;
+    if (n) n.checked = false;
+    if (a) a.checked = false;
     _fetchAiCheckEstimate();
   });
 
-  $("#ai-check-verdict-filter")?.addEventListener("change", _fetchAiCheckEstimate);
+  ["ai-check-filter-review", "ai-check-filter-not-approved", "ai-check-filter-approved"]
+    .forEach(id => $("#" + id)?.addEventListener("change", _fetchAiCheckEstimate));
 
   $("#ai-check-cancel")?.addEventListener("click", () => {
     _aiCheckModal?.classList.add("hidden");
@@ -3729,20 +4935,74 @@
   $("#ai-check-confirm")?.addEventListener("click", async () => {
     const id = state.analyticsRun.id;
     if (!id) return;
-    const verdict = $("#ai-check-verdict-filter")?.value || "review";
+    const verdict = _aiCheckSelectedVerdicts();
     _aiCheckModal?.classList.add("hidden");
     try {
       await api(`/api/analytics/runs/${id}/ai_check`, {
         method: "POST",
         body: { verdict },
       });
-      // Poll for up to 15 cycles even if the DB status hasn't flipped to
-      // "Running" yet — the background thread takes a moment to start.
       state.analyticsRun._aiCheckJustStarted = 15;
       _clearAnalyticsRunPoll();
       state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
     } catch (e) {
-      alert("AI Check failed to start: " + (e.message || e));
+      showToast("AI Check failed to start: " + (e.message || e), "error");
+    }
+  });
+
+  $("#analytics-run-ai-apply")?.addEventListener("click", (e) => {
+    if (e.currentTarget.disabled) return;
+    const modal = $("#analytics-ai-apply-modal");
+    if (modal) modal.classList.remove("hidden");
+  });
+
+  $("#ai-apply-cancel")?.addEventListener("click", () => {
+    $("#analytics-ai-apply-modal")?.classList.add("hidden");
+  });
+
+  $("#analytics-ai-apply-modal")?.addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
+  });
+
+  $("#ai-apply-confirm")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const modal = $("#analytics-ai-apply-modal");
+    const btn = $("#ai-apply-confirm");
+    if (btn) { btn.disabled = true; btn.textContent = "Applying…"; }
+    try {
+      const j = await api(`/api/analytics/runs/${id}/ai_check/apply`, { method: "POST", body: {} });
+      modal?.classList.add("hidden");
+      const approved = j.approved ?? 0;
+      const rejected = j.rejected ?? 0;
+      // Show loading overlay so the table visibly refreshes before showing updated results
+      const loadingEl = $("#analytics-run-loading");
+      const runViewEl = $("#view-analytics-run");
+      if (loadingEl) loadingEl.classList.remove("hidden");
+      if (runViewEl) runViewEl.classList.add("hidden");
+      // Clear stale per-tab page cache so the refreshed view shows updated counts.
+      state.analyticsRun.tabPageData = {};
+      await fetchAnalyticsRunDetail();
+      if (loadingEl) loadingEl.classList.add("hidden");
+      if (runViewEl) runViewEl.classList.remove("hidden");
+      showToast(
+        `<strong>AI decisions applied</strong><br>` +
+        `<span style="color:#86efac;">✓ ${approved.toLocaleString()} approved</span>&ensp;` +
+        `<span style="color:#fca5a5;">✗ ${rejected.toLocaleString()} rejected</span>`,
+        "success", 6000
+      );
+    } catch (e) {
+      // Make sure overlay is hidden if something goes wrong
+      const loadingEl = $("#analytics-run-loading");
+      const runViewEl = $("#view-analytics-run");
+      if (loadingEl) loadingEl.classList.add("hidden");
+      if (runViewEl) runViewEl.classList.remove("hidden");
+      showToast("Failed to apply AI decisions: " + (e.message || e), "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Apply`;
+      }
     }
   });
 
@@ -3809,11 +5069,15 @@
       brandName: "",           // free-text, applies to every row (text mode)
       brandMode: "text",       // "text" | "col"
       runName: "",
+      vettingMode: "cpg",      // "cpg" | "medical"
+      sheets: [],              // list of sheet names (Excel only; empty for CSV)
+      selectedSheet: "",       // which sheet to read (empty = active sheet)
+      passthroughCols: new Set(), // header names the user wants carried into the export
     };
 
     awizEl.kicker.textContent = "Find & vet ASINs";
     awizEl.title.textContent  = "Upload vendor catalog";
-    awizEl.mapHint.textContent= "Tell us which column is which. The UPC / EAN column is the one we'll search for on Amazon.";
+    awizEl.mapHint.textContent= "Tell us which column is which.";
 
     resetAwizUi();
     awizEl.modal.classList.remove("hidden");
@@ -3839,6 +5103,31 @@
     });
     const first = awizEl.modal.querySelector('[data-awiz-indicator="1"]');
     if (first) first.classList.add("active");
+    // Reset vetting-mode toggle to CPG default
+    document.querySelectorAll(".vetting-mode-btn").forEach(b => {
+      const isCpg = b.dataset.mode === "cpg";
+      b.style.background = isCpg ? "#3b82f6" : "#f8fafc";
+      b.style.color      = isCpg ? "#fff"    : "#64748b";
+      b.classList.toggle("active", isCpg);
+    });
+    const hint = $("#awiz-mode-hint");
+    if (hint) hint.textContent = "CPG: UPC is primary identifier (+50 pts). Medical: MPN is primary identifier (+40 pts exact).";
+    // Clear passthrough pills so stale selections don't carry over to the next run.
+    const ptList = $("#awiz-passthrough-list");
+    if (ptList) Array.from(ptList.querySelectorAll(".pt-pill")).forEach(p => p.remove());
+    const ptEmpty = $("#awiz-passthrough-empty");
+    if (ptEmpty) ptEmpty.classList.remove("hidden");
+    // Reset sheet selector — hide the bar, clear options, keep the cs-wrap
+    // wrapper intact (enhanceSelect only runs once; rebuildCustomMenu syncs it).
+    const sheetBar = $("#awiz-sheet-bar");
+    const sheetSel = $("#awiz-sheet-select");
+    if (sheetBar) sheetBar.classList.add("hidden");
+    if (sheetSel) {
+      sheetSel.innerHTML = "";
+      delete sheetSel.dataset.wired;
+      // Sync the custom trigger label to the now-empty select.
+      rebuildCustomMenu(sheetSel);
+    }
   }
 
   awizEl.close.addEventListener("click", closeAwiz);
@@ -3873,16 +5162,8 @@
     awizEl.fileMeta.textContent = `${fmtKB(file.size)} · parsing…`;
 
     try {
-      const bytes = await file.arrayBuffer();
-      const blob = new Blob([bytes], { type: file.type || "application/octet-stream" });
-      const fd = new FormData();
-      fd.append("catalog_file", blob, file.name);
-      const j = await api("/api/analytics/preview", { method: "POST", body: fd, form: true });
-      state.awiz.preview = j;
-      awizEl.fileMeta.textContent = `${fmtKB(file.size)} · ${j.total_rows || 0} rows · ${j.max_cols || 0} columns`;
-      // Best-guess header row: first row with ≥ 3 non-empty cells.
-      state.awiz.headerRowIdx = _guessHeaderRow(j.rows);
-      state.awiz.runName = file.name.replace(/\.[^.]+$/, "");
+      const j = await _fetchAwizPreview(file, "");
+      _applyAwizPreview(j, file);
       // Auto-advance to "pick header row" — the only sensible next action.
       state.awiz.step = 2;
       renderAwizStep();
@@ -3891,6 +5172,31 @@
       state.awiz.file = null;
       state.awiz.preview = null;
     }
+  }
+
+  // Call /api/analytics/preview for the given file + optional sheet name.
+  async function _fetchAwizPreview(file, sheetName) {
+    const bytes = await file.arrayBuffer();
+    const blob = new Blob([bytes], { type: file.type || "application/octet-stream" });
+    const fd = new FormData();
+    fd.append("catalog_file", blob, file.name);
+    if (sheetName) fd.append("sheet_name", sheetName);
+    return api("/api/analytics/preview", { method: "POST", body: fd, form: true });
+  }
+
+  // Apply a preview response to state.awiz.
+  function _applyAwizPreview(j, file) {
+    if (!state.awiz || !j) return;   // wizard closed mid-load, or empty response
+    state.awiz.preview = j;
+    state.awiz.sheets = j.sheets || [];
+    state.awiz.selectedSheet = j.active_sheet || "";
+    const sheetInfo = state.awiz.sheets.length > 1
+      ? ` · ${state.awiz.sheets.length} sheets`
+      : "";
+    awizEl.fileMeta.textContent = `${fmtKB(file.size)} · ${j.total_rows || 0} rows · ${j.max_cols || 0} columns${sheetInfo}`;
+    // Best-guess header row: first row with ≥ 3 non-empty cells.
+    state.awiz.headerRowIdx = _guessHeaderRow(j.rows);
+    state.awiz.runName = file.name.replace(/\.[^.]+$/, "");
   }
 
   function _guessHeaderRow(rows) {
@@ -3919,7 +5225,7 @@
 
     if (step === 1) {
       if (!state.awiz.file || !state.awiz.preview) {
-        alert("Pick a file first — .xlsx, .xls, .csv or .tsv.");
+        showToast("Pick a file first — .xlsx, .xls, .csv or .tsv.", "error");
         return;
       }
       state.awiz.step = 2;
@@ -3929,7 +5235,7 @@
 
     if (step === 2) {
       if (state.awiz.headerRowIdx == null) {
-        alert("Click the row that holds your column headers.");
+        showToast("Click the row that holds your column headers.", "error");
         return;
       }
       // Capture headers from the chosen row. Fall back to "Column N" if a
@@ -4005,6 +5311,61 @@
     awizEl.previewCount.textContent = rows.length;
     awizEl.previewTotal.textContent = total;
 
+    // ---- Sheet selector ----
+    const sheetBar = $("#awiz-sheet-bar");
+    const sheetSel = $("#awiz-sheet-select");
+    const sheets = state.awiz.sheets || [];
+    if (sheetBar && sheetSel) {
+      if (sheets.length > 1) {
+        sheetBar.classList.remove("hidden");
+        // Rebuild native options then sync the custom UI.
+        sheetSel.innerHTML = sheets.map(s =>
+          `<option value="${escapeHtml(s)}"${s === state.awiz.selectedSheet ? " selected" : ""}>${escapeHtml(s)}</option>`
+        ).join("");
+        sheetSel.value = state.awiz.selectedSheet || sheets[0];
+        // First render: wrap in the shared custom-dropdown component.
+        enhanceSelect(sheetSel);
+        // Subsequent renders: sync the trigger label + open menu (if any).
+        rebuildCustomMenu(sheetSel);
+        // Wire change listener once on the native select — the cs-* component
+        // dispatches "change" on it when the user picks an option.
+        if (!sheetSel.dataset.wired) {
+          sheetSel.dataset.wired = "1";
+          sheetSel.addEventListener("change", async () => {
+            // Capture the file up front — the wizard can be closed/reset
+            // (state.awiz → null) while the preview request is in flight, and
+            // a stale resolution must not throw "Cannot read properties of
+            // null (reading 'file')".
+            if (!state.awiz || !state.awiz.file) return;
+            const file = state.awiz.file;
+            const chosen = sheetSel.value;
+            if (!chosen || chosen === state.awiz.selectedSheet) return;
+            const loadingEl = $("#awiz-sheet-loading");
+            if (loadingEl) loadingEl.classList.remove("hidden");
+            if (awizEl.next) awizEl.next.disabled = true;
+            try {
+              const j = await _fetchAwizPreview(file, chosen);
+              if (!state.awiz) return;           // wizard closed during load — abort silently
+              _applyAwizPreview(j, file);
+              state.awiz.selectedSheet = chosen;
+              renderAwizPreview();
+            } catch (e) {
+              if (state.awiz) {                  // only surface real errors while the wizard is open
+                showToast(`Could not load sheet: ${e.message}`, "error");
+                sheetSel.value = state.awiz.selectedSheet || "";
+                rebuildCustomMenu(sheetSel);
+              }
+            } finally {
+              if (loadingEl) loadingEl.classList.add("hidden");
+              if (awizEl.next) awizEl.next.disabled = false;
+            }
+          });
+        }
+      } else {
+        sheetBar.classList.add("hidden");
+      }
+    }
+
     tbody.innerHTML = rows.map(r => {
       const selected = r.row_number - 1 === state.awiz.headerRowIdx;
       const cells = (r.cells || []).map(c => `<td title="${escapeHtml(c)}">${escapeHtml(c)}</td>`).join("");
@@ -4026,10 +5387,39 @@
   }
 
   // ---- Step 3: column mapping --------------------------------------------
+  // Which columns hold data in the preview sample (rows after the header row)?
+  // Shared by the mapping dropdowns and the carry-through pills so both hide
+  // dead/empty columns.  Returns hasDataRows=false when there's nothing to
+  // judge, so callers fall back to "show everything".
+  function _awizPopulatedCols() {
+    const previewRows = state.awiz?.preview?.rows || [];
+    const headerIdx = state.awiz?.headerRowIdx ?? 0;
+    const populated = new Set();
+    let hasDataRows = false;
+    for (let r = headerIdx + 1; r < previewRows.length; r++) {
+      hasDataRows = true;
+      (previewRows[r].cells || []).forEach((c, i) => {
+        if (String(c ?? "").trim() !== "") populated.add(i);
+      });
+    }
+    return { populated, hasDataRows };
+  }
+
   function renderAwizMapping() {
+    // Only list columns that actually contain data — empty/unused columns
+    // (e.g. a stray "Column G") just clutter the pickers.  A column that's
+    // already mapped is always kept so a selection never silently disappears.
+    const { populated, hasDataRows } = _awizPopulatedCols();
+    const mapped = new Set();
+    ["upc", "itemid", "title", "search_title", "brand"].forEach(k => {
+      const v = state.awiz.mapping[k];
+      if (v !== "" && v != null) mapped.add(Number(v));
+    });
     const opts = [`<option value="">— none —</option>`]
-      .concat(state.awiz.headers.map((h, i) =>
-        `<option value="${i}">${escapeHtml(h)}</option>`))
+      .concat(state.awiz.headers
+        .map((h, i) => ({ h, i }))
+        .filter(({ i }) => !hasDataRows || populated.has(i) || mapped.has(i))
+        .map(({ h, i }) => `<option value="${i}">${escapeHtml(h)}</option>`))
       .join("");
 
     [awizEl.mapUpc, awizEl.mapItemId, awizEl.mapTitle, awizEl.mapSearchTitle]
@@ -4044,12 +5434,24 @@
     awizEl.mapBrandCol.value    = state.awiz.mapping.brand || "";
     awizEl.mapBrand.value       = state.awiz.brandName || "";
 
+    // Upgrade the native selects to the custom dropdown component so they match
+    // the rest of the app's lists.  enhanceSelect wraps once; rebuildCustomMenu
+    // re-syncs the trigger label after the options/value were just reset.
+    [awizEl.mapUpc, awizEl.mapItemId, awizEl.mapTitle,
+     awizEl.mapSearchTitle, awizEl.mapBrandCol].forEach(sel => {
+      enhanceSelect(sel, { block: true });
+      rebuildCustomMenu(sel);
+    });
+
     // Apply the current brand mode to show/hide the right input.
     function _applyBrandMode(mode) {
       state.awiz.brandMode = mode;
       const isCol = mode === "col";
       awizEl.mapBrand.classList.toggle("hidden", isCol);
-      awizEl.mapBrandCol.classList.toggle("hidden", !isCol);
+      // Toggle the custom-dropdown WRAPPER (the native select is visually
+      // hidden inside it after enhanceSelect), falling back to the select.
+      const brandColWrap = awizEl.mapBrandCol.closest(".cs-wrap") || awizEl.mapBrandCol;
+      brandColWrap.classList.toggle("hidden", !isCol);
       awizEl.brandModeBtn.textContent = isCol ? "type a brand instead" : "use a column instead";
     }
     _applyBrandMode(state.awiz.brandMode);
@@ -4066,12 +5468,14 @@
       }
       _applyBrandMode(next);
       renderAwizMappingPreview();
+      renderAwizPassthrough();
     };
 
     const wireSelect = (sel, key) => {
       sel.onchange = () => {
         state.awiz.mapping[key] = sel.value;
         renderAwizMappingPreview();
+        renderAwizPassthrough();  // re-compute available/unavailable pills
       };
     };
     wireSelect(awizEl.mapUpc,         "upc");
@@ -4084,7 +5488,91 @@
       state.awiz.brandName = awizEl.mapBrand.value;
     };
 
+    // Apply current vetting mode so step-3 labels/highlights are correct
+    _awizSetVettingMode(state.awiz.vettingMode || "cpg");
+
     renderAwizMappingPreview();
+    renderAwizPassthrough();
+  }
+
+  // ---- Passthrough column picker (step 3) -----------------------------------
+  // Renders a row of toggle pills — one per header that is NOT already assigned
+  // to a primary mapping field.  Clicking a pill adds/removes it from the set
+  // of columns to carry into the export.
+  function renderAwizPassthrough() {
+    const container = $("#awiz-passthrough-list");
+    const emptyMsg  = $("#awiz-passthrough-empty");
+    if (!container || !state.awiz) return;
+
+    const headers = state.awiz.headers || [];
+    if (!headers.length) {
+      if (emptyMsg) emptyMsg.classList.remove("hidden");
+      // Clear any existing pills
+      Array.from(container.children).forEach(c => { if (c !== emptyMsg) c.remove(); });
+      return;
+    }
+
+    // Collect header names already used for primary mapping (skip those).
+    const usedIndices = new Set();
+    const m = state.awiz.mapping || {};
+    ["upc", "itemid", "title", "search_title"].forEach(k => {
+      if (m[k] !== "" && m[k] != null) usedIndices.add(Number(m[k]));
+    });
+    if (state.awiz.brandMode === "col" && m.brand !== "" && m.brand != null) {
+      usedIndices.add(Number(m.brand));
+    }
+
+    // Which columns actually contain data in the preview sample?  An empty
+    // column carries no useful info, so we hide it — this keeps a file with
+    // hundreds of blank columns from flooding the picker with dead pills.
+    // (Judged on the previewed rows; a column blank across all of them is
+    // treated as empty.)  Falls back to "show all" when there are no data rows.
+    const { populated, hasDataRows } = _awizPopulatedCols();
+
+    const available = headers
+      .map((h, i) => ({ h, i }))
+      .filter(({ i }) => !usedIndices.has(i))
+      .filter(({ i }) => !hasDataRows || populated.has(i));
+
+    if (emptyMsg) emptyMsg.classList.toggle("hidden", available.length > 0);
+
+    // Build pill for each available header.
+    const pt = state.awiz.passthroughCols;
+    const availableIdx = new Set(available.map(a => a.i));
+
+    // Remove pills for columns no longer available (mapped away or now empty).
+    Array.from(container.querySelectorAll(".pt-pill")).forEach(el => {
+      const idx = Number(el.dataset.colIdx);
+      if (!availableIdx.has(idx)) {
+        const hdr = headers[idx];
+        if (hdr) pt.delete(hdr);
+        el.remove();
+      }
+    });
+
+    // Add or update pills.
+    available.forEach(({ h, i }) => {
+      let pill = container.querySelector(`.pt-pill[data-col-idx="${i}"]`);
+      if (!pill) {
+        pill = document.createElement("button");
+        pill.type = "button";
+        pill.className = "pt-pill";
+        pill.dataset.colIdx = i;
+        pill.dataset.header = h;
+        pill.addEventListener("click", () => {
+          const header = pill.dataset.header;
+          if (state.awiz.passthroughCols.has(header)) {
+            state.awiz.passthroughCols.delete(header);
+          } else {
+            state.awiz.passthroughCols.add(header);
+          }
+          renderAwizPassthrough();
+        });
+        container.appendChild(pill);
+      }
+      pill.textContent = h;
+      pill.classList.toggle("selected", pt.has(h));
+    });
   }
 
   // Sample preview on the mapping step: the chosen header row + next 5 rows.
@@ -4152,8 +5640,15 @@
   }
 
   function _validateMapping() {
-    const m = state.awiz.mapping;
-    if (!m.upc)   return "UPC / EAN column is required — it's the one we search on Amazon.";
+    const m    = state.awiz.mapping;
+    const mode = (state.awiz?.vettingMode || "cpg").toLowerCase();
+    if (mode === "medical") {
+      // Medical: Item ID is the primary identifier — UPC is optional
+      if (!m.itemid) return "Item ID / Part Number column is required for Medical catalog searches.";
+    } else {
+      // CPG: UPC/EAN is the primary identifier — Item ID is optional
+      if (!m.upc) return "UPC / EAN column is required — it's the one we search on Amazon.";
+    }
     if (!m.title) return "Vendor Title column is required for scoring.";
     return "";
   }
@@ -4197,7 +5692,7 @@
     // kicks off a background 3-tier SP-API search (UPC / ItemID / Title).
     // The response gives us the new run_id so we can reload the history.
     if (!state.awiz.file) {
-      alert("No file attached — please go back to step 1.");
+      showToast("No file attached — please go back to step 1.", "error");
       return;
     }
     const name = (awizEl.runName.value || state.awiz.runName || "Untitled run").trim();
@@ -4208,7 +5703,7 @@
     if ($("#awiz-search-itemid")?.checked) methods.push("ItemID");
     if ($("#awiz-search-title")?.checked)  methods.push("Title");
     if (methods.length === 0) {
-      alert("Pick at least one search method (UPC / Item ID / Title).");
+      showToast("Pick at least one search method (UPC / Item ID / Title).", "error");
       return;
     }
     const pagesPerTitle = Math.max(1, Math.min(10, parseInt($("#awiz-title-pages")?.value || "1", 10)));
@@ -4226,10 +5721,14 @@
     fd.append("search_methods", JSON.stringify(methods));
     fd.append("pages_per_title", String(pagesPerTitle));
     fd.append("ai_clean_titles", aiCleanTitles ? "true" : "false");
-    const minRankWiz = Math.max(0, parseInt($("#awiz-min-rank")?.value || "0", 10) || 0);
-    const maxRankWiz = Math.max(0, parseInt($("#awiz-max-rank")?.value || "0", 10) || 0);
+    const minRankWiz = _parseRank($("#awiz-min-rank")?.value);
+    const maxRankWiz = _parseRank($("#awiz-max-rank")?.value);
     fd.append("min_rank", String(minRankWiz));
     fd.append("max_rank", String(maxRankWiz));
+    fd.append("vetting_mode", state.awiz.vettingMode || "cpg");
+    if (state.awiz.selectedSheet) fd.append("sheet_name", state.awiz.selectedSheet);
+    const ptCols = Array.from(state.awiz.passthroughCols || []);
+    if (ptCols.length) fd.append("passthrough_cols", JSON.stringify(ptCols));
 
     awizEl.next.disabled = true;
     awizEl.next.textContent = "Starting…";
@@ -4237,11 +5736,11 @@
       const result = await api("/api/analytics/runs", { method: "POST", body: fd, form: true });
       console.log("[awiz] run created", result);
       if (result?.sp_api_configured === false) {
-        alert(
+        showToast(
           "Run created, but SP-API credentials are not configured. " +
           "Add AMZ_CLIENT_ID / AMZ_CLIENT_SECRET / REFRESH_TOKEN to .env and restart " +
           "the server to actually search Amazon."
-        );
+        , "error");
       }
       closeAwiz();
       // Jump straight to the detail view so the user sees the progress bar.
@@ -4251,7 +5750,7 @@
         loadAnalyticsRuns();
       }
     } catch (e) {
-      alert(`Could not start run: ${e.message || e}`);
+      showToast(`Could not start run: ${e.message || e}`, "error");
     } finally {
       awizEl.next.disabled = false;
       awizEl.next.textContent = "Start run";
@@ -4270,5 +5769,1731 @@
     const op = $("#awiz-title-opts");
     if (ti && op) op.classList.toggle("hidden", !ti.checked);
   });
+
+  // =========================================================================
+  //  Brand Analytics
+  // =========================================================================
+
+  // ---- Poll helpers -------------------------------------------------------
+  function _clearBARPoll() {
+    const ba = state.brandAnalytics;
+    if (ba.run.poll) { clearTimeout(ba.run.poll); ba.run.poll = null; }
+    if (ba.runsPoll)  { clearTimeout(ba.runsPoll);  ba.runsPoll = null; }
+  }
+
+  // ---- Runs list ----------------------------------------------------------
+  async function loadBrandAnalyticsRuns() {
+    try {
+      const j = await api("/api/brand-analytics/runs");
+      state.brandAnalytics.runs = j.runs || [];
+      renderBARuns();
+      const anyActive = state.brandAnalytics.runs.some(r => ["Pending","Searching"].includes(r.status));
+      if (anyActive && state.currentView === "brand-analytics") {
+        state.brandAnalytics.runsPoll = setTimeout(() => {
+          state.brandAnalytics.runsPoll = null;
+          if (state.currentView === "brand-analytics") loadBrandAnalyticsRuns();
+        }, 2500);
+      }
+    } catch(e) { /* silent */ }
+  }
+
+  function renderBARuns() {
+    const body = $("#ba-runs-body");
+    if (!body) return;
+    const runs = state.brandAnalytics.runs;
+    if (!runs.length) {
+      body.innerHTML = `<div class="empty-state" style="padding:24px 12px;"><div class="text-sm" style="color:#6b7480;">No runs yet — click New Search to start.</div></div>`;
+      return;
+    }
+    body.innerHTML = runs.map(r => {
+      const terms = Array.isArray(r.search_terms) ? r.search_terms : [];
+      const statusColor = r.status === "Complete" ? "#16a34a"
+        : r.status === "Error" ? "#dc2626"
+        : r.status === "Stopped" ? "#64748b" : "#4f46e5";
+      return `<div class="ba-run-row" data-run-id="${r.id}" style="cursor:pointer;">
+        <div>
+          <div class="font-semibold text-sm" style="color:var(--navy-800);">${escapeHtml(r.name)}</div>
+          <div class="text-xs mt-0.5" style="color:#6b7480;">${escapeHtml(terms.join(", "))}</div>
+        </div>
+        <span class="ba-run-badge ${r.search_type}">${escapeHtml(r.search_type)}</span>
+        <span class="text-xs" style="color:#64748b;">${r.item_count ?? 0} ASINs</span>
+        <span class="text-xs font-semibold" style="color:${statusColor};">${escapeHtml(r.status)}</span>
+        <button class="btn btn-secondary text-xs">Open →</button>
+      </div>`;
+    }).join("");
+    body.querySelectorAll("[data-run-id]").forEach(el => {
+      el.addEventListener("click", () => openBARun(parseInt(el.dataset.runId)));
+    });
+  }
+
+  $("#ba-refresh-runs")?.addEventListener("click", loadBrandAnalyticsRuns);
+
+  // ---- Run detail ---------------------------------------------------------
+  async function openBARun(runId) {
+    const ba = state.brandAnalytics;
+    ba.run.id   = runId;
+    ba.run.page = 1;
+    ba.run.search = "";
+    ba.run._firstRender = true;   // triggers entrance animations on first render only
+    if (ba.run.poll) { clearTimeout(ba.run.poll); ba.run.poll = null; }
+
+    $$("main > div").forEach(el => el.classList.add("hidden"));
+    const barView = $("#view-brand-analytics-run");
+    if (barView) {
+      barView.classList.remove("hidden");
+      barView.classList.remove("view-enter-anim");
+      void barView.offsetWidth;
+      barView.classList.add("view-enter-anim");
+      barView.addEventListener("animationend", () => barView.classList.remove("view-enter-anim"), { once: true });
+    }
+    state.currentView = "brand-analytics-run";
+    $$(".sidebar .nav-item[data-view]").forEach(n => n.classList.remove("active"));
+    $(`.sidebar .nav-item[data-view='brand-analytics']`)?.classList.add("active");
+
+    await fetchBARun();
+  }
+
+  async function fetchBARun() {
+    const ba = state.brandAnalytics;
+    if (!ba.run.id) return;
+    const params = new URLSearchParams({
+      limit:    ba.run.pageSize,
+      offset:   (ba.run.page - 1) * ba.run.pageSize,
+      sort_key: ba.run.sortKey,
+      sort_dir: ba.run.sortDir,
+    });
+    if (ba.run.search) params.set("search", ba.run.search);
+    try {
+      const j = await api(`/api/brand-analytics/runs/${ba.run.id}?${params}`);
+      ba.run.data = j;
+      renderBARun();
+      const active = ["Pending","Searching"].includes(j.run?.status);
+      const aiFilling = j.run?.ai_fill_status === "running";
+      if (active || aiFilling) {
+        ba.run.poll = setTimeout(() => {
+          ba.run.poll = null;
+          if (state.currentView === "brand-analytics-run") fetchBARun();
+        }, 2000);
+      }
+    } catch(e) { /* silent */ }
+  }
+
+  function renderBARun() {
+    const ba = state.brandAnalytics;
+    const j  = ba.run.data;
+    if (!j) return;
+    const run = j.run;
+    const items = j.items || [];
+
+    // Header
+    const titleEl = $("#ba-run-title");
+    if (titleEl) titleEl.textContent = run.name || "Run Detail";
+    const subEl = $("#ba-run-subtitle");
+    if (subEl) {
+      const terms = Array.isArray(run.search_terms) ? run.search_terms.join(", ") : "";
+      subEl.textContent = terms;
+    }
+
+    // Status pill
+    const pillEl = $("#ba-run-status-pill");
+    const pillTxt = $("#ba-run-status-text");
+    if (pillTxt) pillTxt.textContent = run.status;
+    if (pillEl) {
+      pillEl.style.background = run.status === "Complete" ? "#dcfce7"
+        : run.status === "Error" ? "#fee2e2"
+        : run.status === "Stopped" ? "#f1f5f9"
+        : "#ede9fe";
+      pillEl.style.color = run.status === "Complete" ? "#15803d"
+        : run.status === "Error" ? "#991b1b"
+        : run.status === "Stopped" ? "#475569"
+        : "#6d28d9";
+    }
+
+    // Toolbar buttons
+    const isComplete = run.status === "Complete";
+    const isActive   = ["Pending","Searching"].includes(run.status);
+    const aiFillActive = run.ai_fill_status === "running";
+    const aiFillDone = !aiFillActive;
+    const aiFillBtn = $("#ba-run-ai-fill-btn");
+    if (aiFillBtn) {
+      aiFillBtn.classList.toggle("hidden", !isComplete);
+      aiFillBtn.disabled = aiFillActive;
+      aiFillBtn.textContent = aiFillActive ? "AI Fill Running…" : "+ AI Fill";
+      aiFillBtn.style.opacity = aiFillActive ? "0.6" : "";
+      aiFillBtn.style.cursor  = aiFillActive ? "not-allowed" : "";
+    }
+    $("#ba-run-export-btn")?.classList.toggle("hidden", !isComplete);
+    $("#ba-run-filter-categories-btn")?.classList.toggle("hidden", !isComplete);
+    $("#ba-run-stop-btn")?.classList.toggle("hidden", !isActive);
+    $("#ba-run-delete-btn")?.classList.remove("hidden");
+
+    // Progress card
+    const progressCard = $("#ba-run-progress-card");
+    if (progressCard) {
+      progressCard.classList.toggle("hidden", !isActive);
+      if (isActive) {
+        const done  = run.progress_done  || 0;
+        const total = run.progress_total || 0;
+        const unlimited = total === 0;
+        const pct   = unlimited ? 100 : Math.round((done / total) * 100);
+        const barEl = $("#ba-run-progress-bar");
+        if (barEl) {
+          barEl.style.width = unlimited ? "100%" : `${pct}%`;
+          barEl.style.animation = unlimited ? "pulse-bar 1.5s ease-in-out infinite" : "none";
+        }
+        const phaseEl = $("#ba-run-progress-phase");
+        if (phaseEl) phaseEl.textContent = run.progress_phase || "Searching…";
+        const cntEl = $("#ba-run-progress-counts");
+        if (cntEl) cntEl.textContent = unlimited ? `${done} pages` : `${done} / ${total}`;
+      }
+    }
+
+    // AI Fill progress card
+    const aiFillCard = $("#ba-run-ai-fill-card");
+    if (aiFillCard) {
+      const aiFilling = run.ai_fill_status === "running";
+      aiFillCard.classList.toggle("hidden", !aiFilling);
+      if (aiFilling) {
+        const done  = run.ai_fill_done  || 0;
+        const total = run.ai_fill_total || 1;
+        const pct   = Math.round((done / total) * 100);
+        const barEl = $("#ba-run-ai-fill-bar");
+        if (barEl) barEl.style.width = `${pct}%`;
+        const cntEl = $("#ba-run-ai-fill-counts");
+        if (cntEl) cntEl.textContent = `${done} / ${total}`;
+      }
+    }
+
+    // Stats — mode-aware
+    const stats = j.stats || {};
+    const isMedical = run.vetting_mode === "medical";
+    const statsEl = $("#ba-run-stats");
+    if (statsEl) {
+      statsEl.classList.toggle("hidden", !isComplete && !stats.total);
+      $("#ba-stat-brands").textContent  = Array.isArray(run.search_terms) ? run.search_terms.length : "—";
+      $("#ba-stat-asins").textContent   = stats.total ?? "—";
+      $("#ba-stat-upc").textContent     = stats.with_upc ?? "—";
+      $("#ba-stat-mpn").textContent     = stats.with_mpn ?? "—";
+      const missingCount = isMedical ? (stats.missing_mpn ?? "—") : (stats.missing_upc ?? "—");
+      const missingEl = $("#ba-stat-missing");
+      if (missingEl) {
+        missingEl.textContent = missingCount;
+        const labelEl = missingEl.previousElementSibling;
+        if (labelEl) labelEl.textContent = isMedical ? "Missing MPN" : "Missing UPC/EAN";
+      }
+
+      // Entrance animations — once per run open
+      if (state.brandAnalytics.run._firstRender) {
+        state.brandAnalytics.run._firstRender = false;
+        _animateStats(statsEl);
+        _animateProgressBars(document.getElementById("view-brand-analytics-run"));
+      }
+    }
+
+    // Highlight priority columns based on mode
+    const thUpc = $("#ba-th-upc"), thEan = $("#ba-th-ean"), thMpn = $("#ba-th-mpn");
+    const priStyle = "background:#312e81;color:#fff;";
+    const normStyle = "";
+    if (thUpc) thUpc.style.cssText = isMedical ? normStyle : priStyle;
+    if (thEan) thEan.style.cssText = isMedical ? normStyle : priStyle;
+    if (thMpn) thMpn.style.cssText = isMedical ? priStyle : normStyle;
+
+    // Freshness banner
+    const freshnessEl = $("#ba-run-freshness-banner");
+    if (freshnessEl && run.last_asin_updated_at) {
+      try {
+        const dt = new Date(run.last_asin_updated_at);
+        const ageDays = Math.round((Date.now() - dt.getTime()) / 86400000);
+        if (ageDays > 7) {
+          freshnessEl.classList.remove("hidden");
+          const ftxt = $("#ba-run-freshness-text");
+          if (ftxt) ftxt.textContent = `Last updated ${ageDays} day${ageDays === 1 ? "" : "s"} ago`;
+        } else {
+          freshnessEl.classList.add("hidden");
+        }
+      } catch { freshnessEl.classList.add("hidden"); }
+    } else if (freshnessEl) {
+      freshnessEl.classList.add("hidden");
+    }
+
+    // Amazon brand names panel — shown only when run is Complete
+    // Surfaces the exact brand field values Amazon has stored (e.g. "Hartmann H")
+    // so users know what names to add for better recall on a re-run.
+    const brandNamesPanel = $("#ba-run-brand-names-panel");
+    if (brandNamesPanel && isComplete) {
+      brandNamesPanel.classList.remove("hidden");
+      const container = $("#ba-run-brand-names-list");
+      // Wire toggle button once (guard against re-wiring on every poll tick)
+      const toggleBtn = $("#ba-brand-names-toggle");
+      const dropdown  = $("#ba-brand-names-dropdown");
+      const chevron   = $("#ba-brand-names-chevron");
+      if (toggleBtn && !toggleBtn.dataset.wired) {
+        toggleBtn.dataset.wired = "1";
+        let _bnOpen = false;
+        function _closeBrandDropdown() {
+          _bnOpen = false;
+          if (dropdown) dropdown.style.display = "none";
+          if (chevron)  chevron.style.transform = "rotate(0deg)";
+        }
+        toggleBtn.addEventListener("click", e => {
+          e.stopPropagation();
+          _bnOpen = !_bnOpen;
+          if (dropdown) dropdown.style.display = _bnOpen ? "block" : "none";
+          if (chevron)  chevron.style.transform = _bnOpen ? "rotate(180deg)" : "rotate(0deg)";
+        });
+        document.addEventListener("click", e => {
+          if (_bnOpen && brandNamesPanel && !brandNamesPanel.contains(e.target)) {
+            _closeBrandDropdown();
+          }
+        });
+      }
+      if (container && !container.dataset.loaded) {
+        container.dataset.loaded = "1";
+        container.innerHTML = `<span style="color:#94a3b8;font-size:12px;">Loading…</span>`;
+        api(`/api/brand-analytics/runs/${state.brandAnalytics.run.id}/brand-names`)
+          .then(data => {
+            const names = (data.brand_names || []).filter(n => n.brand_name && n.brand_name !== "(unknown)");
+            const searchTerms = Array.isArray(run.search_terms) ? run.search_terms.map(s => s.toLowerCase()) : [];
+            if (!names.length) {
+              container.innerHTML = `<span style="color:#94a3b8;font-size:12px;">No brand names recorded (older run)</span>`;
+              return;
+            }
+            // Count "new" names and update the badge on the toggle button
+            const newCount = names.filter(n => !searchTerms.includes(n.brand_name.toLowerCase())).length;
+            const newBadge = $("#ba-brand-names-new-badge");
+            if (newBadge && newCount > 0) {
+              newBadge.textContent = `${newCount} new`;
+              newBadge.classList.remove("hidden");
+            }
+            container.innerHTML = names.map(n => {
+              const isNew = !searchTerms.includes(n.brand_name.toLowerCase());
+              const badge = isNew
+                ? `<span style="font-size:10px;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;margin-left:4px;font-weight:700;">new</span>`
+                : "";
+              return `<span style="display:inline-flex;align-items:center;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:4px 10px;font-size:12px;gap:4px;">
+                <span style="font-weight:500;color:#1e293b;">${escapeHtml(n.brand_name)}</span>
+                <span style="color:#94a3b8;">(${n.count.toLocaleString()})</span>
+                ${badge}
+              </span>`;
+            }).join("");
+          })
+          .catch(() => { container.innerHTML = `<span style="color:#94a3b8;font-size:12px;">—</span>`; });
+      }
+    } else if (brandNamesPanel) {
+      brandNamesPanel.classList.add("hidden");
+    }
+
+    // Items table
+    const tbody = $("#ba-run-items-body");
+    if (!tbody) return;
+    if (!items.length) {
+      tbody.innerHTML = `<tr><td colspan="12" class="text-center" style="color:#94a3b8;padding:24px;">${isActive ? "Searching…" : "No results."}</td></tr>`;
+    } else {
+      tbody.innerHTML = items.map(item => {
+        const img = item.image_url
+          ? `<img src="${escapeHtml(item.image_url)}" alt="" loading="lazy" />`
+          : `<div style="width:36px;height:36px;background:#f1f5f9;border-radius:4px;"></div>`;
+        const idCell = (val, aiVal, field) => {
+          // AI-filled values appear directly in the main column — no badge, no separate column.
+          // Pre-fill the inline editor with the displayed value so the user can confirm/correct it.
+          const display = val || aiVal || "";
+          const style = `cursor:pointer;min-width:80px;padding:4px 6px;border-radius:4px;transition:background 0.15s;${display ? "" : "color:#94a3b8;"}`;
+          return `<td class="ba-inline-cell" data-asin="${escapeHtml(item.asin)}" data-field="${field}" data-val="${escapeHtml(display)}" style="${style}" title="Click to edit">${escapeHtml(display||"—")}</td>`;
+        };
+        return `<tr>
+          <td>${escapeHtml(item.brand_searched)}</td>
+          <td><a href="https://amazon.com/dp/${escapeHtml(item.asin)}" target="_blank" style="color:#4f46e5;text-decoration:none;" title="View on Amazon">${escapeHtml(item.asin)}</a></td>
+          <td>${img}</td>
+          <td style="max-width:220px;"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(item.title||'')}">${escapeHtml(item.title||"—")}</div></td>
+          <td>${item.bsr != null ? item.bsr.toLocaleString() : "—"}</td>
+          <td>${escapeHtml(item.bsr_category||"—")}</td>
+          <td style="white-space:nowrap;">${item.pack_qty ? escapeHtml(item.pack_qty) : "<span style='color:#94a3b8'>—</span>"}</td>
+          <td style="white-space:nowrap;">${item.uom_qty ? escapeHtml(item.uom_qty) : "<span style='color:#94a3b8'>—</span>"}</td>
+          ${idCell(item.upc,  item.ai_upc,  "upc")}
+          ${idCell(item.ean,  item.ai_ean,  "ean")}
+          ${idCell(item.gtin, item.ai_gtin, "gtin")}
+          ${idCell(item.mpn,  item.ai_mpn,  "mpn")}
+        </tr>`;
+      }).join("");
+
+      // Inline cell click-to-edit
+      tbody.querySelectorAll(".ba-inline-cell").forEach(td => {
+        td.addEventListener("mouseenter", () => { td.style.background = "#f1f5f9"; });
+        td.addEventListener("mouseleave", () => { if (!td.dataset.editing) td.style.background = ""; });
+        td.addEventListener("click", () => {
+          if (td.dataset.editing) return;
+          td.dataset.editing = "1";
+          const cur = td.dataset.val || "";
+          td.innerHTML = `<input type="text" value="${escapeHtml(cur)}" style="width:100%;min-width:80px;padding:2px 4px;border:1px solid #6366f1;border-radius:4px;font-size:12px;outline:none;" />`;
+          const inp = td.querySelector("input");
+          inp.focus(); inp.select();
+          const save = async () => {
+            const newVal = inp.value.trim();
+            delete td.dataset.editing;
+            td.style.background = "";
+            const runId = state.brandAnalytics.run.id;
+            const asin  = td.dataset.asin;
+            const field = td.dataset.field;
+            if (newVal === cur) { td.textContent = cur || "—"; td.dataset.val = cur; return; }
+            try {
+              await api(`/api/brand-analytics/runs/${runId}/items/${asin}`, {
+                method: "PATCH",
+                body: { [field]: newVal || null },
+              });
+              td.dataset.val = newVal;
+              td.textContent = newVal || "—";
+            } catch(e) {
+              td.textContent = cur || "—";
+              showToast(`Save failed: ${e.message}`, "error");
+            }
+          };
+          inp.addEventListener("blur", save);
+          inp.addEventListener("keydown", e => {
+            if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+            if (e.key === "Escape") { delete td.dataset.editing; td.style.background = ""; td.textContent = cur || "—"; inp.removeEventListener("blur", save); }
+          });
+        });
+      });
+    }
+
+    // Pagination
+    const total = j.filtered_count ?? j.total_items ?? 0;
+    const pageSize = ba.run.pageSize;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const pagEl = $("#ba-run-pagination");
+    if (pagEl) {
+      pagEl.innerHTML = _renderBAPagination(ba.run.page, totalPages, total);
+      pagEl.querySelectorAll("[data-ba-page]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          ba.run.page = parseInt(btn.dataset.baPage);
+          fetchBARun();
+        });
+      });
+    }
+  }
+
+  function _baIdCell(val, aiVal, asin, field) {
+    if (val) return `<span>${escapeHtml(val)}</span>`;
+    if (aiVal) return `<span class="ba-ai-badge">AI</span> <span style="color:#475569;">${escapeHtml(aiVal)}</span>`;
+    return `<span class="ba-id-null">—</span>`;
+  }
+
+  function _renderBAPagination(page, totalPages, total) {
+    if (totalPages <= 1) return `<span class="text-xs" style="color:#94a3b8;">${total.toLocaleString()} results</span>`;
+    let html = `<span class="text-xs" style="color:#94a3b8;margin-right:8px;">${total.toLocaleString()} results</span>`;
+    const mkBtn = (p, lbl, disabled) =>
+      `<button data-ba-page="${p}" class="page-btn${disabled ? ' disabled' : ''}" ${disabled ? 'disabled' : ''}>${lbl}</button>`;
+    html += mkBtn(page - 1, "‹", page === 1);
+    const range = [];
+    for (let i = Math.max(1, page - 2); i <= Math.min(totalPages, page + 2); i++) range.push(i);
+    range.forEach(p => {
+      html += `<button data-ba-page="${p}" class="page-btn${p === page ? ' active' : ''}">${p}</button>`;
+    });
+    html += mkBtn(page + 1, "›", page === totalPages);
+    return html;
+  }
+
+  // ---- Inline edit modal --------------------------------------------------
+  function _openBAEdit(btn) {
+    const asin = btn.dataset.baEdit;
+    $("#ba-edit-asin").value  = asin;
+    $("#ba-edit-upc").value   = btn.dataset.baUpc  || "";
+    $("#ba-edit-ean").value   = btn.dataset.baEan  || "";
+    $("#ba-edit-gtin").value  = btn.dataset.baGtin || "";
+    $("#ba-edit-mpn").value   = btn.dataset.baMpn  || "";
+    $("#ba-edit-modal").classList.remove("hidden");
+  }
+  $("#ba-edit-cancel")?.addEventListener("click", () => $("#ba-edit-modal").classList.add("hidden"));
+  $("#ba-edit-save")?.addEventListener("click", async () => {
+    const runId = state.brandAnalytics.run.id;
+    const asin  = $("#ba-edit-asin").value;
+    try {
+      await api(`/api/brand-analytics/runs/${runId}/items/${asin}`, {
+        method: "PATCH",
+        body: {
+          upc:  $("#ba-edit-upc").value.trim()  || null,
+          ean:  $("#ba-edit-ean").value.trim()  || null,
+          gtin: $("#ba-edit-gtin").value.trim() || null,
+          mpn:  $("#ba-edit-mpn").value.trim()  || null,
+        },
+      });
+      $("#ba-edit-modal").classList.add("hidden");
+      fetchBARun();
+    } catch(e) { showToast(e.message, "error"); }
+  });
+
+  // ---- Back button --------------------------------------------------------
+  $("#ba-run-back")?.addEventListener("click", () => {
+    _clearBARPoll();
+    state.brandAnalytics.run.id   = null;
+    state.brandAnalytics.run.data = null;
+    switchView("brand-analytics");
+  });
+
+  // ---- Toolbar buttons ----------------------------------------------------
+  $("#ba-run-export-btn")?.addEventListener("click", () => {
+    const id = state.brandAnalytics.run.id;
+    if (id) window.location.href = `/api/brand-analytics/runs/${id}/export`;
+  });
+
+  // ---- Category filter modal ----------------------------------------------
+  let _baCatFilterCategories = [];  // [{category, count, checked}]
+
+  async function _openBACategoryFilter() {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    const modal  = $("#ba-category-filter-modal");
+    const body   = $("#ba-cat-filter-body");
+    const sumEl  = $("#ba-cat-filter-summary");
+    if (!modal || !body) return;
+
+    body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:24px 0;">Loading categories…</div>`;
+    sumEl.textContent = "—";
+    modal.classList.remove("hidden");
+
+    try {
+      const j = await api(`/api/brand-analytics/runs/${id}/categories`);
+      // Default: all unchecked (checked = "mark for removal")
+      _baCatFilterCategories = (j.categories || []).map(c => ({...c, checked: false}));
+      _renderBACatFilterBody();
+    } catch(e) {
+      body.innerHTML = `<div class="text-sm" style="color:#b91c1c;">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderBACatFilterBody() {
+    const body  = $("#ba-cat-filter-body");
+    const sumEl = $("#ba-cat-filter-summary");
+    if (!body) return;
+
+    const cats = _baCatFilterCategories;
+    const total   = cats.reduce((s, c) => s + c.count, 0);
+    const removed = cats.filter(c => c.checked).reduce((s, c) => s + c.count, 0);
+    const kept    = total - removed;
+
+    sumEl.textContent = removed > 0
+      ? `${removed.toLocaleString()} ASIN${removed !== 1 ? "s" : ""} will be removed · ${kept.toLocaleString()} kept`
+      : `No categories selected for removal`;
+
+    if (!cats.length) {
+      body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:16px 0;">No categories found.</div>`;
+      return;
+    }
+
+    body.innerHTML = cats.map((c, i) => `
+      <label class="ba-cat-row" data-cat-idx="${i}" style="${c.checked ? 'background:#fff7ed;' : ''}">
+        <input type="checkbox" class="ba-cat-chk" data-cat-idx="${i}" ${c.checked ? "checked" : ""} />
+        <span class="ba-cat-name" style="${c.checked ? 'text-decoration:line-through;color:#b45309;' : ''}">${escapeHtml(c.category) || "<em style='color:#94a3b8'>(Blanks)</em>"}</span>
+        <span class="ba-cat-count">${c.count.toLocaleString()}</span>
+      </label>
+    `).join("");
+
+    // Bind change events — re-render to apply strikethrough styling live
+    body.querySelectorAll(".ba-cat-chk").forEach(chk => {
+      chk.addEventListener("change", () => {
+        const idx = parseInt(chk.dataset.catIdx);
+        _baCatFilterCategories[idx].checked = chk.checked;
+        _renderBACatFilterBody();
+      });
+    });
+  }
+
+  function _renderBACatSummary() {
+    const sumEl = $("#ba-cat-filter-summary");
+    if (!sumEl) return;
+    const cats    = _baCatFilterCategories;
+    const total   = cats.reduce((s, c) => s + c.count, 0);
+    const removed = cats.filter(c => c.checked).reduce((s, c) => s + c.count, 0);
+    const kept    = total - removed;
+    sumEl.textContent = removed > 0
+      ? `${removed.toLocaleString()} ASIN${removed !== 1 ? "s" : ""} will be removed · ${kept.toLocaleString()} kept`
+      : `No categories selected for removal`;
+  }
+
+  function _closeBACatFilter() {
+    $("#ba-category-filter-modal")?.classList.add("hidden");
+  }
+
+  $("#ba-run-filter-categories-btn")?.addEventListener("click", _openBACategoryFilter);
+  $("#ba-cat-filter-close")?.addEventListener("click",  _closeBACatFilter);
+  $("#ba-cat-filter-cancel")?.addEventListener("click", _closeBACatFilter);
+
+  $("#ba-cat-filter-apply")?.addEventListener("click", async () => {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    const toRemove = _baCatFilterCategories.filter(c => c.checked).map(c => c.category);
+    if (!toRemove.length) {
+      _closeBACatFilter();
+      return;
+    }
+    const applyBtn = $("#ba-cat-filter-apply");
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Removing…"; }
+    try {
+      const j = await api(`/api/brand-analytics/runs/${id}/filter-categories`, {
+        method: "POST",
+        body: { remove_categories: toRemove },
+      });
+      _closeBACatFilter();
+      showToast(`Removed ${j.deleted.toLocaleString()} ASIN${j.deleted !== 1 ? "s" : ""} · ${j.remaining.toLocaleString()} remaining`, "success");
+      // Reload the run detail
+      state.brandAnalytics.run.page = 1;
+      await fetchBARun();
+    } catch(e) {
+      showToast(`Filter failed: ${e.message}`, "error");
+    } finally {
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = "Remove Unchecked"; }
+    }
+  });
+
+  $("#ba-run-ai-fill-btn")?.addEventListener("click", async () => {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    const modal   = $("#ba-ai-fill-modal");
+    const descEl  = $("#ba-ai-fill-modal-desc");
+    const cntEl   = $("#ba-ai-fill-modal-count");
+    const modelEl = $("#ba-ai-fill-modal-model");
+    const costEl  = $("#ba-ai-fill-modal-cost");
+    const confirmBtn = $("#ba-ai-fill-modal-confirm");
+    if (!modal) return;
+
+    // Reset and open
+    if (descEl)  descEl.textContent  = "Loading estimate…";
+    if (cntEl)   cntEl.textContent   = "—";
+    if (modelEl) modelEl.textContent = "—";
+    if (costEl)  costEl.textContent  = "—";
+    if (confirmBtn) confirmBtn.disabled = true;
+    modal.classList.remove("hidden");
+
+    try {
+      const est = await api(`/api/brand-analytics/runs/${id}/ai_fill/estimate`);
+      if (!est.available) {
+        if (descEl) descEl.textContent = "No AI client configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.";
+        return;
+      }
+      if (cntEl)   cntEl.textContent   = est.item_count.toLocaleString();
+      if (modelEl) modelEl.textContent = est.model;
+      if (costEl)  costEl.textContent  = est.item_count === 0 ? "$0.00" : `~$${est.cost_usd_est.toFixed(4)}`;
+      if (descEl)  descEl.textContent  = est.item_count === 0
+        ? "All items already have AI-extracted identifiers."
+        : `AI will scan each item's title and description for MPNs (model numbers). UPC/EAN/GTIN are rarely stated in product text but will be extracted if explicitly present.`;
+      if (confirmBtn) confirmBtn.disabled = est.item_count === 0;
+    } catch(e) {
+      if (descEl) descEl.textContent = `Estimate failed: ${e.message}`;
+    }
+  });
+
+  $("#ba-run-ai-fill-stop")?.addEventListener("click", async () => {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    try {
+      await api(`/api/brand-analytics/runs/${id}/ai_fill/stop`, {method:"POST"});
+      fetchBARun();
+    } catch(e) { showToast(`Stop error: ${e.message}`, "error"); }
+  });
+
+  $("#ba-ai-fill-modal-cancel")?.addEventListener("click", () => {
+    $("#ba-ai-fill-modal")?.classList.add("hidden");
+  });
+  $("#ba-ai-fill-modal")?.addEventListener("click", (e) => {
+    if (e.target === $("#ba-ai-fill-modal")) $("#ba-ai-fill-modal").classList.add("hidden");
+  });
+
+  $("#ba-ai-fill-modal-confirm")?.addEventListener("click", async () => {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    $("#ba-ai-fill-modal")?.classList.add("hidden");
+    try {
+      await api(`/api/brand-analytics/runs/${id}/ai_fill`, {method:"POST"});
+      fetchBARun();
+    } catch(e) { showToast(`AI Fill error: ${e.message}`, "error"); }
+  });
+
+  $("#ba-run-stop-btn")?.addEventListener("click", async () => {
+    const id = state.brandAnalytics.run.id;
+    if (!id) return;
+    try {
+      await api(`/api/brand-analytics/runs/${id}/control`, {
+        method:"POST",
+        body: {action:"stop"},
+      });
+      fetchBARun();
+    } catch(e) { showToast(e.message, "error"); }
+  });
+
+  $("#ba-run-delete-btn")?.addEventListener("click", async () => {
+    if (!confirm("Delete this run and all its data?")) return;
+    const id = state.brandAnalytics.run.id;
+    try {
+      await api(`/api/brand-analytics/runs/${id}`, {method:"DELETE"});
+      _clearBARPoll();
+      switchView("brand-analytics");
+    } catch(e) { showToast(e.message, "error"); }
+  });
+
+  // ---- Freshness refresh --------------------------------------------------
+  $("#ba-run-refresh-btn")?.addEventListener("click", () => {
+    const wiz = state.brandAnalytics.wizard;
+    const run = state.brandAnalytics.run.data?.run;
+    if (!run) return;
+    wiz.inputName  = run.name;
+    wiz.searchType = run.search_type || "brand";
+    openBAWizard(true);
+  });
+
+  // ---- Search/filter ------------------------------------------------------
+  $("#ba-run-search-btn")?.addEventListener("click", () => {
+    state.brandAnalytics.run.search = $("#ba-run-search")?.value || "";
+    state.brandAnalytics.run.page   = 1;
+    fetchBARun();
+  });
+  $("#ba-run-search")?.addEventListener("keydown", e => {
+    if (e.key === "Enter") { state.brandAnalytics.run.search = e.target.value || ""; state.brandAnalytics.run.page = 1; fetchBARun(); }
+  });
+
+  // ---- Sort BSR header ---------------------------------------------------
+  $("#ba-sort-bsr")?.addEventListener("click", () => {
+    const ba = state.brandAnalytics;
+    ba.run.sortKey = "bsr";
+    ba.run.sortDir = ba.run.sortDir === "asc" ? "desc" : "asc";
+    ba.run.page    = 1;
+    fetchBARun();
+  });
+
+  // ---- Cache modal --------------------------------------------------------
+  let _baCachePendingBody = null;
+  let _baCacheForceRefresh = false;
+
+  function _showBACacheModal(msg, cachedRunId) {
+    const modal = $("#ba-cache-modal");
+    const msgEl = $("#ba-cache-msg");
+    if (msgEl) msgEl.textContent = msg;
+    if (modal) modal.classList.remove("hidden");
+    _baCachePendingBody = cachedRunId;
+  }
+
+  $("#ba-cache-use")?.addEventListener("click", () => {
+    $("#ba-cache-modal").classList.add("hidden");
+    if (_baCachePendingBody) openBARun(_baCachePendingBody);
+  });
+  $("#ba-cache-refresh")?.addEventListener("click", () => {
+    $("#ba-cache-modal").classList.add("hidden");
+    _baCacheForceRefresh = true;
+    _submitBAWiz();
+  });
+
+  // ---- New Search button --------------------------------------------------
+  $("#ba-new-search-btn")?.addEventListener("click", () => openBAWizard());
+
+  // =========================================================================
+  //  Brand Analytics Wizard
+  // =========================================================================
+
+  function openBAWizard(forceRefresh = false) {
+    _baCacheForceRefresh = forceRefresh;
+    const wiz = state.brandAnalytics.wizard;
+    // Full reset
+    wiz.step = 1;
+    wiz.inputName = "";
+    wiz.searchType = "brand";
+    wiz.vettingMode = "cpg";
+    wiz.discoveredBrands = [];
+    wiz.cacheInfo = null;
+    wiz.minRank = 0;
+    wiz.maxRank = 0;
+    wiz.pagesPerBrand = 10;
+
+    // Reset type buttons
+    $$("[data-batype]").forEach(btn => {
+      const isDefault = btn.dataset.batype === "brand";
+      btn.classList.toggle("active", isDefault);
+      btn.style.background = isDefault ? "#4f46e5" : "#f8fafc";
+      btn.style.color = isDefault ? "#fff" : "#64748b";
+      btn.style.borderColor = isDefault ? "#4f46e5" : "#e2e8f0";
+    });
+    // Reset mode buttons
+    $$("[data-bamode]").forEach(btn => {
+      const isDefault = btn.dataset.bamode === "cpg";
+      btn.style.background = isDefault ? "#16a34a" : "#f8fafc";
+      btn.style.color = isDefault ? "#fff" : "#64748b";
+      btn.style.borderColor = isDefault ? "#16a34a" : "#e2e8f0";
+    });
+
+    // Pre-populate autocomplete from library
+    const libNames = state.brandAnalytics.library.map(e => e.name);
+    const dl = $("#ba-wiz-name-list");
+    if (dl) dl.innerHTML = libNames.map(n => `<option value="${escapeHtml(n)}"></option>`).join("");
+
+    // Reset fields
+    const nameInp = $("#ba-wiz-name");
+    if (nameInp) nameInp.value = "";
+    const pfx = new Date().toISOString().slice(0, 10);
+    const runNameInp = $("#ba-wiz-run-name");
+    if (runNameInp) runNameInp.value = "Brand — " + pfx;
+    const feedbackEl = $("#ba-wiz-name-feedback");
+    if (feedbackEl) feedbackEl.textContent = "";
+    const minInp = $("#ba-wiz-min-rank"); if (minInp) minInp.value = "0";
+    const maxInp = $("#ba-wiz-max-rank"); if (maxInp) maxInp.value = "0";
+    const pgsInp = $("#ba-wiz-pages");   if (pgsInp) pgsInp.value = "10";
+
+    _baWizGoTo(1);
+    $("#ba-wizard-modal").classList.remove("hidden");
+    nameInp?.focus();
+  }
+
+  // Step type buttons
+  $$("[data-batype]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.brandAnalytics.wizard.searchType = btn.dataset.batype;
+      $$("[data-batype]").forEach(b => {
+        const active = b.dataset.batype === btn.dataset.batype;
+        b.style.background = active ? "#4f46e5" : "#f8fafc";
+        b.style.color = active ? "#fff" : "#64748b";
+        b.style.borderColor = active ? "#4f46e5" : "#e2e8f0";
+      });
+    });
+  });
+
+  $$("[data-bamode]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.brandAnalytics.wizard.vettingMode = btn.dataset.bamode;
+      $$("[data-bamode]").forEach(b => {
+        const active = b.dataset.bamode === btn.dataset.bamode;
+        b.style.background = active ? "#16a34a" : "#f8fafc";
+        b.style.color = active ? "#fff" : "#64748b";
+        b.style.borderColor = active ? "#16a34a" : "#e2e8f0";
+      });
+    });
+  });
+
+  function _baWizGoTo(step) {
+    state.brandAnalytics.wizard.step = step;
+    $$("[data-bawiz-panel]").forEach(p => p.classList.toggle("hidden", parseInt(p.dataset.bawizPanel) !== step));
+    $$("[data-bawiz-indicator]").forEach(ind => {
+      const n = parseInt(ind.dataset.bawizIndicator);
+      ind.classList.toggle("active", n === step);
+      ind.classList.toggle("done",   n < step);
+    });
+    const backBtn = $("#ba-wiz-back");
+    const nextBtn = $("#ba-wiz-next");
+    if (backBtn) backBtn.classList.toggle("hidden", step === 1);
+    if (nextBtn) {
+      nextBtn.textContent = step === 4 ? "Start Search" : "Next";
+    }
+    // Summary on step 4
+    if (step === 4) _buildBAWizSummary();
+  }
+
+  function _buildBAWizSummary() {
+    const wiz = state.brandAnalytics.wizard;
+    const selectedSubs    = wiz.discoveredBrands.filter(b => b.selected && b.type !== "alias").map(b => b.name);
+    const selectedAliases = wiz.discoveredBrands.filter(b => b.selected && b.type === "alias").map(b => b.name);
+    const selected = [...selectedSubs, ...selectedAliases];
+    const sumEl = $("#ba-wiz-summary");
+    if (!sumEl) return;
+    sumEl.innerHTML = `
+      <div><b>Name:</b> ${escapeHtml(wiz.inputName)}</div>
+      <div><b>Type:</b> ${escapeHtml(wiz.searchType)} · <b>Mode:</b> ${wiz.vettingMode === "medical" ? "Medical (MPN priority)" : "CPG (UPC/EAN priority)"}</div>
+      <div><b>Sub-brands to search:</b> ${selectedSubs.map(n=>escapeHtml(n)).join(", ") || "—"}</div>
+      ${selectedAliases.length ? `<div><b>Aliases included:</b> <span style="color:#6366f1;">${selectedAliases.map(n=>escapeHtml(n)).join(", ")}</span></div>` : ""}
+      <div><b>BSR range:</b> ${wiz.minRank||0} – ${wiz.maxRank||0} (0 = no limit)</div>
+      <div><b>Pages per brand:</b> ${wiz.pagesPerBrand === 0 ? "0 (no limit)" : wiz.pagesPerBrand}</div>
+    `;
+  }
+
+  // Back / Next
+  $("#ba-wiz-close")?.addEventListener("click", () => $("#ba-wizard-modal").classList.add("hidden"));
+  $("#ba-wiz-back")?.addEventListener("click", () => {
+    const step = state.brandAnalytics.wizard.step;
+    if (step > 1) _baWizGoTo(step - 1);
+  });
+  $("#ba-wiz-next")?.addEventListener("click", async () => {
+    const wiz = state.brandAnalytics.wizard;
+    if (wiz.step === 1) {
+      // Validate name
+      const name = $("#ba-wiz-name")?.value.trim();
+      if (!name) {
+        const fb = $("#ba-wiz-name-feedback");
+        if (fb) { fb.textContent = "Please enter a name."; fb.style.color = "#b91c1c"; }
+        return;
+      }
+      wiz.inputName = name;
+      const pfx = new Date().toISOString().slice(0, 10);
+      const runNameInp = $("#ba-wiz-run-name");
+      if (runNameInp && !runNameInp.value.trim()) runNameInp.value = name + " — " + pfx;
+      _baWizGoTo(2);
+      // Always show the brands list section (add-manually input is always available)
+      $("#ba-wiz-brands-list")?.classList.remove("hidden");
+      // Auto-discover if cached in library
+      const cached = state.brandAnalytics.library.find(e => e.name.toLowerCase() === name.toLowerCase());
+      if (cached) {
+        const subList   = (cached.sub_brands || []);
+        const aliasList = (cached.aliases     || []);
+        const uniqueSubs    = [...new Set([cached.name, ...subList])];
+        const uniqueAliases = [...new Set(aliasList.filter(a => !uniqueSubs.includes(a)))];
+        wiz.discoveredBrands = [
+          ...uniqueSubs.map(n    => ({name: n, selected: true,  type: "sub_brand"})),
+          ...uniqueAliases.map(n => ({name: n, selected: false, type: "alias"})),
+        ];
+        _renderBABrandsCheckboxes();
+        const statusEl = $("#ba-wiz-discover-status");
+        if (statusEl) statusEl.textContent = "Loaded from Library ✓";
+      }
+    } else if (wiz.step === 2) {
+      if (!wiz.discoveredBrands.filter(b => b.selected).length) {
+        const fb = $("#ba-wiz-discover-status");
+        if (fb) fb.textContent = "Please discover sub-brands or add at least one brand manually.";
+        return;
+      }
+      // Copy configure defaults
+      const minEl = $("#ba-wiz-min-rank");
+      const maxEl = $("#ba-wiz-max-rank");
+      const pgsEl = $("#ba-wiz-pages");
+      wiz.minRank = parseInt(minEl?.value || "0") || 0;
+      wiz.maxRank = parseInt(maxEl?.value || "0") || 0;
+      const _ppb1 = parseInt(pgsEl?.value ?? "10"); wiz.pagesPerBrand = isNaN(_ppb1) ? 10 : Math.max(0, _ppb1);
+      _baWizGoTo(3);
+    } else if (wiz.step === 3) {
+      wiz.minRank = parseInt($("#ba-wiz-min-rank")?.value || "0") || 0;
+      wiz.maxRank = parseInt($("#ba-wiz-max-rank")?.value || "0") || 0;
+      const _ppb2 = parseInt($("#ba-wiz-pages")?.value ?? "10"); wiz.pagesPerBrand = isNaN(_ppb2) ? 10 : Math.max(0, _ppb2);
+      const runName = $("#ba-wiz-run-name")?.value.trim();
+      if (!runName) { showToast("Please enter a run name.", "error"); return; }
+      _baWizGoTo(4);
+    } else if (wiz.step === 4) {
+      await _submitBAWiz();
+    }
+  });
+
+  // Discover sub-brands button
+  $("#ba-wiz-discover-btn")?.addEventListener("click", async () => {
+    const wiz = state.brandAnalytics.wizard;
+    const btn       = $("#ba-wiz-discover-btn");
+    const statusEl  = $("#ba-wiz-discover-status");
+    const progWrap  = $("#ba-wiz-discover-progress");
+    const barEl     = $("#ba-wiz-discover-bar");
+    const phaseEl   = $("#ba-wiz-discover-phase");
+    const etaEl     = $("#ba-wiz-discover-eta");
+
+    if (btn) { btn.disabled = true; btn.textContent = "Discovering…"; }
+    if (statusEl) statusEl.textContent = "";
+
+    // Animate progress: ramp to 90% over ~6s, then hold until done
+    const ESTIMATED_MS = 6000;
+    let startTime = Date.now();
+    let animFrame;
+    let pct = 0;
+
+    function _tick() {
+      const elapsed = Date.now() - startTime;
+      // Ease-out curve: fast at first, slows near 90%
+      pct = 90 * (1 - Math.exp(-elapsed / (ESTIMATED_MS * 0.6)));
+      if (barEl) barEl.style.width = `${pct.toFixed(1)}%`;
+      const remaining = Math.max(0, Math.round((ESTIMATED_MS - elapsed) / 1000));
+      if (etaEl) etaEl.textContent = remaining > 0 ? `~${remaining}s remaining` : "Finishing…";
+      if (phaseEl) phaseEl.textContent = elapsed < 1500 ? "Contacting AI…" : "Analyzing brand…";
+      if (pct < 89.5) animFrame = requestAnimationFrame(_tick);
+    }
+
+    if (progWrap) progWrap.classList.remove("hidden");
+    if (barEl) barEl.style.width = "0%";
+    animFrame = requestAnimationFrame(_tick);
+
+    try {
+      const j = await api("/api/brand-analytics/discover", {
+        method: "POST",
+        body: {name: wiz.inputName, entity_type: wiz.searchType},
+      });
+
+      // Complete the bar
+      cancelAnimationFrame(animFrame);
+      if (barEl) barEl.style.width = "100%";
+      if (phaseEl) phaseEl.textContent = j.cached ? "Loaded from Library ✓" : "Done ✓";
+      if (etaEl) etaEl.textContent = "";
+
+      const result = j.result || {};
+      const subs    = Array.isArray(result.sub_brands) ? result.sub_brands : [wiz.inputName];
+      const aliases = Array.isArray(result.aliases)    ? result.aliases    : [];
+      const uniqueSubs    = [...new Set(subs)];
+      const uniqueAliases = [...new Set(aliases.filter(a => !uniqueSubs.includes(a)))];
+      wiz.discoveredBrands = [
+        ...uniqueSubs.map(n    => ({name: n, selected: true,  type: "sub_brand"})),
+        ...uniqueAliases.map(n => ({name: n, selected: false, type: "alias"})),
+      ];
+      _renderBABrandsCheckboxes();
+      if (statusEl) statusEl.textContent = j.cached ? "From Library ✓" : `AI discovered ${uniqueSubs.length} sub-brand(s), ${uniqueAliases.length} alias(es) ✓`;
+
+      // Hide progress bar after a moment
+      setTimeout(() => { if (progWrap) progWrap.classList.add("hidden"); }, 1200);
+
+      loadBrandLibrary();
+    } catch(e) {
+      cancelAnimationFrame(animFrame);
+      if (progWrap) progWrap.classList.add("hidden");
+      if (statusEl) { statusEl.textContent = `Error: ${e.message}`; statusEl.style.color = "#dc2626"; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Discover Sub-brands"; }
+    }
+  });
+
+  function _renderBABrandsCheckboxes() {
+    const wiz = state.brandAnalytics.wizard;
+    const container = $("#ba-wiz-brands-checkboxes");
+    const listEl = $("#ba-wiz-brands-list");
+    if (!container || !listEl) return;
+    listEl.classList.remove("hidden");
+
+    const subBrands = wiz.discoveredBrands.filter(b => b.type !== "alias");
+    const aliases   = wiz.discoveredBrands.filter(b => b.type === "alias");
+
+    const manuals = wiz.discoveredBrands.filter(b => b.type === "manual");
+
+    const renderGroup = (items, label, labelColor) => {
+      if (!items.length) return "";
+      const header = `<div class="text-xs font-semibold mt-2 mb-1" style="color:${labelColor};">${label}</div>`;
+      const checks = items.map(b => {
+        const i = wiz.discoveredBrands.indexOf(b);
+        return `<div class="flex items-center gap-2 ba-brand-row">
+          <input type="checkbox" data-ba-brand="${i}" ${b.selected ? "checked" : ""} style="flex-shrink:0;" />
+          <span class="text-sm" style="color:#1e293b;flex:1;">${escapeHtml(b.name)}</span>
+          <button type="button" data-ba-brand-delete="${i}" title="Remove" class="ba-brand-remove-btn" aria-label="Remove">×</button>
+        </div>`;
+      }).join("");
+      return header + checks;
+    };
+
+    container.innerHTML =
+      renderGroup(subBrands, "Sub-brands", "#334155") +
+      renderGroup(aliases,   "Aliases / alternate names — include to also match products branded under these names", "#6366f1") +
+      renderGroup(manuals,   "Manually added", "#0369a1");
+
+    container.querySelectorAll("[data-ba-brand]").forEach(cb => {
+      cb.addEventListener("change", () => {
+        wiz.discoveredBrands[parseInt(cb.dataset.baBrand)].selected = cb.checked;
+      });
+    });
+
+    // Delete buttons for manually-added entries
+    container.querySelectorAll("[data-ba-brand-delete]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.dataset.baBrandDelete);
+        wiz.discoveredBrands.splice(i, 1);
+        _renderBABrandsCheckboxes();
+      });
+    });
+  }
+
+  function _addBABrandManually() {
+    const input = $("#ba-wiz-add-brand-input");
+    if (!input) return;
+    const name = input.value.trim();
+    if (!name) return;
+    const wiz = state.brandAnalytics.wizard;
+    // prevent duplicates (case-insensitive)
+    const exists = wiz.discoveredBrands.some(b => b.name.toLowerCase() === name.toLowerCase());
+    if (exists) {
+      input.value = "";
+      input.placeholder = "Already in the list";
+      setTimeout(() => { input.placeholder = "Add a brand manually…"; }, 1800);
+      return;
+    }
+    wiz.discoveredBrands.push({ name, type: "manual", selected: true });
+    input.value = "";
+    _renderBABrandsCheckboxes();
+    // re-focus so user can keep adding
+    $("#ba-wiz-add-brand-input")?.focus();
+  }
+
+  $("#ba-wiz-add-brand-btn")?.addEventListener("click", _addBABrandManually);
+  $("#ba-wiz-add-brand-input")?.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); _addBABrandManually(); }
+  });
+
+  async function _submitBAWiz() {
+    const wiz = state.brandAnalytics.wizard;
+    const selected = wiz.discoveredBrands.filter(b => b.selected).map(b => b.name);
+    if (!selected.length) {
+      const fb = $("#ba-wiz-feedback");
+      if (fb) fb.textContent = "Please select at least one brand.";
+      return;
+    }
+    const runName = $("#ba-wiz-run-name")?.value.trim() || (wiz.inputName + " — " + new Date().toISOString().slice(0,10));
+    const nextBtn = $("#ba-wiz-next");
+    if (nextBtn) { nextBtn.disabled = true; nextBtn.textContent = "Starting…"; }
+    const fb = $("#ba-wiz-feedback");
+    if (fb) fb.textContent = "";
+    try {
+      const j = await api("/api/brand-analytics/runs", {
+        method: "POST",
+        body: {
+          name:           runName,
+          search_type:    wiz.searchType,
+          search_terms:   selected,
+          min_rank:       wiz.minRank,
+          max_rank:       wiz.maxRank,
+          pages_per_brand:  wiz.pagesPerBrand,
+          vetting_mode:     wiz.vettingMode || "cpg",
+          force_refresh:    _baCacheForceRefresh,
+        },
+      });
+      _baCacheForceRefresh = false;
+      if (j.cached && !j.run_id) {
+        // Server returned partial cached info — should have run_id if truly cached
+      }
+      if (j.cached && j.run_id) {
+        $("#ba-wizard-modal").classList.add("hidden");
+        _showBACacheModal(j.message || `Results from ${j.age_days} day(s) ago available.`, j.run_id);
+        return;
+      }
+      if (j.run_id) {
+        $("#ba-wizard-modal").classList.add("hidden");
+        await loadBrandAnalyticsRuns();
+        openBARun(j.run_id);
+      }
+    } catch(e) {
+      if (fb) fb.textContent = `Error: ${e.message}`;
+    } finally {
+      if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = "Start Search"; }
+    }
+  }
+
+  // =========================================================================
+  //  QUICK SEARCH
+  // =========================================================================
+
+  // ---- State ----
+  const _qs = {
+    results:    [],        // raw candidates from last search
+    filter:     "all",     // "all" | "verified" | "review" | "not_approved"
+    searching:  false,
+    tags: { upc: [], itemid: [] },  // multi-value chip arrays
+    multiMode:  false,              // true when >1 tag was searched
+  };
+
+  // ---- Tag/chip input helpers ----
+  function _qsAddTag(field, rawValue) {
+    const value = rawValue.trim().replace(/,+$/, "").trim();
+    if (!value) return;
+    if (_qs.tags[field].includes(value)) return; // no duplicates
+    _qs.tags[field].push(value);
+    _qsRenderTags(field);
+  }
+
+  function _qsRemoveTag(field, idx) {
+    _qs.tags[field].splice(idx, 1);
+    _qsRenderTags(field);
+  }
+
+  function _qsRenderTags(field) {
+    const wrap  = $(`#qs-${field}-wrap`);
+    const input = $(`#qs-${field}`);
+    if (!wrap || !input) return;
+    // Remove old chips (keep the input element)
+    wrap.querySelectorAll(".tag-chip").forEach(el => el.remove());
+    // Prepend new chips before the input
+    _qs.tags[field].forEach((val, i) => {
+      const chip = document.createElement("span");
+      chip.className = "tag-chip";
+      chip.innerHTML = `${escapeHtml(val)}<button class="tag-chip-remove" title="Remove" type="button">×</button>`;
+      chip.querySelector(".tag-chip-remove").addEventListener("click", (e) => {
+        e.stopPropagation();
+        _qsRemoveTag(field, i);
+      });
+      wrap.insertBefore(chip, input);
+    });
+    // Update placeholder
+    input.placeholder = _qs.tags[field].length
+      ? "add more…"
+      : (field === "upc" ? "e.g. 012345678901…" : "e.g. ASL02…");
+  }
+
+  // Wire tag-input keydown on both identifier fields
+  ["upc", "itemid"].forEach(field => {
+    const input = $(`#qs-${field}`);
+    if (!input) return;
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === ",") {
+        e.preventDefault();
+        const val = input.value;
+        if (val.trim()) {
+          _qsAddTag(field, val);
+          input.value = "";
+        } else {
+          // Empty Enter with no pending text → trigger search
+          if (!val.trim()) $("#qs-search-btn")?.click();
+        }
+      } else if (e.key === "Backspace" && !input.value && _qs.tags[field].length) {
+        // Backspace on empty input removes last chip
+        _qsRemoveTag(field, _qs.tags[field].length - 1);
+      }
+    });
+    // Also handle paste of comma-separated values
+    input.addEventListener("paste", e => {
+      const text = e.clipboardData?.getData("text") || "";
+      if (text.includes(",") || text.includes("\n")) {
+        e.preventDefault();
+        text.split(/[,\n]+/).forEach(v => _qsAddTag(field, v));
+        input.value = "";
+      }
+    });
+  });
+
+  // ---- Helpers ----
+  function _qsVerdictBadge(verdict) {
+    const map = {
+      verified:     { bg: "#dcfce7", color: "#166534", label: "Verified"     },
+      review:       { bg: "#fef9c3", color: "#854d0e", label: "Review"       },
+      not_approved: { bg: "#fee2e2", color: "#991b1b", label: "Not Approved" },
+    };
+    const s = map[verdict] || { bg: "#f1f5f9", color: "#64748b", label: verdict };
+    return `<span style="display:inline-block;padding:2px 9px;border-radius:99px;font-size:11px;font-weight:600;background:${s.bg};color:${s.color};">${s.label}</span>`;
+  }
+
+  function _qsSourcesBadge(sources) {
+    return (sources || []).map(s => {
+      const color = s === "UPC" ? "#1d4ed8" : s === "ItemID" ? "#7c3aed" : "#065f46";
+      const bg    = s === "UPC" ? "#dbeafe" : s === "ItemID" ? "#ede9fe" : "#d1fae5";
+      return `<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;background:${bg};color:${color};margin-right:2px;">${s}</span>`;
+    }).join("");
+  }
+
+  function _qsScoreBadge(conf, verdict) {
+    const color = verdict === "verified" ? "#166534"
+                : verdict === "review"   ? "#854d0e"
+                : "#991b1b";
+    const bg    = verdict === "verified" ? "#dcfce7"
+                : verdict === "review"   ? "#fef9c3"
+                : "#fee2e2";
+    return `<span style="display:inline-block;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;background:${bg};color:${color};">${conf}</span>`;
+  }
+
+  function _renderQsResults() {
+    const tbody   = $("#qs-results-tbody");
+    const summary = $("#qs-results-summary");
+    if (!tbody) return;
+
+    // Show/hide Query column based on multi-mode
+    const thQuery = $("#qs-th-query");
+    if (thQuery) thQuery.classList.toggle("hidden", !_qs.multiMode);
+
+    const filtered = _qs.filter === "all"
+      ? _qs.results
+      : _qs.results.filter(c => c.verdict === _qs.filter);
+
+    // Update filter button counts
+    $$(".qs-filter-btn").forEach(btn => {
+      const f = btn.dataset.filter;
+      const count = f === "all"
+        ? _qs.results.length
+        : _qs.results.filter(c => c.verdict === f).length;
+      btn.classList.toggle("active", f === _qs.filter);
+      btn.textContent = f === "all" ? `All (${count})`
+        : f === "verified"     ? `Verified (${count})`
+        : f === "review"       ? `Review (${count})`
+        : `Not Approved (${count})`;
+    });
+
+    const totalQueries = _qs.multiMode ? (_qs._queryCount || 1) : 1;
+    if (summary) {
+      summary.textContent = _qs.multiMode
+        ? `${filtered.length} of ${_qs.results.length} candidates across ${totalQueries} searches`
+        : `${filtered.length} of ${_qs.results.length} candidates`;
+    }
+
+    const colSpan = _qs.multiMode ? "10" : "9";
+    if (filtered.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center;color:#94a3b8;padding:24px;">No candidates match this filter.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(c => {
+      const asinUrl  = `https://www.amazon.com/dp/${c.asin}`;
+      const bsr      = c.sales_rank ? c.sales_rank.toLocaleString() : "—";
+      const category = c.sales_rank_category
+        ? `<span title="${escapeHtml(c.sales_rank_category)}" style="max-width:120px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;">${escapeHtml(c.sales_rank_category)}</span>`
+        : "—";
+
+      // Build reasons tooltip
+      const reasons = [];
+      const scores = c.scores || {};
+      if (scores.size_mismatch)     reasons.push("Size mismatch");
+      if (scores.count_mismatch)    reasons.push("Count mismatch");
+      if (scores.gender_mismatch)   reasons.push("Gender mismatch");
+      if (scores.color_mismatch)    reasons.push("Color mismatch");
+      if (scores.scent_mismatch)    reasons.push("Scent/variant mismatch");
+      if (scores.media_format_mismatch) reasons.push("Media format (DVD/Blu-ray/etc.)");
+      if (scores.category_mismatch) reasons.push("Category mismatch");
+      if (scores.pack_mismatch)     reasons.push("Pack mismatch");
+      const reasonTip = reasons.length ? ` title="${reasons.join(", ")}"` : "";
+
+      const queryCell = _qs.multiMode
+        ? `<td style="font-family:monospace;font-size:11px;color:#6b50d4;">${escapeHtml(c._searchedFor || "—")}</td>`
+        : "";
+
+      return `<tr>
+        <td>${_qsScoreBadge(c.confidence, c.verdict)}</td>
+        <td><span${reasonTip}>${_qsVerdictBadge(c.verdict)}</span></td>
+        <td>
+          <a href="${asinUrl}" target="_blank" rel="noopener"
+             style="font-family:monospace;font-size:12px;color:#4f46e5;text-decoration:none;"
+             title="Open on Amazon">${c.asin}</a>
+        </td>
+        <td style="max-width:260px;">
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;"
+               title="${escapeHtml(c.title)}">${escapeHtml(c.title) || "—"}</div>
+          <div style="font-size:11px;color:#94a3b8;">${escapeHtml(c.brand) || ""}</div>
+        </td>
+        <td style="font-size:12px;">${bsr}</td>
+        <td style="font-size:11px;">${category}</td>
+        <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.upc) || "—"}</td>
+        <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.mpn) || "—"}</td>
+        <td>${_qsSourcesBadge(c.sources)}</td>
+        ${queryCell}
+      </tr>`;
+    }).join("");
+  }
+
+  // ---- Wire-up ----
+  $$(".qs-filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      _qs.filter = btn.dataset.filter || "all";
+      _renderQsResults();
+    });
+  });
+
+  $$(".qs-mode-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      $$(".qs-mode-btn").forEach(b => b.classList.toggle("active", b === btn));
+    });
+  });
+
+  $("#qs-clear-btn")?.addEventListener("click", () => {
+    // Clear tag arrays and re-render chips
+    _qs.tags.upc    = [];
+    _qs.tags.itemid = [];
+    _qsRenderTags("upc");
+    _qsRenderTags("itemid");
+    ["qs-upc", "qs-itemid", "qs-title", "qs-brand", "qs-min-rank", "qs-max-rank"].forEach(id => {
+      const el = $(`#${id}`); if (el) el.value = "";
+    });
+    $$(".qs-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "cpg"));
+    _qs.results = [];
+    _qs.filter  = "all";
+    $("#qs-results-area")?.classList.add("hidden");
+    $("#qs-empty-state")?.classList.remove("hidden");
+    const st = $("#qs-status-text"); if (st) st.classList.add("hidden");
+  });
+
+  $("#qs-search-btn")?.addEventListener("click", async () => {
+    if (_qs.searching) return;
+
+    // Flush any pending text in the tag inputs as a tag before searching
+    ["upc", "itemid"].forEach(field => {
+      const input = $(`#qs-${field}`);
+      if (input?.value.trim()) {
+        _qsAddTag(field, input.value);
+        input.value = "";
+      }
+    });
+
+    // Collect all search terms
+    const upcTags    = [..._qs.tags.upc];
+    const itemidTags = [..._qs.tags.itemid];
+    const title      = ($("#qs-title")?.value  || "").trim();
+    const brand      = ($("#qs-brand")?.value  || "").trim();
+    const mode       = Array.from($$(".qs-mode-btn"))
+                         .find(b => b.classList.contains("active"))?.dataset?.mode || "cpg";
+    const maxRank    = parseInt($("#qs-max-rank")?.value || "0") || 0;
+    const minRank    = parseInt($("#qs-min-rank")?.value || "0") || 0;
+
+    // Build a list of individual search jobs
+    // Each job: { upc?, itemid?, label } — title+brand used as context for every job
+    const jobs = [];
+    if (upcTags.length)    upcTags.forEach(u    => jobs.push({ upc: u,         label: u }));
+    if (itemidTags.length) itemidTags.forEach(id => jobs.push({ itemid: id,    label: id }));
+    if (!upcTags.length && !itemidTags.length)   jobs.push({ label: title || brand || "" });
+
+    if (jobs.length === 0 || (!upcTags.length && !itemidTags.length && !title)) {
+      showToast("Please add at least one UPC, Item ID, or Title to search.", "error");
+      return;
+    }
+
+    _qs.searching  = true;
+    _qs.multiMode  = jobs.length > 1;
+    _qs._queryCount = jobs.length;
+
+    const btn = $("#qs-search-btn");
+    if (btn) { btn.disabled = true; btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;animation:spin 1s linear infinite;"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> Searching…`; }
+    const st = $("#qs-status-text");
+    if (st) { st.style.color = "#6b7480"; st.textContent = jobs.length > 1 ? `Searching ${jobs.length} items…` : "Querying Amazon…"; st.classList.remove("hidden"); }
+    $("#qs-results-area")?.classList.add("hidden");
+    $("#qs-empty-state")?.classList.add("hidden");
+
+    try {
+      // Run all jobs in parallel; merge results deduped by ASIN (keep highest confidence)
+      const allResults = await Promise.all(jobs.map(async (job) => {
+        const j = await api("/api/analytics/quick-search", {
+          method: "POST",
+          body: {
+            upc:          job.upc    || "",
+            itemid:       job.itemid || "",
+            title, brand,
+            vetting_mode: mode, max_rank: maxRank, min_rank: minRank,
+          },
+        });
+        return (j.candidates || []).map(c => ({ ...c, _searchedFor: job.label }));
+      }));
+
+      // Merge: dedup by ASIN — keep highest confidence per ASIN
+      const byAsin = new Map();
+      allResults.flat().forEach(c => {
+        const existing = byAsin.get(c.asin);
+        if (!existing || c.confidence > existing.confidence) {
+          byAsin.set(c.asin, c);
+        }
+      });
+      _qs.results = [...byAsin.values()].sort((a, b) => b.confidence - a.confidence);
+      _qs.filter  = "all";
+
+      if (_qs.results.length === 0) {
+        if (st) st.textContent = "No candidates found on Amazon.";
+        const emptyEl = $("#qs-empty-state");
+        if (emptyEl) {
+          emptyEl.innerHTML = `
+            <div style="width:64px;height:64px;border-radius:50%;background:var(--purple-50,#f4f0ff);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--purple-400,#8b76e5)" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            </div>
+            <div class="text-sm font-semibold" style="color:#475569;margin-bottom:4px;">No matches found</div>
+            <div class="text-xs" style="color:#94a3b8;">Try different search terms or check your SP-API connection.</div>`;
+          emptyEl.classList.remove("hidden");
+        }
+      } else {
+        const n = _qs.results.length;
+        if (st) st.textContent = jobs.length > 1
+          ? `${n} candidate${n === 1 ? "" : "s"} found across ${jobs.length} searches.`
+          : `${n} candidate${n === 1 ? "" : "s"} found.`;
+        _renderQsResults();
+        $("#qs-results-area")?.classList.remove("hidden");
+      }
+    } catch (e) {
+      if (st) { st.textContent = "Search failed: " + (e.message || e); st.style.color = "#dc2626"; }
+      $("#qs-empty-state")?.classList.remove("hidden");
+    } finally {
+      _qs.searching = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Search Amazon`;
+      }
+    }
+  });
+
+  // Enter in title/brand fields triggers search (UPC/ItemID Enter is handled by tag logic above)
+  ["qs-title", "qs-brand"].forEach(id => {
+    $(`#${id}`)?.addEventListener("keydown", e => {
+      if (e.key === "Enter") $("#qs-search-btn")?.click();
+    });
+  });
+
+  // =========================================================================
+  // TOOLS SIDEBAR PANEL
+  // =========================================================================
+
+  // ── State ─────────────────────────────────────────────────────────────────
+  state.tools = {
+    eligJobId:    null,
+    sfJobId:      null,
+    eligResults:  [],
+    sfResults:    [],
+    eligDone:     false,
+    sfDone:       false,
+    poll:         null,
+    options:      { eligibility: true, storage: true },
+  };
+
+  // ── Open / close ──────────────────────────────────────────────────────────
+  $("#open-tools-btn")?.addEventListener("click", () => _openPanel("tools-panel"));
+  $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
+
+  // Checkbox label hover highlight
+  ["#tools-opt-elig-wrap","#tools-opt-sf-wrap"].forEach(sel => {
+    const wrap = $(sel);
+    if (!wrap) return;
+    wrap.addEventListener("mouseenter", () => wrap.style.background = "#f8fafc");
+    wrap.addEventListener("mouseleave", () => wrap.style.background = "");
+  });
+
+  // ── ASIN count hint ───────────────────────────────────────────────────────
+  $("#tools-asin-input")?.addEventListener("input", function() {
+    const n = _parseAsins(this.value).length;
+    const el = $("#tools-asin-count");
+    if (el) el.textContent = n > 0 ? `${n.toLocaleString()} ASIN${n === 1 ? "" : "s"} detected` : "";
+  });
+  $("#tools-asin-input")?.addEventListener("keydown", function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") _startToolsRun();
+  });
+
+  // ── Run ───────────────────────────────────────────────────────────────────
+  $("#tools-run-btn")?.addEventListener("click", _startToolsRun);
+
+  async function _startToolsRun() {
+    const input = $("#tools-asin-input");
+    if (!input) return;
+    const asins = _parseAsins(input.value);
+    if (!asins.length) { showToast("Paste at least one ASIN.", "error"); return; }
+    if (asins.length > 5000) { showToast(`Max 5,000 ASINs (you entered ${asins.length}).`, "error"); return; }
+
+    const wantElig = $("#tools-opt-elig")?.checked ?? true;
+    const wantSF   = $("#tools-opt-sf")?.checked ?? true;
+    if (!wantElig && !wantSF) { showToast("Select at least one tool to run.", "warning"); return; }
+
+    // Reset state
+    const t = state.tools;
+    clearTimeout(t.poll); t.poll = null;
+    t.eligJobId = null; t.sfJobId = null;
+    t.eligResults = []; t.sfResults = [];
+    t.eligDone = false; t.sfDone = false;
+    t.options = { eligibility: wantElig, storage: wantSF };
+
+    // Reset UI
+    const btn = $("#tools-run-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Running…"; }
+    $("#tools-export-btn")?.classList.add("hidden");
+
+    const progSec = $("#tools-progress-section");
+    if (progSec) { progSec.classList.remove("hidden"); progSec.style.display = "flex"; }
+
+    const eligProg = $("#tools-elig-progress");
+    const sfProg   = $("#tools-sf-progress");
+    if (eligProg) eligProg.classList.toggle("hidden", !wantElig);
+    if (sfProg)   sfProg.classList.toggle("hidden", !wantSF);
+    _toolsResetBars();
+
+    // Start jobs
+    const starts = [];
+    if (wantElig) {
+      starts.push(
+        api("/api/eligibility/check", { method: "POST", body: { asins } })
+          .then(j => { t.eligJobId = j.job_id; })
+          .catch(e => { showToast("Eligibility start failed: " + e.message, "error"); t.eligDone = true; })
+      );
+    } else {
+      t.eligDone = true;
+    }
+    if (wantSF) {
+      starts.push(
+        api("/api/storage-fees/check", { method: "POST", body: { asins } })
+          .then(j => { t.sfJobId = j.job_id; })
+          .catch(e => { showToast("Storage fees start failed: " + e.message, "error"); t.sfDone = true; })
+      );
+    } else {
+      t.sfDone = true;
+    }
+
+    await Promise.all(starts);
+    t.poll = setTimeout(_toolsPoll, 800);
+  }
+
+  function _toolsResetBars() {
+    ["#tools-elig-bar","#tools-sf-bar"].forEach(sel => {
+      const el = $(sel); if (el) el.style.width = "0%";
+    });
+    ["#tools-elig-label","#tools-sf-label"].forEach(sel => {
+      const el = $(sel); if (el) el.textContent = "";
+    });
+    [["tp-elig-can","tp-elig-appr","tp-elig-rest","tp-elig-err"],
+     ["tp-sf-ok","tp-sf-nodims","tp-sf-err"]].flat().forEach(id => {
+      const el = document.getElementById(id); if (el) el.textContent = "0";
+    });
+  }
+
+  async function _toolsPoll() {
+    const t = state.tools;
+
+    // Poll eligibility
+    if (!t.eligDone && t.eligJobId) {
+      try {
+        const j = await api(`/api/eligibility/jobs/${t.eligJobId}`);
+        const pct = Math.round((j.done / (j.total || 1)) * 100);
+        const bar = $("#tools-elig-bar"); if (bar) bar.style.width = pct + "%";
+        const lbl = $("#tools-elig-label");
+        if (lbl) lbl.textContent = `${j.done.toLocaleString()} / ${(j.total||0).toLocaleString()}`;
+        t.eligResults = j.results || [];
+        _toolsUpdateEligStats(t.eligResults);
+        if (j.status === "complete" || j.status === "error") {
+          t.eligDone = true;
+          if (bar) bar.style.width = "100%";
+          if (lbl) lbl.textContent = j.status === "complete"
+            ? `✓ ${(j.total||0).toLocaleString()} done`
+            : `⚠ ${j.done} / ${j.total} (error)`;
+        }
+      } catch { t.eligDone = true; }
+    }
+
+    // Poll storage fees
+    if (!t.sfDone && t.sfJobId) {
+      try {
+        const j = await api(`/api/storage-fees/jobs/${t.sfJobId}`);
+        const pct = Math.round((j.done / (j.total || 1)) * 100);
+        const bar = $("#tools-sf-bar"); if (bar) bar.style.width = pct + "%";
+        const lbl = $("#tools-sf-label");
+        if (lbl) lbl.textContent = `${j.done.toLocaleString()} / ${(j.total||0).toLocaleString()}`;
+        t.sfResults = j.results || [];
+        _toolsUpdateSFStats(t.sfResults);
+        if (j.status === "complete" || j.status === "error") {
+          t.sfDone = true;
+          if (bar) bar.style.width = "100%";
+          if (lbl) lbl.textContent = j.status === "complete"
+            ? `✓ ${(j.total||0).toLocaleString()} done`
+            : `⚠ ${j.done} / ${j.total} (error)`;
+        }
+      } catch { t.sfDone = true; }
+    }
+
+    // Both finished?
+    if (t.eligDone && t.sfDone) {
+      clearTimeout(t.poll); t.poll = null;
+      const btn = $("#tools-run-btn");
+      if (btn) { btn.disabled = false; btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run`; }
+      $("#tools-export-btn")?.classList.remove("hidden");
+      showToast("Done — click Download CSV to export.", "success");
+    } else {
+      t.poll = setTimeout(_toolsPoll, 1000);
+    }
+  }
+
+  function _toolsUpdateEligStats(results) {
+    let can = 0, appr = 0, rest = 0, err = 0;
+    for (const r of results) {
+      if (r.status === "CAN_SELL") can++;
+      else if (r.status === "NEEDS_APPROVAL") appr++;
+      else if (r.status === "RESTRICTED") rest++;
+      else err++;
+    }
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set("tp-elig-can", can); set("tp-elig-appr", appr);
+    set("tp-elig-rest", rest); set("tp-elig-err", err);
+  }
+
+  function _toolsUpdateSFStats(results) {
+    let ok = 0, noDims = 0, err = 0;
+    for (const r of results) {
+      if (r.status === "ok") ok++;
+      else if (r.status === "no_dimensions") noDims++;
+      else err++;
+    }
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set("tp-sf-ok", ok); set("tp-sf-nodims", noDims); set("tp-sf-err", err);
+  }
+
+  // ── Export (client-side CSV generation) ───────────────────────────────────
+  $("#tools-export-btn")?.addEventListener("click", _toolsExport);
+
+  function _toolsExport() {
+    const t = state.tools;
+    const wantElig = t.options.eligibility;
+    const wantSF   = t.options.storage;
+
+    // Build lookup maps
+    const eligMap = {};
+    for (const r of t.eligResults) eligMap[r.asin] = r.status || "";
+
+    const sfMap = {};
+    for (const r of t.sfResults) {
+      sfMap[r.asin] = {
+        offpeak: r.fee_offpeak != null ? r.fee_offpeak : "",
+        peak:    r.fee_peak    != null ? r.fee_peak    : "",
+      };
+    }
+
+    // Collect all ASINs (preserve insertion order, dedup)
+    const seen = new Set();
+    const allAsins = [];
+    for (const r of [...t.eligResults, ...t.sfResults]) {
+      if (!seen.has(r.asin)) { seen.add(r.asin); allAsins.push(r.asin); }
+    }
+
+    // Header row
+    const headers = ["asin"];
+    if (wantElig) headers.push("eligibility_status");
+    if (wantSF)   { headers.push("fee_offpeak_per_unit_mo"); headers.push("fee_peak_q4_per_unit_mo"); }
+
+    // Data rows
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = allAsins.map(asin => {
+      const cols = [_q(asin)];
+      if (wantElig) cols.push(_q(eligMap[asin] ?? ""));
+      if (wantSF) {
+        const sf = sfMap[asin] || {};
+        cols.push(_q(sf.offpeak ?? ""));
+        cols.push(_q(sf.peak ?? ""));
+      }
+      return cols.join(",");
+    });
+
+    const csv  = [headers.map(_q).join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = "asin_lookup.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // ── Legacy compat: _formatEta still used by old code paths ───────────────
+  const STATUS_COLORS = {
+    CAN_SELL:       { bg: "#f0fdf4", color: "#16a34a", label: "CAN SELL" },
+    NEEDS_APPROVAL: { bg: "#fffbeb", color: "#d97706", label: "NEEDS APPROVAL" },
+    RESTRICTED:     { bg: "#fef2f2", color: "#dc2626", label: "RESTRICTED" },
+    ERROR:          { bg: "#f8fafc", color: "#94a3b8", label: "ERROR" },
+  };
+
+  function _eligStatusBadge(status) {
+    const s = STATUS_COLORS[status] || STATUS_COLORS.ERROR;
+    return `<span style="display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;background:${s.bg};color:${s.color};">${s.label}</span>`;
+  }
+
+  function _formatEta(seconds) {
+    if (seconds == null || seconds <= 0) return "";
+    if (seconds < 60) return `~${seconds}s remaining`;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `~${m}m ${s}s remaining`;
+  }
+
+  function _parseAsins(raw) {
+    // Accept newline, comma, space, or semicolon delimiters
+    return [...new Set(
+      raw.split(/[\n,;\s]+/)
+        .map(s => s.trim().toUpperCase())
+        .filter(s => s.length > 0)
+    )];
+  }
+
+  // _renderEligibilityRow — kept for any future in-panel preview table
+  function _renderEligibilityRow(r) {
+    const reasons     = r.reasons || [];
+    const types       = reasons.map(x => x.type).join(", ") || "—";
+    const hint        = reasons.map(x => x.hint).filter(Boolean).join(" ") || "—";
+    const approvalUrl = reasons.find(x => x.approval_url)?.approval_url;
+    const approvalLink = approvalUrl
+      ? `<a href="${escapeHtml(approvalUrl)}" target="_blank" rel="noopener"
+            style="color:#4f46e5;text-decoration:none;font-size:12px;">Request Approval ↗</a>`
+      : "—";
+
+    const rowBg = r.status === "CAN_SELL"       ? "#f8fff9" :
+                  r.status === "NEEDS_APPROVAL" ? "#fffef5" :
+                  r.status === "RESTRICTED"     ? "#fff8f8" : "";
+
+    return `<tr style="border-bottom:1px solid #f1f5f9;${rowBg ? `background:${rowBg};` : ""}">
+      <td style="padding:9px 14px;font-family:monospace;font-size:12px;font-weight:600;color:#1e293b;white-space:nowrap;">
+        <a href="https://amazon.com/dp/${escapeHtml(r.asin)}" target="_blank" rel="noopener"
+           style="color:#4f46e5;text-decoration:none;">${escapeHtml(r.asin)}</a>
+      </td>
+      <td style="padding:9px 14px;white-space:nowrap;">${_eligStatusBadge(r.status)}</td>
+      <td style="padding:9px 14px;font-size:12px;color:#475569;">${escapeHtml(types)}</td>
+      <td style="padding:9px 14px;font-size:12px;color:#475569;max-width:260px;">${escapeHtml(hint)}</td>
+      <td style="padding:9px 14px;white-space:nowrap;">${approvalLink}</td>
+    </tr>`;
+  }
 
 })();

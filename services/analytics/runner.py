@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -33,6 +34,7 @@ from typing import Any, Iterable
 from services import database
 from services.analytics.matcher import calculate_confidence
 from services.analytics.parser import SourceRow
+from services.analytics.product_categorizer import categorize, category_distance, UNKNOWN, MEDICAL
 from services.analytics.brand_extractor import extract_brands
 from services.spapi import get_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
@@ -46,6 +48,7 @@ log = logging.getLogger(__name__)
 
 UPC_BATCH_SIZE = 20            # SP-API hard cap on identifiers per call
 DEFAULT_TITLE_MAX_PAGES = 5    # what the wizard exposes (Analytics panel)
+TITLE_PAGE_CAP = 10
 PAGE_SLEEP = 0.6               # seconds between paged keyword calls (safety)
 AI_CLEAN_WORKERS = 3           # parallel GPT-4o-mini calls for title cleaning (Tier 1: 500 RPM)
 
@@ -53,6 +56,26 @@ AI_CLEAN_WORKERS = 3           # parallel GPT-4o-mini calls for title cleaning (
 MIN_CONFIDENCE = 30.0
 AUTO_APPROVE = 90.0
 REVIEW_FLOOR = 35.0
+
+
+# --------------------------------------------------------------------------- #
+# Media-format hard-reject
+# --------------------------------------------------------------------------- #
+
+# Matches physical/digital media format indicators that appear as standalone words
+# in an Amazon product title.  A medical or CPG vendor would never supply these.
+# Using word-boundary regex so "DVD" in a title like "STRETCHING EXERCISES FOR
+# SENIORS DVD" fires, but "DVDS001" (a model number) does not.
+_MEDIA_FORMAT_RE = re.compile(
+    r"\b(dvd|blu[\s\-]?ray|audiobook|audio\s+book|e[\s\-]?book|vhs|cd[\s\-]?rom)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_media_format(amazon_title: str) -> bool:
+    """Return True when the Amazon title explicitly identifies the item as a
+    physical/digital media product (DVD, Blu-ray, audiobook, etc.)."""
+    return bool(_MEDIA_FORMAT_RE.search(amazon_title or ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -179,14 +202,17 @@ def _extract_sales_rank(raw: dict) -> tuple[int | None, str, list[dict]]:
     """
     Parse salesRanks from a raw SP-API item.
 
-    Returns (best_rank, best_category, all_ranks) where:
-      best_rank      — lowest (best) rank number across all rank entries, or None
-      best_category  — category name for that best rank
+    Returns (main_rank, main_category, all_ranks) where:
+      main_rank      — highest rank number across all entries (= broadest/top-level
+                       category, matching the main BSR Amazon displays on the product
+                       page). Subcategory ranks are always smaller numbers; the largest
+                       number is the most general category rank.
+      main_category  — category name for that main rank
       all_ranks      — list of {"rank": int, "category": str} for every entry
     """
     all_ranks: list[dict] = []
-    best_rank: int | None = None
-    best_category = ""
+    main_rank: int | None = None
+    main_category = ""
 
     for sr in (raw.get("salesRanks") or []):
         for group_key in ("classificationRanks", "displayGroupRanks"):
@@ -199,11 +225,11 @@ def _extract_sales_rank(raw: dict) -> tuple[int | None, str, list[dict]]:
                     continue
                 cat = str(entry.get("title") or "")
                 all_ranks.append({"rank": r, "category": cat})
-                if best_rank is None or r < best_rank:
-                    best_rank = r
-                    best_category = cat
+                if main_rank is None or r > main_rank:
+                    main_rank = r
+                    main_category = cat
 
-    return best_rank, best_category, all_ranks
+    return main_rank, main_category, all_ranks
 
 
 def normalize_amazon_item(raw: dict) -> dict:
@@ -217,7 +243,7 @@ def normalize_amazon_item(raw: dict) -> dict:
     summary = summaries[0] if summaries else {}
 
     identifiers = raw.get("identifiers") or []
-    upcs, eans = [], []
+    upcs, eans, gtins = [], [], []
     for ident_group in identifiers:
         for ident in ident_group.get("identifiers", []):
             t = (ident.get("identifierType") or "").upper()
@@ -226,6 +252,17 @@ def normalize_amazon_item(raw: dict) -> dict:
                 upcs.append(v)
             elif t == "EAN" and v:
                 eans.append(v)
+            elif t in ("GTIN", "GTIN14", "GTIN-14") and v:
+                gtins.append(v)
+
+    # Derive GTIN-14 from UPC-A or EAN-13 when SP-API doesn't return one directly.
+    # GTIN-14 standard: UPC-A (12 digits) → "00" + UPC; EAN-13 (13 digits) → "0" + EAN.
+    gtin_val = gtins[0] if gtins else ""
+    if not gtin_val:
+        if upcs and len(upcs[0]) == 12 and upcs[0].isdigit():
+            gtin_val = "00" + upcs[0]
+        elif eans and len(eans[0]) == 13 and eans[0].isdigit():
+            gtin_val = "0" + eans[0]
 
     attrs = raw.get("attributes") or {}
 
@@ -250,6 +287,7 @@ def normalize_amazon_item(raw: dict) -> dict:
         "mpn": summary.get("partNumber") or summary.get("modelNumber") or _attr_str("part_number"),
         "upc": upcs[0] if upcs else "",
         "ean": eans[0] if eans else "",
+        "gtin": gtin_val,
         "description": description,
         "bullet_points": bullets,
         "item_package_quantity": _attr_str("item_package_quantity"),
@@ -285,20 +323,27 @@ def _create_run(
     total_catalog_items: int,
     max_rank: int = 0,
     min_rank: int = 0,
+    mode: str = "cpg",
+    brand_col: str = "",
+    brand_mode: str = "col",
+    passthrough_cols: str = "",
 ) -> int:
     with database._LOCK, _with_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO analytics_runs
               (name, marketplace, search_methods, pages_per_title,
-               ai_clean_titles, total_catalog_items, max_rank, min_rank, status,
-               progress_phase, progress_done, progress_total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
+               ai_clean_titles, total_catalog_items, max_rank, min_rank,
+               vetting_mode, brand_col, brand_mode, passthrough_cols,
+               status, progress_phase, progress_done, progress_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
             """,
             (
                 name, marketplace, json.dumps(search_methods),
                 int(pages_per_title), 1 if ai_clean_titles else 0,
                 int(total_catalog_items), int(max_rank), int(min_rank),
+                mode or "cpg", brand_col or "", brand_mode or "col",
+                passthrough_cols or "",
                 int(total_catalog_items),
             ),
         )
@@ -355,6 +400,9 @@ def _upsert_candidate(
     max_rank: int = 0,
     min_rank: int = 0,
     extracted: dict | None = None,
+    blacklist_set: frozenset | None = None,
+    verified_set: frozenset | None = None,
+    mode: str = "cpg",
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
@@ -371,13 +419,58 @@ def _upsert_candidate(
     if not asin:
         return "skip"
 
+    upc = str(source.get("upc") or "").strip()
+
+    # Save all fetched ASIN data to the global cache (strips _raw to save space).
+    database.save_asin_to_cache(asin, normalized)
+
     scores = calculate_confidence(
         source, normalized,
         upc_search_hit="UPC" in sources,
         extracted=extracted,
+        mpn_search_hit="ItemID" in sources,
+        mode=mode,
     )
     conf = scores["confidence_score"]
-    hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
+
+    # Category check: reject Amazon items whose BSR category is clearly in the
+    # wrong domain.  We use ONLY the Amazon sales_rank_category (the BSR top-level
+    # category) — it is authoritative and unambiguous.  Title-inferred categories
+    # are too noisy (e.g. "washcloths" → Food, "hot pack" → Garden).
+    # If Amazon provides no BSR category the check is skipped (no false-positives).
+    # Medical mode only — CPG runs span too many categories to restrict.
+    # Category distance only vetoes AMBIGUOUS matches.  A confirmed UPC or brand
+    # match means it's the right product even when Amazon shelves it outside
+    # Health (Futuro pantyhose → Clothing, Command hooks → Home Improvement,
+    # Scotch tape → Office).  Otherwise correct 100%-UPC matches were being
+    # hard-rejected as "Category mismatch".
+    _amz_bsr_cat = categorize("", normalized.get("sales_rank_category") or "")
+    category_mismatch = False
+    if (
+        mode == "medical" and _amz_bsr_cat != UNKNOWN
+        and not scores.get("upc_match") and not scores.get("brand_confirmed")
+    ):
+        _dist = category_distance(MEDICAL, _amz_bsr_cat)
+        category_mismatch = _dist >= 5.0
+
+    if category_mismatch:
+        scores["category_mismatch"] = True
+
+    # Media-format hard-reject (both CPG and medical): if the Amazon title
+    # explicitly identifies the listing as a DVD, Blu-ray, audiobook, etc.
+    # a medical/CPG vendor would never supply it.  This catches exercise DVDs
+    # that Amazon shelves under "Health & Personal Care" or "Sports & Outdoors"
+    # — BSR categories that otherwise pass the category distance check.
+    media_mismatch = _is_media_format(normalized.get("title") or "")
+    if media_mismatch:
+        scores["media_format_mismatch"] = True
+
+    hard_reject = (
+        scores.get("size_mismatch") or scores.get("gender_mismatch")
+        or scores.get("color_mismatch") or category_mismatch or media_mismatch
+        or scores.get("count_mismatch") or scores.get("scent_mismatch")
+        or scores.get("shade_mismatch") or scores.get("apparel_size_mismatch")
+    )
     if hard_reject:
         verdict = "not_approved"
     elif conf >= AUTO_APPROVE:
@@ -405,13 +498,35 @@ def _upsert_candidate(
 
     sales_rank = normalized.get("sales_rank")  # int or None
 
-    # Apply rank window: ASINs outside [min_rank, max_rank] → not_approved.
-    # Both caps: unknown/null rank is always allowed through (we never penalise
-    # products whose BSR Amazon hasn't populated).
-    if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
+    # Apply rank window: ASINs outside [min_rank, max_rank] are excluded
+    # entirely from storage so they never appear in any tab.
+    # max_rank: null/unknown rank passes through (new listings may not have BSR yet).
+    # min_rank: null/unknown rank is ALSO excluded — setting a floor means the user
+    #           only wants confirmed-ranked products (e.g. min_rank=1 = no unranked).
+    _rank_val = int(sales_rank) if sales_rank is not None else None
+    _bsr_excluded = (
+        (max_rank > 0 and _rank_val is not None and _rank_val > max_rank) or
+        (min_rank > 0 and (_rank_val is None or _rank_val < min_rank))
+    )
+    if _bsr_excluded:
+        # Clean up any pre-existing row (e.g. from a prior tier that found the
+        # ASIN before BSR was populated) so it stays invisible.
+        with database._LOCK, _with_conn() as conn:
+            conn.execute(
+                "DELETE FROM analytics_candidates "
+                "WHERE run_id=? AND row_idx=? AND asin=?",
+                (run_id, row_idx, asin),
+            )
+        return "bsr_filtered"
+
+    # Pair manager overrides — applied after all scoring/rank logic.
+    # Blacklisted pairs are always forced not_approved (never match again until unlinked).
+    # Previously verified pairs are auto-approved when scoring is still reasonable.
+    if upc and blacklist_set is not None and (upc, asin) in blacklist_set:
         verdict = "not_approved"
-    if min_rank > 0 and sales_rank is not None and int(sales_rank) < min_rank:
-        verdict = "not_approved"
+    elif upc and verified_set is not None and (upc, asin) in verified_set \
+            and not hard_reject and conf >= REVIEW_FLOOR:
+        verdict = "verified"
 
     data_json = json.dumps({
         "asin": asin,
@@ -443,11 +558,9 @@ def _upsert_candidate(
             merged = list(dict.fromkeys([*prev_sources, *sources]))  # dedupe, keep order
             new_conf = max(conf, float(existing["confidence"] or 0))
             # Recompute verdict from the best confidence we've seen so a
-            # lower-scoring tier can't downgrade a UPC-confirmed "verified".
-            upc_confirmed = scores["upc_match"] and not scores.get("pack_mismatch") and not scores.get("upc_suspect")
-            if upc_confirmed:
-                verdict = "verified"
-            elif hard_reject:
+            # lower-scoring tier can't downgrade a high-confidence "verified".
+            # hard_reject is already computed above (includes category_mismatch).
+            if hard_reject:
                 verdict = "not_approved"
             elif new_conf >= AUTO_APPROVE:
                 verdict = "verified"
@@ -461,6 +574,12 @@ def _upsert_candidate(
                 verdict = "not_approved"
             if min_rank > 0 and sales_rank is not None and int(sales_rank) < min_rank:
                 verdict = "not_approved"
+            # Pair manager overrides on update path too.
+            if upc and blacklist_set is not None and (upc, asin) in blacklist_set:
+                verdict = "not_approved"
+            elif upc and verified_set is not None and (upc, asin) in verified_set \
+                    and not hard_reject and new_conf >= REVIEW_FLOOR:
+                verdict = "verified"
             conn.execute(
                 "UPDATE analytics_candidates SET sources=?, confidence=?, "
                 "  verdict=?, amz_pack=?, sales_rank=?, data_json=? "
@@ -542,6 +661,66 @@ def _normalize_upc(upc: str) -> str:
     return upc
 
 
+def _ean13_check_digit(d12: str) -> str:
+    """
+    Compute the EAN-13 check digit for the first 12 digits.
+    Odd positions (0-indexed even) ×1, even positions (0-indexed odd) ×3.
+    """
+    total = sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(d12))
+    return str((10 - (total % 10)) % 10)
+
+
+def _is_valid_upca(v: str) -> bool:
+    """True when the 12-digit string is a self-consistent UPC-A (check digit OK).
+    A genuine UPC-A passes; an EAN-13 with its trailing check digit dropped
+    (e.g. "030521026849") fails — which is how we tell the two apart."""
+    if len(v) != 12 or not v.isdigit():
+        return False
+    s = sum(int(c) * (3 if i % 2 == 0 else 1) for i, c in enumerate(v[:11]))
+    return str((10 - (s % 10)) % 10) == v[11]
+
+
+def _all_id_forms(v: str) -> list[str]:
+    """
+    Return every plausible barcode form of a single identifier string so the
+    lookup can match regardless of whether SP-API returns UPC-12, EAN-13, or
+    GTIN-14.
+
+    Rules (all assuming the input is numeric):
+      12-digit  →  also produce EAN-13 ("0" + v) and GTIN-14 ("00" + v);
+                   ALSO produce EAN-13 by appending the computed check digit —
+                   covers vendor catalogs that store an EAN-13 with its trailing
+                   check digit dropped (e.g. "030521026849" is really EAN
+                   "0305210268494" with the final "4" cut off).
+      13-digit  →  also produce GTIN-14 ("0" + v); if starts with "0", also UPC-12 (v[1:]);
+                   ALSO produce the 12-digit truncation (v[:12]) so it matches a
+                   vendor value that dropped the check digit.
+      14-digit  →  also produce EAN-13 (v[1:]) and, if starts with "00", UPC-12 (v[2:])
+    """
+    if not v or not v.isdigit():
+        return [v] if v else []
+    forms: list[str] = [v]
+    n = len(v)
+    if n == 12:
+        forms.append("0" + v)                      # → EAN-13 (UPC-A prefixed with 0)
+        forms.append("00" + v)                     # → GTIN-14
+        if not _is_valid_upca(v):
+            # Not a self-consistent UPC-A → almost certainly an EAN-13 whose
+            # trailing check digit was dropped.  Recover the full EAN-13.
+            forms.append(v + _ean13_check_digit(v))
+    elif n == 13:
+        forms.append("0" + v)   # → GTIN-14
+        if v.startswith("0"):
+            forms.append(v[1:])  # → UPC-12 (EAN-13 derived from UPC-A)
+        forms.append(v[:12])     # → 12-digit truncation (vendor dropped the check digit)
+    elif n == 14:
+        forms.append(v[1:])      # → EAN-13
+        if v.startswith("00"):
+            forms.append(v[2:])  # → UPC-12
+    # Dedupe while preserving order.
+    return list(dict.fromkeys(forms))
+
+
 def _tier1_upc(
     api: CatalogAPI,
     rows: list[SourceRow],
@@ -550,25 +729,41 @@ def _tier1_upc(
     """
     Batch UPC/EAN search via SP-API. Returns {row_idx: [normalized items]}.
 
-    Two-pass strategy:
-      Pass 1 — search as UPC-12 (id_type="UPC").
-      Pass 2 — for any UPC that got no hit, prepend 0 to make EAN-13 and
-               search again as id_type="EAN". Amazon indexes many CPG products
-               as EAN-13 even when the label shows a 12-digit UPC-A barcode.
+    Four-pass strategy:
+      Pass 1 — search as UPC (id_type="UPC") for all 12-digit identifiers.
+      Pass 2 — search the same 12-digit identifiers as EAN-13 (prepend "0").
+               Amazon indexes many CPG products as EAN-13 even when the physical
+               label shows a 12-digit UPC-A barcode.
+      Pass 3 — search any 13-digit EANs from the vendor catalog directly as
+               id_type="EAN".  Vendor exports sometimes supply the EAN-13 (not
+               the UPC-A) in the UPC column — Pass 1 would search them as
+               id_type="UPC" (wrong type) so they need their own EAN pass.
+      Pass 4 — keyword search for UPCs that got ZERO results from passes 1-3.
+               Two causes of misses: (a) old ASINs (pre-2010, B000/B001/B002
+               prefix) whose UPC fields were never registered in SP-API's catalog,
+               and (b) SP-API returning only the "featured" ASIN when multiple
+               ASINs share the same UPC (size/pack variants).  A keyword search
+               on the UPC string hits Amazon's full-text index which finds both.
+
+    The lookup table (`id_to_rows`) is built with ALL barcode forms of each
+    catalog identifier (12-digit, 13-digit, 14-digit) so that a match succeeds
+    regardless of which form SP-API happens to return in its identifiers array.
     """
-    upc_to_rows: dict[str, list[int]] = {}
+    # Build id_to_rows with ALL barcode forms → row index mapping.
+    id_to_rows: dict[str, list[int]] = {}
     for r in rows:
-        if r.upc:
-            norm = _normalize_upc(r.upc)
-            upc_to_rows.setdefault(norm, []).append(r.row_idx)
+        if not r.upc:
+            continue
+        norm = _normalize_upc(r.upc.strip())
+        for form in _all_id_forms(norm):
+            id_to_rows.setdefault(form, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
-    if not upc_to_rows:
+    if not id_to_rows:
         return out
 
-    def _run_batches(id_list: list[str], id_type: str, phase_offset: int = 0) -> set[str]:
-        """Send batches, populate `out`, return set of UPCs that got ≥1 hit."""
-        hit_set: set[str] = set()
+    def _run_batches(id_list: list[str], id_type: str, phase_offset: int = 0) -> None:
+        """Send batches and populate `out`."""
         batches = list(_chunks(id_list, UPC_BATCH_SIZE))
         for i, batch in enumerate(batches):
             if run_id and _check_control(run_id):
@@ -577,40 +772,136 @@ def _tier1_upc(
                 _update_progress(run_id, done=phase_offset + i, total=phase_offset + len(batches))
             try:
                 data = api.search_by_identifiers(batch, id_type=id_type)
+            except PermissionError:
+                raise  # 403 — SP-API auth/roles problem; abort with a clear error
             except Exception as exc:
                 log.warning("%s batch failed (%s): %s", id_type, len(batch), exc)
                 continue
-            for raw in (data.get("items") or []):
-                normalized = normalize_amazon_item(raw)
-                # Collect all identifiers this item carries (both UPC and EAN forms).
+            for raw_item in (data.get("items") or []):
+                normalized = normalize_amazon_item(raw_item)
+                # Collect all barcode forms this item carries across UPC, EAN, GTIN.
                 item_ids: set[str] = set()
-                for v in (normalized.get("upc"), normalized.get("ean")):
-                    if v:
-                        item_ids.add(v)
-                        # Also try stripping a leading 0 to match stored 12-digit UPC.
-                        if v.startswith("0") and len(v) == 13:
-                            item_ids.add(v[1:])
-                for uid in item_ids & set(upc_to_rows.keys()):
-                    hit_set.add(uid)
-                    for ri in upc_to_rows[uid]:
+                for v in filter(None, [
+                    normalized.get("upc"),
+                    normalized.get("ean"),
+                    normalized.get("gtin"),
+                ]):
+                    for form in _all_id_forms(v):
+                        item_ids.add(form)
+                for uid in item_ids & id_to_rows.keys():
+                    for ri in id_to_rows[uid]:
                         out.setdefault(ri, []).append(normalized)
-        return hit_set
+        # Fix off-by-one: loop ends at done=N-1; mark all batches complete.
+        if run_id and batches:
+            _update_progress(
+                run_id,
+                done=phase_offset + len(batches),
+                total=phase_offset + len(batches),
+            )
 
-    # Pass 1: search by UPC-12
-    upcs = list(upc_to_rows.keys())
-    hit_upcs = _run_batches(upcs, "UPC", phase_offset=0)
+    # Deduplicate while preserving order (catalog may have same UPC on multiple rows).
+    all_ids = list(dict.fromkeys(id_to_rows.keys()))
+    upcs_12 = [u for u in all_ids if u.isdigit() and len(u) == 12]
+    eans_13 = [u for u in all_ids if u.isdigit() and len(u) == 13]
 
-    # Pass 2: search ALL 12-digit UPCs again as EAN-13 (prepend 0).
-    # Amazon indexes many CPG products under EAN-13 even when the physical
-    # label shows a 12-digit UPC-A. Running a full EAN pass finds additional
-    # listings that the UPC pass missed, and can also return extra ASINs for
-    # UPCs that already had UPC hits (multipack / variant listings).
-    ean_candidates = [u for u in upcs if u.isdigit() and len(u) == 12]
-    if ean_candidates:
-        log.info("UPC pass 2 (EAN-13): searching all %d UPCs as EAN", len(ean_candidates))
-        eans = ["0" + u for u in ean_candidates]
-        upc1_batches = (len(upcs) + UPC_BATCH_SIZE - 1) // UPC_BATCH_SIZE
-        _run_batches(eans, "EAN", phase_offset=upc1_batches)
+    # Pass 1: search all 12-digit forms as UPC
+    if upcs_12:
+        _run_batches(upcs_12, "UPC", phase_offset=0)
+
+    # Pass 2: search 12-digit forms as EAN-13 (prepend "0")
+    if upcs_12:
+        upc1_batches = (len(upcs_12) + UPC_BATCH_SIZE - 1) // UPC_BATCH_SIZE
+        log.info("UPC pass 2 (EAN-13): searching %d UPCs as EAN", len(upcs_12))
+        _run_batches(["0" + u for u in upcs_12], "EAN", phase_offset=upc1_batches)
+
+    # Pass 3: search 13-digit EANs directly as EAN
+    # These come from vendor catalogs that export EAN-13 in the UPC column.
+    # Pass 1 would search them as id_type="UPC" (wrong) so they need their own pass.
+    if eans_13:
+        upc12_batches = (len(upcs_12) + UPC_BATCH_SIZE - 1) // UPC_BATCH_SIZE
+        ean_dup_batches = upc12_batches  # Pass 2 already incremented offset
+        log.info("UPC pass 3 (EAN-13 direct): searching %d EANs from catalog", len(eans_13))
+        _run_batches(eans_13, "EAN", phase_offset=upc12_batches + ean_dup_batches)
+
+    # Pass 4: keyword fallback for rows that got zero results from passes 1–3.
+    # Two known causes of misses:
+    #   (a) Old ASINs (B000–B002 era) whose UPC was never populated in SP-API's
+    #       structured identifier fields — identifier search finds nothing.
+    #   (b) SP-API returns only the "featured" ASIN when multiple ASINs share a
+    #       UPC (pack/size variants) — sibling variants are silently dropped.
+    # A keyword search on the raw UPC string uses Amazon's full-text index and
+    # recovers both cases.  We search the original (pre-pad) form AND the
+    # zero-padded 12-digit form so both `50000765089` and `050000765089` are tried.
+    missed_rows = [r for r in rows if r.upc and r.row_idx not in out]
+    if missed_rows:
+        # Build a deduplicated list of (upc_string, row_idx) pairs to search.
+        seen_upc: set[str] = set()
+        kw_pairs: list[tuple[str, int]] = []
+        for r in missed_rows:
+            raw_upc = r.upc.strip()
+            norm_upc = _normalize_upc(raw_upc)
+            for u in dict.fromkeys([raw_upc, norm_upc]):   # original then padded
+                if u and u not in seen_upc:
+                    seen_upc.add(u)
+                    kw_pairs.append((u, r.row_idx))
+
+        log.info("UPC pass 4 (keyword fallback): %d rows got no results from passes 1-3, "
+                 "searching %d UPC strings as keywords", len(missed_rows), len(kw_pairs))
+
+        # Map each UPC string back to all rows that share it (same UPC on multiple rows).
+        upc_to_rows: dict[str, list[int]] = {}
+        for u, ri in kw_pairs:
+            upc_to_rows.setdefault(u, []).append(ri)
+
+        _kw_total = len(upc_to_rows)
+        _kw_done = 0
+        if run_id and _kw_total:
+            _update_progress(
+                run_id,
+                phase=f"Tier 1 / UPC keyword fallback ({_kw_total} items)",
+                done=0,
+                total=_kw_total,
+            )
+
+        for upc_kw, row_idxs in upc_to_rows.items():
+            if run_id and _check_control(run_id):
+                break
+            try:
+                data = api.search_by_keywords(keywords=upc_kw, page_size=20)
+            except PermissionError:
+                raise  # 403 — SP-API auth/roles problem; abort with a clear error
+            except Exception as exc:
+                log.warning("UPC keyword fallback failed for %r: %s", upc_kw, exc)
+                _kw_done += 1
+                if run_id and (_kw_done % 10 == 0 or _kw_done == _kw_total):
+                    _update_progress(run_id, done=_kw_done, total=_kw_total)
+                continue
+            for raw_item in (data.get("items") or []):
+                normalized = normalize_amazon_item(raw_item)
+                # Verify the result actually carries a matching barcode so we
+                # don't accidentally match unrelated products that contain the
+                # UPC digits coincidentally in their title/description.
+                item_ids: set[str] = set()
+                for v in filter(None, [
+                    normalized.get("upc"),
+                    normalized.get("ean"),
+                    normalized.get("gtin"),
+                ]):
+                    for form in _all_id_forms(v):
+                        item_ids.add(form)
+                # Also accept a partial match: the UPC keyword must appear in
+                # at least one of the item's barcode forms.
+                upc_forms = set(_all_id_forms(_normalize_upc(upc_kw)))
+                if not (item_ids & upc_forms) and not (item_ids & {upc_kw}):
+                    # No barcode match — skip to avoid false positives.
+                    continue
+                for ri in row_idxs:
+                    if normalized not in out.get(ri, []):
+                        out.setdefault(ri, []).append(normalized)
+            _kw_done += 1
+            if run_id and (_kw_done % 10 == 0 or _kw_done == _kw_total):
+                _update_progress(run_id, done=_kw_done, total=_kw_total)
+            time.sleep(PAGE_SLEEP)
 
     return out
 
@@ -632,10 +923,12 @@ def _tier2_itemid(
     for i, (term, row_idxs) in enumerate(terms):
         if run_id and _check_control(run_id):
             break
-        if run_id and (i % 5 == 0 or i == total_terms - 1):
-            _update_progress(run_id, done=i, total=total_terms)
+        if run_id:
+            _update_progress(run_id, done=i + 1, total=total_terms)
         try:
-            data = api.search_by_keywords(term, page_size=20)
+            data = api.search_by_keywords(term, page_size=20, max_retries=3)
+        except PermissionError:
+            raise  # 403 — SP-API auth/roles problem; abort with a clear error
         except Exception as exc:
             log.warning("ItemID search failed for %r: %s", term, exc)
             continue
@@ -644,6 +937,29 @@ def _tier2_itemid(
         for ri in row_idxs:
             out.setdefault(ri, []).extend(normalized)
     return out
+
+
+# Quantity / pack / size noise that breaks Amazon keyword search.  Strips
+# slash-pack codes ("6/6.5oz", "24/1ct", "12/6pk/22.5oz", "pk/144"), standalone
+# sizes ("6.5oz", "1000g"), and "pack of N" / "N count" / "N pk" etc.  Shade
+# codes ("#46") and meaningful product numbers ("5 Hour", "WD40") are preserved.
+_QTY_NOISE_RE = re.compile(
+    r'\b\d+\s*/\s*\d*\.?\d*\s*(?:fl\s*)?(?:oz|ounces?|ml|milliliters?|liters?|l|g|grams?|kg|lbs?|gal|ct|count|pk|pack|ea|each)?'
+    r'|\b(?:pk|pack|ct|count|cs|case|ea|dz|dozen)\s*/\s*\d+\b'
+    r'|\b\d+(?:\.\d+)?\s*(?:fl\s*)?(?:oz|ounces?|ml|milliliters?|liters?|gallons?|gal|grams?|kg|lbs?|pounds?)\b'
+    r'|\bpack\s+of\s+\d+\b|\bbox\s+of\s+\d+\b|\bset\s+of\s+\d+\b|\bcount\s+of\s+\d+\b'
+    r'|\b\d+\s*[-\s]?(?:ct|count|pk|pack|pcs|pieces?|rolls?|pairs?|tubes?|vials?|sachets?)\b',
+    re.IGNORECASE,
+)
+
+
+def _clean_search_query(text: str) -> str:
+    """Strip pack/size noise from a vendor title so Amazon's keyword search
+    matches on the real product words (e.g. 'VASELINE SPRAY 6/6.5oz ALOE' →
+    'VASELINE SPRAY ALOE').  Keeps every meaningful product word."""
+    c = _QTY_NOISE_RE.sub(" ", text or "")
+    c = re.sub(r"\s*/\s*", " ", c)      # drop orphaned slashes left by pack codes
+    return re.sub(r"\s+", " ", c).strip()
 
 
 def _tier3_title(
@@ -655,25 +971,34 @@ def _tier3_title(
 ) -> dict[int, list[dict]]:
     """
     One paginated keyword search per unique title.
-    When extracted_brands is provided, builds queries from extracted
-    brand + product_type (+ model) instead of the raw vendor title —
-    this gives Amazon's search engine cleaner, more targeted input.
+
+    Query = brand + cleaned vendor title.  The title is cleaned of pack/size
+    noise ("6/6.5oz", "pk/144") which otherwise wrecks Amazon's keyword
+    relevance, but every distinguishing product word is kept (so e.g. "aloe"
+    survives — searching extracted brand+product_type alone would drop it and
+    bury the right listing).  Extracted brand is preferred for the brand token;
+    extracted product_type/model are appended as a fallback when the vendor
+    has no usable title.
     """
     extracted_brands = extracted_brands or {}
     term_to_rows: dict[str, list[int]] = {}
     for r in rows:
         ext = extracted_brands.get(r.row_idx) or {}
         brand = ext.get("brand") or r.brand or ""
-        product_type = ext.get("product_type") or ""
-        model = ext.get("model") or ""
+        cleaned = _clean_search_query(r.search_term)
 
-        if brand and product_type:
-            # Extracted fields available — build a clean, targeted query
-            parts = [p for p in [brand, product_type, model] if p]
-            term = " ".join(parts)
-        elif r.search_term:
-            # Fallback: existing approach (brand prefix + raw title/search_term)
-            term = f"{brand} {r.search_term}".strip() if brand else r.search_term
+        if cleaned:
+            # brand + cleaned title (don't duplicate the brand if the title
+            # already leads with it).
+            if brand and brand.lower() not in cleaned.lower():
+                term = f"{brand} {cleaned}".strip()
+            else:
+                term = cleaned
+        elif brand and ext.get("product_type"):
+            # No usable title — fall back to extracted fields.
+            term = " ".join(
+                p for p in [brand, ext.get("product_type"), ext.get("model")] if p
+            )
         else:
             continue
 
@@ -689,9 +1014,12 @@ def _tier3_title(
             _update_progress(run_id, done=i, total=total_terms)
         page_token = None
         collected: list[dict] = []
-        for page in range(max(1, int(max_pages))):
+        page_count = max(1, min(TITLE_PAGE_CAP, int(max_pages or DEFAULT_TITLE_MAX_PAGES)))
+        for page in range(page_count):
             try:
                 data = api.search_by_keywords(term, page_token=page_token, page_size=20)
+            except PermissionError:
+                raise  # 403 — SP-API auth/roles problem; abort with a clear error
             except Exception as exc:
                 log.warning("Title search failed for %r: %s", term, exc)
                 break
@@ -700,7 +1028,7 @@ def _tier3_title(
             page_token = (data.get("pagination") or {}).get("nextToken")
             if not page_token:
                 break
-            if page < max_pages - 1:
+            if page < page_count - 1:
                 time.sleep(PAGE_SLEEP)
         for ri in row_idxs:
             out.setdefault(ri, []).extend(collected)
@@ -717,19 +1045,21 @@ _RESCORE_BATCH = 200  # candidates scored + written per DB transaction
 
 def start_rescore(
     run_id: int, title_col: str, brand_col: str = "", max_rank: int = 0,
-    min_rank: int = 0,
+    min_rank: int = 0, brand_mode: str = "col",
 ) -> None:
     """Kick off a background re-score thread for an existing run.
 
     max_rank / min_rank: when >= 0, persist on the run row so future
     rescores default to these values.  Pass 0 to clear the cap.
+    brand_mode: "text" means brand_col is a literal value applied to every row;
+                "col" means brand_col is a column name looked up per row.
     """
     clear_control(run_id)
-    # Persist updated rank caps on the run row so they survive a server restart.
+    # Persist rank caps and brand selection so future rescores pre-populate correctly.
     with database._LOCK, _with_conn() as conn:
         conn.execute(
-            "UPDATE analytics_runs SET max_rank=?, min_rank=? WHERE id=?",
-            (int(max_rank), int(min_rank), run_id),
+            "UPDATE analytics_runs SET max_rank=?, min_rank=?, brand_col=?, brand_mode=? WHERE id=?",
+            (int(max_rank), int(min_rank), brand_col or "", brand_mode or "col", run_id),
         )
     # Write "Rescoring" to the DB *before* launching the thread so that the
     # very first fetchAnalyticsRunDetail call (which happens right after the
@@ -738,7 +1068,7 @@ def start_rescore(
                      phase="Re-scoring candidates…", done=0, total=0)
     thread = threading.Thread(
         target=_rescore_pipeline,
-        args=(run_id, title_col, brand_col, max_rank, min_rank),
+        args=(run_id, title_col, brand_col, max_rank, min_rank, brand_mode),
         daemon=True,
     )
     thread.start()
@@ -746,7 +1076,7 @@ def start_rescore(
 
 def _rescore_pipeline(
     run_id: int, title_col: str, brand_col: str = "", max_rank: int = 0,
-    min_rank: int = 0,
+    min_rank: int = 0, brand_mode: str = "col",
 ) -> None:
     """
     Re-score every candidate in `run_id` using `title_col` from each row's
@@ -761,6 +1091,11 @@ def _rescore_pipeline(
     try:
         with database._connect() as conn:
             conn.row_factory = sqlite3.Row
+            run_row = conn.execute(
+                "SELECT vetting_mode FROM analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+            rescore_mode = (run_row["vetting_mode"] if run_row else None) or "cpg"
+
             cat_rows = conn.execute(
                 "SELECT row_idx, data_json FROM analytics_catalog_rows "
                 "WHERE run_id=? ORDER BY row_idx",
@@ -775,9 +1110,15 @@ def _rescore_pipeline(
         # Load previously extracted brand fields (stored during the original run).
         extracted_brands_rescore = _load_extracted_brands(run_id)
 
+        # Load pair-manager sets once for the whole rescore.
+        bl_set = frozenset(database.load_blacklist_set())
+        vf_set = frozenset(database.load_verified_set())
+
         # Build row_idx → catalog data map, also resolve new title per row.
+        # Single pass — parse data_json once per row to build all three maps
         catalog_map: dict[int, dict] = {}
         title_by_row: dict[int, str] = {}
+        brand_by_row: dict[int, str] = {}
         for r in cat_rows:
             try:
                 d = json.loads(r["data_json"] or "{}")
@@ -790,28 +1131,31 @@ def _rescore_pipeline(
                 title_by_row[ri] = str(raw.get(title_col) or "").strip()
             else:
                 title_by_row[ri] = d.get("title", "")
-
-        brand_by_row: dict[int, str] = {}
-        for r in cat_rows:
-            try:
-                d2 = json.loads(r["data_json"] or "{}")
-            except (ValueError, TypeError):
-                d2 = {}
-            ri2 = int(r["row_idx"])
-            raw2 = d2.get("raw", {})
-            if brand_col and brand_col in raw2:
-                brand_by_row[ri2] = str(raw2.get(brand_col) or "").strip()
+            if brand_mode == "text" and brand_col:
+                # Literal brand override — same value for every row.
+                brand_by_row[ri] = brand_col
+            elif brand_col and brand_col in raw:
+                brand_by_row[ri] = str(raw.get(brand_col) or "").strip()
             else:
-                brand_by_row[ri2] = d2.get("brand", "")
+                brand_by_row[ri] = d.get("brand", "")
 
         total = len(cand_rows)
         _update_progress(run_id, done=0, total=total)
 
-        cand_batch: list[tuple] = []
-        cat_batch:  list[tuple] = []   # (new_data_json, run_id, row_idx)
+        cand_batch:   list[tuple] = []
+        delete_batch: list[tuple] = []  # (run_id, row_idx, asin) — BSR-excluded rows
+        cat_batch:    list[tuple] = []  # (new_data_json, run_id, row_idx)
         flushed_cat_rows: set[int] = set()
 
         def _flush(final_done: int) -> None:
+            if delete_batch:
+                with database._LOCK, _with_conn() as conn:
+                    conn.executemany(
+                        "DELETE FROM analytics_candidates "
+                        "WHERE run_id=? AND row_idx=? AND asin=?",
+                        delete_batch,
+                    )
+                delete_batch.clear()
             if cand_batch:
                 with database._LOCK, _with_conn() as conn:
                     conn.executemany(
@@ -866,17 +1210,47 @@ def _rescore_pipeline(
             except (ValueError, TypeError):
                 sources_list = []
 
+            ext = extracted_brands_rescore.get(row_idx) or {}
+            # When the user explicitly set a text brand override, prevent the
+            # AI-extracted brand from taking priority over it.
+            if brand_mode == "text" and brand_col and ext.get("brand"):
+                ext = {k: v for k, v in ext.items() if k != "brand"}
             scores = calculate_confidence(
                 source, amazon_data,
                 upc_search_hit="UPC" in sources_list,
-                extracted=extracted_brands_rescore.get(row_idx),
+                extracted=ext or None,
+                mpn_search_hit="ItemID" in sources_list,
+                mode=rescore_mode,
             )
             conf = scores["confidence_score"]
-            hard_reject = scores.get("size_mismatch") or scores.get("gender_mismatch") or scores.get("color_mismatch")
-            upc_confirmed = scores["upc_match"] and not scores.get("pack_mismatch") and not scores.get("upc_suspect")
-            if upc_confirmed:
-                verdict = "verified"
-            elif hard_reject:
+
+            # Category check (same logic as _upsert_candidate): only veto
+            # ambiguous matches — a confirmed UPC/brand match is the right
+            # product even if Amazon shelves it outside Health.
+            _amz_bsr_cat_r = categorize("", amazon_data.get("sales_rank_category") or "")
+            _cat_mismatch_r = False
+            if (
+                rescore_mode == "medical" and _amz_bsr_cat_r != UNKNOWN
+                and not scores.get("upc_match") and not scores.get("brand_confirmed")
+            ):
+                _dist_r = category_distance(MEDICAL, _amz_bsr_cat_r)
+                _cat_mismatch_r = _dist_r >= 5.0
+
+            if _cat_mismatch_r:
+                scores["category_mismatch"] = True
+
+            # Media-format hard-reject (same logic as _upsert_candidate).
+            _media_mismatch_r = _is_media_format(amazon_data.get("title") or "")
+            if _media_mismatch_r:
+                scores["media_format_mismatch"] = True
+
+            hard_reject = (
+                scores.get("size_mismatch") or scores.get("gender_mismatch")
+                or scores.get("color_mismatch") or _cat_mismatch_r or _media_mismatch_r
+                or scores.get("count_mismatch") or scores.get("scent_mismatch")
+                or scores.get("shade_mismatch") or scores.get("apparel_size_mismatch")
+            )
+            if hard_reject:
                 verdict = "not_approved"
             elif conf >= 90:
                 verdict = "verified"
@@ -897,12 +1271,25 @@ def _rescore_pipeline(
                         amazon_data["sales_rank"] = cand_sales_rank
                         cand_data["amazon"] = amazon_data
 
-            # Apply rank window — overrides even a high-confidence verdict.
-            # Both caps: unknown/null rank is always allowed through.
-            if max_rank > 0 and cand_sales_rank is not None and int(cand_sales_rank) > max_rank:
+            # Apply rank window: items outside [min_rank, max_rank] are deleted.
+            # min_rank also excludes null-ranked items (same logic as _upsert_candidate).
+            _rscore_rank = int(cand_sales_rank) if cand_sales_rank is not None else None
+            _rscore_bsr_excluded = (
+                (max_rank > 0 and _rscore_rank is not None and _rscore_rank > max_rank) or
+                (min_rank > 0 and (_rscore_rank is None or _rscore_rank < min_rank))
+            )
+            if _rscore_bsr_excluded:
+                delete_batch.append((run_id, row_idx, str(c["asin"])))
+                continue  # skip adding to cand_batch
+
+            # Pair manager overrides — blacklisted always loses, verified auto-approves.
+            cand_upc = str(source.get("upc") or "").strip()
+            cand_asin = str(c["asin"]).strip().upper()
+            if cand_upc and (cand_upc, cand_asin) in bl_set:
                 verdict = "not_approved"
-            if min_rank > 0 and cand_sales_rank is not None and int(cand_sales_rank) < min_rank:
-                verdict = "not_approved"
+            elif cand_upc and (cand_upc, cand_asin) in vf_set \
+                    and not hard_reject and conf >= 35:
+                verdict = "verified"
 
             scores["verdict"] = verdict
             cand_data["scores"] = scores
@@ -914,10 +1301,12 @@ def _rescore_pipeline(
                 run_id, row_idx, str(c["asin"]),
             ))
 
-            # Update the catalog row's title once per unique row_idx.
+            # Update the catalog row's title (and brand when overridden) once per unique row_idx.
             if row_idx not in flushed_cat_rows:
                 updated_cat = dict(cat)
                 updated_cat["title"] = new_title
+                if brand_mode == "text" and brand_col:
+                    updated_cat["brand"] = brand_col
                 cat_batch.append((
                     json.dumps(updated_cat, default=str),
                     run_id, row_idx,
@@ -975,6 +1364,10 @@ def start_analytics_run(
     source_rows: list[SourceRow],
     max_rank: int = 0,
     min_rank: int = 0,
+    mode: str = "cpg",
+    brand_col: str = "",
+    brand_mode: str = "col",
+    passthrough_cols: str = "",
 ) -> int:
     """
     Create an analytics_runs row, persist source rows, and kick off a
@@ -982,11 +1375,17 @@ def start_analytics_run(
     the new run id so the caller can redirect/poll.
 
     max_rank / min_rank: enforce rank window at verdict time.
+    mode: "cpg" or "medical" — controls MPN hit bonus and category distance threshold.
+    brand_col / brand_mode: saved for rescore pre-population.
+    passthrough_cols: JSON array of vendor column header names to carry into export.
     """
+    pages_per_title = max(1, min(TITLE_PAGE_CAP, int(pages_per_title or DEFAULT_TITLE_MAX_PAGES)))
     run_id = _create_run(
         name=name, marketplace=marketplace, search_methods=search_methods,
         pages_per_title=pages_per_title, ai_clean_titles=ai_clean_titles,
         total_catalog_items=len(source_rows), max_rank=max_rank, min_rank=min_rank,
+        mode=mode, brand_col=brand_col, brand_mode=brand_mode,
+        passthrough_cols=passthrough_cols,
     )
     _save_catalog_rows(run_id, source_rows)
 
@@ -996,7 +1395,7 @@ def start_analytics_run(
     thread = threading.Thread(
         target=_run_pipeline,
         args=(run_id, marketplace, search_methods, pages_per_title,
-              ai_clean_titles, source_rows, False, max_rank, min_rank),
+              ai_clean_titles, source_rows, False, max_rank, min_rank, mode),
         daemon=True,
     )
     thread.start()
@@ -1049,6 +1448,7 @@ def resume_run(run_id: int) -> bool:
 
     max_rank = int(run_d.get("max_rank") or 0)
     min_rank = int(run_d.get("min_rank") or 0)
+    run_mode = run_d.get("vetting_mode") or "cpg"
 
     clear_control(run_id)
     _update_progress(run_id, status="Searching", phase="Resuming…")
@@ -1058,15 +1458,70 @@ def resume_run(run_id: int) -> bool:
         args=(run_id,
               run_d.get("marketplace") or "US",
               search_methods,
-              int(run_d.get("pages_per_title") or DEFAULT_TITLE_MAX_PAGES),
+              max(1, min(TITLE_PAGE_CAP, int(run_d.get("pages_per_title") or DEFAULT_TITLE_MAX_PAGES))),
               bool(run_d.get("ai_clean_titles")),
               source_rows,
               True,       # is_resume=True
-              max_rank, min_rank),
+              max_rank, min_rank, run_mode),
         daemon=True,
     )
     thread.start()
     return True
+
+
+def _vet_and_store(
+    run_id: int,
+    rows_to_vet: list[SourceRow],
+    candidates_by_row: dict[int, list[tuple[dict, str]]],
+    extracted_brands: dict[int, dict],
+    blacklist_set: frozenset,
+    verified_set: frozenset,
+    max_rank: int,
+    min_rank: int,
+    mode: str,
+    phase_label: str,
+) -> None:
+    """
+    Score and persist every (row × ASIN) pair for ``rows_to_vet`` using the
+    candidates accumulated so far in ``candidates_by_row``.
+
+    Called after EACH search tier (not once at the very end) so candidates show
+    up in the UI progressively and survive a pause/stop — they're written as
+    soon as their tier completes instead of being held in memory for the whole
+    run.  Safe to re-run for the same row: ``_upsert_candidate`` merges by
+    (run_id, row_idx, asin), unioning the ``sources`` list and keeping the best
+    confidence, so a later tier simply enriches the row's existing candidates.
+    """
+    total = len(rows_to_vet)
+    if not total:
+        return
+    _update_progress(run_id, phase=phase_label, done=0, total=total)
+    done = 0
+    for r in rows_to_vet:
+        source_dict = r.as_source_dict()
+        ext = extracted_brands.get(r.row_idx)
+        by_asin: dict[str, tuple[dict, list[str]]] = {}
+        for item, source_label in candidates_by_row.get(r.row_idx, []):
+            asin = (item.get("asin") or "").upper()
+            if not asin:
+                continue
+            if asin in by_asin:
+                by_asin[asin] = (by_asin[asin][0],
+                                 list(dict.fromkeys(by_asin[asin][1] + [source_label])))
+            else:
+                by_asin[asin] = (item, [source_label])
+
+        for asin, (item, srcs) in by_asin.items():
+            _upsert_candidate(
+                run_id, r.row_idx, item, source_dict, srcs,
+                max_rank, min_rank, extracted=ext,
+                blacklist_set=blacklist_set, verified_set=verified_set,
+                mode=mode,
+            )
+        done += 1
+        if done % 25 == 0 or done == total:
+            _update_progress(run_id, done=done)
+    _recompute_run_counts(run_id)
 
 
 def _run_pipeline(
@@ -1079,6 +1534,7 @@ def _run_pipeline(
     is_resume: bool = False,
     max_rank: int = 0,
     min_rank: int = 0,
+    mode: str = "cpg",
 ) -> None:
     """Do the work. All errors are caught and recorded on the run row."""
     try:
@@ -1124,12 +1580,12 @@ def _run_pipeline(
                 return True
             return False
 
-        # --- Brand extraction (GPT-4o-mini, always when OpenAI key present) ---
+        # --- Brand extraction (GPT-4o-mini, only when ai_clean_titles enabled) ---
         # Extracts brand / product_type / model / size / pack_info from vendor
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
         extracted_brands: dict[int, dict] = {}
-        if os.getenv("OPENAI_API_KEY"):
+        if ai_clean_titles and os.getenv("OPENAI_API_KEY"):
             _update_progress(run_id, phase="Extracting product fields with AI…")
 
             def _extraction_progress(done: int, total_ext: int) -> None:
@@ -1167,6 +1623,10 @@ def _run_pipeline(
                     out.append(r)
             return out
 
+        # Pair-manager sets — loaded once and reused for vetting after each tier.
+        blacklist_set = frozenset(database.load_blacklist_set())
+        verified_set  = frozenset(database.load_verified_set())
+
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
@@ -1174,6 +1634,13 @@ def _run_pipeline(
             for ri, items in tier1.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "UPC"))
+            # Score + persist this tier's rows immediately so UPC matches appear
+            # in the UI right away (and aren't lost if the user stops later).
+            _vet_and_store(
+                run_id, [r for r in source_rows if r.row_idx in tier1],
+                candidates_by_row, extracted_brands, blacklist_set, verified_set,
+                max_rank, min_rank, mode, "Scoring UPC matches",
+            )
             if _handle_control():
                 return
 
@@ -1184,6 +1651,11 @@ def _run_pipeline(
             for ri, items in tier2.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "ItemID"))
+            _vet_and_store(
+                run_id, [r for r in source_rows if r.row_idx in tier2],
+                candidates_by_row, extracted_brands, blacklist_set, verified_set,
+                max_rank, min_rank, mode, "Scoring Item ID matches",
+            )
             if _handle_control():
                 return
 
@@ -1200,42 +1672,27 @@ def _run_pipeline(
             for ri, items in tier3.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "Title"))
+            _vet_and_store(
+                run_id, [r for r in source_rows if r.row_idx in tier3],
+                candidates_by_row, extracted_brands, blacklist_set, verified_set,
+                max_rank, min_rank, mode, "Scoring title matches",
+            )
             if _handle_control():
                 return
 
-        # --- Vetting: score every (row × ASIN) pair --------------------------
-        _update_progress(run_id, phase="Vetting candidates", done=0, total=total)
-        for r in source_rows:
-            source_dict = r.as_source_dict()
-            ext = extracted_brands.get(r.row_idx)
-            by_asin: dict[str, tuple[dict, list[str]]] = {}
-            for item, source_label in candidates_by_row.get(r.row_idx, []):
-                asin = (item.get("asin") or "").upper()
-                if not asin:
-                    continue
-                if asin in by_asin:
-                    by_asin[asin] = (by_asin[asin][0],
-                                     list(dict.fromkeys(by_asin[asin][1] + [source_label])))
-                else:
-                    by_asin[asin] = (item, [source_label])
-
-            for asin, (item, srcs) in by_asin.items():
-                _upsert_candidate(
-                    run_id, r.row_idx, item, source_dict, srcs,
-                    max_rank, min_rank, extracted=ext,
-                )
-
-            done += 1
-            if done % 10 == 0 or done == total:
-                _update_progress(run_id, done=done)
-
-            if done % 50 == 0 and _handle_control():
-                return
-
+        # Each tier vetted the rows it touched (with the full set of candidates
+        # accumulated so far), so every row that produced a candidate has been
+        # scored with all its sources by the last tier that touched it.
         _recompute_run_counts(run_id)
         clear_control(run_id)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
 
+    except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles
+        log.error("Analytics run %s aborted — SP-API 403: %s", run_id, exc)
+        _update_progress(
+            run_id, status="Error",
+            phase=f"SP-API {exc}"[:200],
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("Analytics run %s failed", run_id)
         _update_progress(
