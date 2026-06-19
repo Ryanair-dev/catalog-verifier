@@ -725,9 +725,17 @@ def _tier1_upc(
     api: CatalogAPI,
     rows: list[SourceRow],
     run_id: int = 0,
-) -> dict[int, list[dict]]:
+) -> tuple[dict[int, list[dict]], dict[int, list[dict]]]:
     """
-    Batch UPC/EAN search via SP-API. Returns {row_idx: [normalized items]}.
+    Batch UPC/EAN search via SP-API.
+
+    Returns ``(matched, kw_unverified)`` — two {row_idx: [normalized items]} maps:
+      * matched       — barcode-confirmed hits (structured passes 1-3 + Pass-4
+                        keyword hits whose barcode matches) → caller tags "UPC".
+      * kw_unverified — Pass-4 keyword hits whose barcode does NOT match the
+                        searched UPC (often the SAME product under a different
+                        Amazon UPC/ASIN).  Caller tags "UPC-KW" so they are vetted
+                        by title/brand/size WITHOUT UPC credit.
 
     Four-pass strategy:
       Pass 1 — search as UPC (id_type="UPC") for all 12-digit identifiers.
@@ -759,8 +767,12 @@ def _tier1_upc(
             id_to_rows.setdefault(form, []).append(r.row_idx)
 
     out: dict[int, list[dict]] = {}
+    # Pass-4 keyword hits whose barcode does NOT match the searched UPC — kept
+    # separately so the caller can vet them by title/brand/size WITHOUT giving
+    # them UPC credit (source "UPC-KW").
+    kw_extra: dict[int, list[dict]] = {}
     if not id_to_rows:
-        return out
+        return out, kw_extra
 
     def _run_batches(id_list: list[str], id_type: str, phase_offset: int = 0) -> None:
         """Send batches and populate `out`."""
@@ -878,9 +890,7 @@ def _tier1_upc(
                 continue
             for raw_item in (data.get("items") or []):
                 normalized = normalize_amazon_item(raw_item)
-                # Verify the result actually carries a matching barcode so we
-                # don't accidentally match unrelated products that contain the
-                # UPC digits coincidentally in their title/description.
+                # Does the returned listing actually carry the searched UPC?
                 item_ids: set[str] = set()
                 for v in filter(None, [
                     normalized.get("upc"),
@@ -889,21 +899,25 @@ def _tier1_upc(
                 ]):
                     for form in _all_id_forms(v):
                         item_ids.add(form)
-                # Also accept a partial match: the UPC keyword must appear in
-                # at least one of the item's barcode forms.
                 upc_forms = set(_all_id_forms(_normalize_upc(upc_kw)))
-                if not (item_ids & upc_forms) and not (item_ids & {upc_kw}):
-                    # No barcode match — skip to avoid false positives.
-                    continue
+                barcode_match = bool(item_ids & upc_forms) or bool(item_ids & {upc_kw})
+                # Barcode match → confirmed UPC hit (caller tags "UPC", gets UPC credit).
+                # No barcode match → the keyword surfaced a DIFFERENT-barcode listing
+                # (often the same product under another Amazon UPC/ASIN).  Keep it for
+                # title/brand/size vetting (caller tags "UPC-KW", NO UPC credit) instead
+                # of discarding: the scorer + hard rejects decide if it fits the vendor
+                # product — a real same-product listing surfaces as Review/Approved while
+                # coincidental keyword noise falls to Not Approved.
+                target = out if barcode_match else kw_extra
                 for ri in row_idxs:
-                    if normalized not in out.get(ri, []):
-                        out.setdefault(ri, []).append(normalized)
+                    if normalized not in target.get(ri, []):
+                        target.setdefault(ri, []).append(normalized)
             _kw_done += 1
             if run_id and (_kw_done % 10 == 0 or _kw_done == _kw_total):
                 _update_progress(run_id, done=_kw_done, total=_kw_total)
             time.sleep(PAGE_SLEEP)
 
-    return out
+    return out, kw_extra
 
 
 def _tier2_itemid(
@@ -1630,14 +1644,21 @@ def _run_pipeline(
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
-            tier1 = _tier1_upc(api, source_rows, run_id=run_id)
+            tier1, tier1_kw = _tier1_upc(api, source_rows, run_id=run_id)
             for ri, items in tier1.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "UPC"))
+            # Barcode-unverified keyword hits → vetted by title/brand/size with NO
+            # UPC credit (source "UPC-KW").  Lets a same-product listing under a
+            # different Amazon barcode surface for review instead of being dropped.
+            for ri, items in tier1_kw.items():
+                for it in items:
+                    candidates_by_row.setdefault(ri, []).append((it, "UPC-KW"))
             # Score + persist this tier's rows immediately so UPC matches appear
             # in the UI right away (and aren't lost if the user stops later).
+            _tier1_rows = set(tier1) | set(tier1_kw)
             _vet_and_store(
-                run_id, [r for r in source_rows if r.row_idx in tier1],
+                run_id, [r for r in source_rows if r.row_idx in _tier1_rows],
                 candidates_by_row, extracted_brands, blacklist_set, verified_set,
                 max_rank, min_rank, mode, "Scoring UPC matches",
             )
