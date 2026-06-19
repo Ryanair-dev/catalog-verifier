@@ -66,6 +66,24 @@ _PACK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Pack-MULTIPLIER tokens only — the subset of _PACK_RE that means "N copies of
+# the unit" ("Pack of 2", "2 Pack", "Box of 6", "Case of 12", "2/...").  Unit-count
+# tokens (count/ct/each/pieces/sachets/...) are deliberately EXCLUDED so that a
+# per-unit count is never confused with a pack multiplier.  Used by
+# _unit_count_mismatch to strip the multiplier before comparing per-unit counts:
+# vendor "4 CT" vs Amazon "4 Each (Pack of 2)" → per-unit 4 == 4 (the 2-pack is a
+# pack difference, not a different SKU).
+_MULTIPLIER_RE = re.compile(
+    r'\bpack\s+of\s+(\d+)\b'           # "pack of 2"
+    r'|\bbox\s+of\s+(\d+)\b'           # "box of 6"
+    r'|\bset\s+of\s+(\d+)\b'           # "set of 4"
+    r'|\bcase\s+of\s+(\d+)\b'          # "case of 12"
+    r'|\b(\d+)\s*[-\s]?pack\b'         # "2 pack", "2-pack"
+    r'|\b(\d+)\s*[-\s]?pk\b'           # "2 pk", "2pk"
+    r'|\b(\d+)/(?=\d)',                 # "2/1200ML" — CPG slash-pack
+    re.IGNORECASE,
+)
+
 # Volume size extraction — oz / fl oz / ounce / ml / l / gal
 # Uses negative lookbehind (?<![.\d]) instead of \b so that a leading-decimal
 # size like ".5 oz" is captured as 0.5 rather than 5 (which \b would give by
@@ -665,10 +683,19 @@ def _unit_count_mismatch(src_title: str, amz_title: str) -> bool:
     (36 vs 72) are NOT exempted — "72-count" is a different SKU from "36-count"
     even when they are the same product in different pack sizes.
     """
-    src_n = _pack_count(src_title)
-    amz_n = _pack_count(amz_title)
+    # Strip pack-MULTIPLIER tokens first so the comparison is per-unit-count vs
+    # per-unit-count, never per-unit-count vs pack-multiplier.  Without this,
+    # vendor "4 CT / BOX" (per-unit 4) was compared against Amazon "4 Each
+    # (Pack of 2)" where _pack_count grabs the pack number 2 → false 4-vs-2
+    # mismatch.  After stripping "Pack of 2" / "2 Pack", both sides resolve to
+    # their real per-unit count (4 vs 4, 10 vs 10) and the pack difference is
+    # left to pack_mismatch (a soft cap), per the "only the pack differs →
+    # approve" rule.  A genuine per-unit difference ("80 Count" vs "110 Count",
+    # which carry no multiplier token) is untouched and still hard-rejects.
+    src_n = _pack_count(_MULTIPLIER_RE.sub(' ', src_title))
+    amz_n = _pack_count(_MULTIPLIER_RE.sub(' ', amz_title))
     if src_n <= 1 or amz_n <= 1:
-        # One or both sides have no explicit count: leave pack_mismatch to handle it.
+        # One or both sides have no explicit per-unit count: leave pack_mismatch to handle it.
         return False
     return not _within_10pct(float(src_n), float(amz_n))
 
@@ -1369,7 +1396,22 @@ def calculate_confidence(
     # just bundling and a linear "size mismatch" is a parsing artifact — both
     # are overridden below so the pair still verifies.  (e.g. 3M "1530-1" tape.)
     src_model = _s(source.get("mpn") or source.get("itemid"))
-    model_confirmed = brand_confirmed and _model_in_title(src_model, _s(amazon.get("title")))
+    # Exact match to Amazon's STRUCTURED part-number field is an authoritative
+    # same-SKU signal — stronger than a title substring, and it does NOT depend
+    # on the vendor brand column (which is often a distributor/parent-company
+    # name, e.g. "Sodalis" on a "Sure" product, that won't match Amazon's
+    # brand).  Require a specific part number (≥4 alphanumerics incl. a digit)
+    # so generic SKUs ("100", "AB", "Kit") can never trigger it.
+    _src_model_an = re.sub(r"[^a-z0-9]", "", src_model.lower())
+    _amz_mpn_an   = re.sub(r"[^a-z0-9]", "", _s(amazon.get("mpn")).lower())
+    mpn_field_exact = (
+        len(_src_model_an) >= 4 and any(c.isdigit() for c in _src_model_an)
+        and _src_model_an == _amz_mpn_an
+    )
+    model_confirmed = (
+        (brand_confirmed and _model_in_title(src_model, _s(amazon.get("title"))))
+        or mpn_field_exact
+    )
 
     # Detect multi-pack / bundle mismatches (same per-unit product, Amazon lists
     # a different bundle count — e.g. vendor case of 144 vs Amazon "3 Count").
@@ -1408,6 +1450,13 @@ def calculate_confidence(
         total = 100.0
     elif brand_confirmed and (size_confirmed or model_confirmed):
         # Same brand + (same per-unit size OR exact model number) = same item.
+        total = max(total, VERIFIED_FLOOR)
+    elif mpn_field_exact and best_title_ratio >= 50:
+        # Vendor item ID exactly equals Amazon's structured part number AND the
+        # titles broadly agree → a definitive same-SKU match, even when the
+        # vendor brand column is a distributor name that didn't confirm.  The
+        # title-agreement guard prevents a coincidental cross-domain part-number
+        # collision from auto-verifying an unrelated product.
         total = max(total, VERIFIED_FLOOR)
 
     # Detect per-unit size mismatches (e.g. 26.2 oz vs 12.1 oz, 2 lb vs 5 lb).
@@ -1502,6 +1551,7 @@ def calculate_confidence(
         "brand_confirmed": brand_confirmed,
         "size_match": size_confirmed,
         "model_confirmed": model_confirmed,
+        "mpn_field_exact": mpn_field_exact,
         "mpn_variation_score": round(mpn_variation_score, 1),
         "pack_mismatch": pack_mismatch,
         "effective_pack": effective_pack,

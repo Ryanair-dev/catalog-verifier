@@ -568,17 +568,33 @@ async def create_analytics_run(
         )
 
     # ── Deduplicate catalog rows ─────────────────────────────────────────────
-    # Vendor catalogs frequently repeat the same SKU on multiple lines.
-    # Dedup key priority: normalized Item ID → normalized UPC → normalized Title.
-    # We keep the FIRST occurrence and skip subsequent duplicates, preserving
-    # the original row_idx on kept rows so the UI row numbers stay meaningful.
+    # Vendor catalogs frequently repeat the same SKU on multiple lines.  A row is
+    # treated as a duplicate only when it repeats a STRONG identity, keeping the
+    # FIRST occurrence (its original row_idx is preserved so UI row numbers stay
+    # meaningful).
+    #
+    # Key priority: UPC (the globally-unique per-product identifier) is preferred;
+    # when an Item ID is also present, BOTH must match.  This is deliberate — some
+    # vendor files leave the real "Item #" column blank and the wizard's Item ID
+    # ends up mapped to a low-cardinality column (Manufacturer, Category).  Keying
+    # on Item ID alone then collapses thousands of distinct products onto one row
+    # per manufacturer.  Requiring the UPC (or UPC+ItemID together) prevents that,
+    # while also never merging two genuinely different SKUs that share a case UPC.
+    # Only when there is NO UPC do we fall back to Item ID — and even then we pair
+    # it with the title so a low-cardinality Item ID can't collapse the file.
     def _dedup_key(r):
-        norm_id    = r.itemid.strip().upper().replace("-", "").replace(" ", "")
         norm_upc   = r.upc.strip()
+        norm_id    = r.itemid.strip().upper().replace("-", "").replace(" ", "")
         norm_title = r.title.strip().lower()
-        if norm_id:    return ("id",    norm_id)
-        if norm_upc:   return ("upc",   norm_upc)
-        return             ("title", norm_title)
+        if norm_upc and norm_id:
+            return ("upc+id", norm_upc, norm_id)
+        if norm_upc:
+            return ("upc", norm_upc)
+        if norm_id and norm_title:
+            return ("id+title", norm_id, norm_title)
+        if norm_id:
+            return ("id", norm_id)
+        return ("title", norm_title)
 
     seen_keys: set = set()
     deduped = []

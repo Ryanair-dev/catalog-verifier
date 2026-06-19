@@ -1778,6 +1778,26 @@ html, body {
 .analytics-run-row:hover { background: #faf7ff; }
 .analytics-run-row:last-child { border-bottom: none; }
 
+/* Per-row delete button on the analytics runs board. */
+.analytics-run-del {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: #b6bdc8;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.analytics-run-del:hover { background: #fee2e2; color: #b91c1c; }
+.analytics-run-del:active { transform: scale(0.92); }
+
 .analytics-run-inline-bar {
   height: 4px;
   border-radius: 2px;

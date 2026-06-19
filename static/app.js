@@ -115,6 +115,66 @@
     t.addEventListener("transitionend", () => { clearTimeout(fallback); t.remove(); }, { once: true });
   }
 
+  // Promise-based confirmation modal — replaces window.confirm() so destructive
+  // actions use the app's styled modal instead of the browser's native dialog.
+  // Resolves true on confirm, false on Cancel / Esc / backdrop click.
+  //   await showConfirm({ title, message, confirmText, cancelText, danger })
+  function showConfirm({ title = "Are you sure?", message = "", confirmText = "Confirm",
+                         cancelText = "Cancel", danger = true } = {}) {
+    return new Promise(resolve => {
+      const accentBg = danger ? "#fee2e2" : "#ede9fe";
+      const accentFg = danger ? "var(--red-500)" : "var(--purple-600)";
+      const okClass  = danger ? "btn btn-danger" : "btn btn-primary";
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:200;";
+      backdrop.innerHTML = `
+        <div class="bg-white rounded-xl w-[440px] p-6 shadow-xl" role="dialog" aria-modal="true" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center" style="background:${accentBg};color:${accentFg};flex:0 0 auto;">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="cf-title font-semibold" style="color:var(--navy-800);"></div>
+              <div class="cf-msg text-sm mt-1" style="color:#6b7480;white-space:pre-line;"></div>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 mt-4">
+            <button class="btn btn-secondary cf-cancel"></button>
+            <button class="${okClass} cf-ok"></button>
+          </div>
+        </div>`;
+      // Text set via textContent (never innerHTML) — titles/messages include run
+      // and file names (user/Amazon data) which must not be interpreted as markup.
+      backdrop.querySelector(".cf-title").textContent  = title;
+      backdrop.querySelector(".cf-msg").textContent    = message;
+      backdrop.querySelector(".cf-cancel").textContent = cancelText;
+      backdrop.querySelector(".cf-ok").textContent     = confirmText;
+      if (!message) backdrop.querySelector(".cf-msg").style.display = "none";
+
+      let done = false;
+      function close(result) {
+        if (done) return;
+        done = true;
+        document.removeEventListener("keydown", onKey);
+        backdrop.remove();
+        resolve(result);
+      }
+      function onKey(e) {
+        if (e.key === "Escape")    { e.preventDefault(); close(false); }
+        else if (e.key === "Enter") { e.preventDefault(); close(true); }
+      }
+      backdrop.querySelector(".cf-cancel").addEventListener("click", () => close(false));
+      backdrop.querySelector(".cf-ok").addEventListener("click", () => close(true));
+      // Click on the dark backdrop (not the card) cancels.
+      backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(false); });
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+      backdrop.querySelector(".cf-ok").focus();
+    });
+  }
+
   // ---------- App state ---------------------------------------------------
   const state = {
     // history view
@@ -3495,6 +3555,7 @@
               <div class="text-xs text-right" style="color: ${active ? 'var(--purple-700)' : '#94a3b8'}; min-width: 130px;">
                 ${active ? `<span class="mini-spinner"></span> ${escapeHtml(phase)} ${pct}%` : escapeHtml(r.status || "")}
               </div>
+              <button class="analytics-run-del" data-run-id="${r.id}" title="Delete run" aria-label="Delete run">✕</button>
             </div>
             ${active ? `
               <div class="analytics-run-inline-bar"><div class="fill" style="width: ${pct}%"></div></div>
@@ -3507,6 +3568,17 @@
         el.addEventListener("click", () => {
           const id = Number(el.dataset.runId);
           if (id) openAnalyticsRunDetail(id);
+        });
+      });
+
+      // Wire per-row delete buttons. stopPropagation so the row click (which
+      // opens the run) doesn't also fire when deleting.
+      const _runNameById = Object.fromEntries(rows.map(rr => [rr.id, rr.name || "Untitled run"]));
+      body.querySelectorAll(".analytics-run-del").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = Number(btn.dataset.runId);
+          if (id) _deleteAnalyticsRunFromBoard(id, _runNameById[id] || "this run");
         });
       });
 
@@ -3524,6 +3596,27 @@
     }
   }
   $("#analytics-refresh-runs")?.addEventListener("click", loadAnalyticsRuns);
+
+  // Delete a run straight from the board (no need to open it first). Confirms,
+  // calls DELETE (which stops any active search + cascade-deletes its data),
+  // then refreshes the list.
+  async function _deleteAnalyticsRunFromBoard(id, name) {
+    if (!id) return;
+    const ok = await showConfirm({
+      title: `Delete "${name}"?`,
+      message: "This permanently removes the run and all its candidates. This cannot be undone.",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/analytics/runs/${id}`, { method: "DELETE" });
+      showToast("Run deleted", "success");
+      await loadAnalyticsRuns();
+    } catch (e) {
+      showToast("Could not delete run: " + (e.message || e), "error");
+    }
+  }
 
   function _schedAnalyticsRunsPoll() {
     if (state.analyticsRunsPoll.timer) return;
@@ -4828,7 +4921,7 @@
         tab === "Approved"     ? `Reject ${items.length} candidate${items.length === 1 ? "" : "s"}?`
       : tab === "Not Approved" ? `Promote ${items.length} candidate${items.length === 1 ? "" : "s"} to Approved?`
       :                          `Approve ${items.length} candidate${items.length === 1 ? "" : "s"}?`;
-    if (!window.confirm(label)) return;
+    if (!(await showConfirm({ title: label, confirmText: "Confirm", danger: false }))) return;
 
     const btn = $("#analytics-run-bulk");
     if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
@@ -6421,7 +6514,12 @@
   });
 
   $("#ba-run-delete-btn")?.addEventListener("click", async () => {
-    if (!confirm("Delete this run and all its data?")) return;
+    if (!(await showConfirm({
+      title: "Delete this run?",
+      message: "This permanently removes the run and all its data. This cannot be undone.",
+      confirmText: "Delete",
+      danger: true,
+    }))) return;
     const id = state.brandAnalytics.run.id;
     try {
       await api(`/api/brand-analytics/runs/${id}`, {method:"DELETE"});
