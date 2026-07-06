@@ -220,6 +220,11 @@ CREATE TABLE amazon_webapp.pair_library_entries (          -- was pair_library
     asin          NVARCHAR(20)   NOT NULL,
     brand         NVARCHAR(200)  NOT NULL DEFAULT '',
     manufacturer  NVARCHAR(200)  NOT NULL DEFAULT '',
+    main_sku      NVARCHAR(100)      NULL,   -- seller's internal main SKU (alphanumeric)
+    fba_sku       NVARCHAR(100)      NULL,   -- Amazon FBA SKU (alphanumeric)
+    qty_per_case  INT                NULL,   -- units per case
+    uom           NVARCHAR(50)       NULL,   -- unit of measure (e.g. EA, CS, BX)
+    uom_qty       INT                NULL,   -- quantity per UOM
     created_at    DATETIME2      NOT NULL DEFAULT GETUTCDATE(),
     updated_at    DATETIME2      NOT NULL DEFAULT GETUTCDATE(),
     CONSTRAINT pk_pair_library_entries PRIMARY KEY (id),
