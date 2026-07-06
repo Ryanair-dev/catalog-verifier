@@ -1798,6 +1798,25 @@ html, body {
 .analytics-run-del:hover { background: #fee2e2; color: #b91c1c; }
 .analytics-run-del:active { transform: scale(0.92); }
 
+/* "Bulk approve" category-picker modal rows. */
+.bulk-cat-list { display: flex; flex-direction: column; gap: 8px; }
+.bulk-cat-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 12px 14px; text-align: left;
+  border: 1px solid #e2e8f0; border-radius: 10px;
+  background: #fff; color: var(--navy-800, #1e293b);
+  font-size: 13.5px; cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+}
+.bulk-cat-row:hover { background: #faf5ff; border-color: #d8b4fe; }
+.bulk-cat-row:active { transform: scale(0.99); }
+.bulk-cat-count {
+  flex: 0 0 auto; min-width: 30px; text-align: center;
+  padding: 2px 9px; border-radius: 20px;
+  background: #ede9fe; color: #6d28d9;
+  font-weight: 700; font-size: 12px;
+}
+
 .analytics-run-inline-bar {
   height: 4px;
   border-radius: 2px;

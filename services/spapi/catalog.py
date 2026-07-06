@@ -156,6 +156,7 @@ class CatalogAPI:
         included_data: str = "summaries,identifiers,attributes,salesRanks",
         max_retries: int = 5,
         brand_names: list[str] | None = None,
+        classification_ids: list[str] | None = None,
     ) -> dict:
         """
         Keyword search — brand, title, MPN, or any free text.
@@ -176,6 +177,11 @@ class CatalogAPI:
             params["pageToken"] = page_token
         if brand_names:
             params["brandNames"] = ",".join(brand_names)
+        # Category (classification) filter — SP-API requires `keywords` to be
+        # present, so a per-category scan rides on the brand keyword. Splitting a
+        # capped brand keyword into per-category slices recovers its full depth.
+        if classification_ids:
+            params["classificationIds"] = ",".join(classification_ids)
         resp = self._get("/catalog/2022-04-01/items", params, "searchCatalogItems",
                          max_retries=max_retries)
         return resp.json()
@@ -187,6 +193,7 @@ class CatalogAPI:
         page_size: int = 20,
         included_data: str = "summaries,identifiers,attributes,salesRanks",
         max_retries: int = 5,
+        classification_ids: list[str] | None = None,
     ) -> dict:
         """
         Pure brand-name catalog dump — **no keyword filter applied**.
@@ -206,6 +213,12 @@ class CatalogAPI:
             "includedData":   included_data,
             "pageSize":       page_size,
         }
+        # Restrict the brand scan to one (or more) Amazon classification (category).
+        # Because the ~few-thousand result cap is PER query, splitting a large brand
+        # into per-category scans returns each category's own slice → far more of the
+        # catalog once unioned.
+        if classification_ids:
+            params["classificationIds"] = ",".join(classification_ids)
         if page_token:
             params["pageToken"] = page_token
         return self._get(

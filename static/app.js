@@ -4887,73 +4887,112 @@
 
   // Bulk action — tab-aware: rejects everything on the Approved tab,
   // promotes everything on Not Approved, approves everything on Review.
-  $("#analytics-run-bulk")?.addEventListener("click", async () => {
+  // Shared server-side bulk: move EVERY candidate in `from_verdict` → `to_verdict`
+  // for the current run. Done server-side so it never misses rows the paginated
+  // detail view hasn't loaded (the old client-side filter silently hit nothing
+  // when the tab's candidates weren't in the in-memory snapshot). Refreshes after.
+  async function _runBulkVerdictAll(from_verdict, to_verdict, review_status) {
     const id = state.analyticsRun.id;
+    if (!id) return;
+    try {
+      const j = await api(`/api/analytics/runs/${id}/candidates/bulk_verdict_all`, {
+        method: "POST",
+        body: { from_verdict, to_verdict, review_status },
+      });
+      showToast(`Updated ${j.updated} candidate${j.updated === 1 ? "" : "s"}.`, "success");
+      state.analyticsRun.tabPageData = {};   // force a clean re-fetch of the current tab
+      await fetchAnalyticsRunDetail();
+    } catch (err) {
+      showToast("Bulk update failed: " + (err.message || err), "error");
+    }
+  }
+
+  // Per-tab "Approve All / Promote All / Reject All" — now applies to the WHOLE
+  // tab bucket (not just the loaded page) via the server-side endpoint.
+  $("#analytics-run-bulk")?.addEventListener("click", async () => {
     const data = state.analyticsRun.data;
-    if (!id || !data) return;
+    if (!state.analyticsRun.id || !data || !data.run) return;
     const tab = state.analyticsRun.tab;
     if (tab === "All") return;
 
-    let verdict, review_status;
-    if (tab === "Approved")          { verdict = "not_approved"; review_status = "Manually Rejected"; }
-    else if (tab === "Not Approved") { verdict = "verified";     review_status = "Manually Approved"; }
-    else                             { verdict = "verified";     review_status = "Reviewed"; }
+    let from_verdict, to_verdict, review_status, verb, danger;
+    if (tab === "Approved")          { from_verdict = "verified";     to_verdict = "not_approved"; review_status = "Manually Rejected"; verb = "Reject";  danger = true;  }
+    else if (tab === "Not Approved") { from_verdict = "not_approved"; to_verdict = "verified";     review_status = "Manually Approved"; verb = "Promote"; danger = false; }
+    else                             { from_verdict = "review";       to_verdict = "verified";     review_status = "Reviewed";          verb = "Approve"; danger = false; }
 
-    // Honour the current search filter — bulk only hits visible rows.
-    const q = (state.analyticsRun.search || "").toLowerCase().trim();
-    const wanted = _TAB_TO_VERDICT[tab];
-    const srcByIdx = {};
-    (data.catalog_rows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
-    const items = (data.candidates || []).filter(c => {
-      if ((c.verdict || "").toLowerCase() !== wanted) return false;
-      if (!q) return true;
-      const src = srcByIdx[c.row_idx] || {};
-      const amz = (c.data && c.data.amazon) || {};
-      const hay = [
-        src.title, src.brand, src.upc, src.itemid,
-        c.asin, amz.title, amz.brand, amz.manufacturer,
-      ].map(v => String(v || "").toLowerCase()).join(" ");
-      return hay.includes(q);
-    }).map(c => ({ row_idx: c.row_idx, asin: c.asin }));
+    const countOf = { verified: data.run.verified_count || 0, review: data.run.review_count || 0, not_approved: data.run.not_approved_count || 0 };
+    const n = countOf[from_verdict] || 0;
+    if (n === 0) { showToast(`Nothing to ${verb.toLowerCase()} in ${tab}.`, "info"); return; }
 
-    if (items.length === 0) return;
-    const label =
-        tab === "Approved"     ? `Reject ${items.length} candidate${items.length === 1 ? "" : "s"}?`
-      : tab === "Not Approved" ? `Promote ${items.length} candidate${items.length === 1 ? "" : "s"} to Approved?`
-      :                          `Approve ${items.length} candidate${items.length === 1 ? "" : "s"}?`;
-    if (!(await showConfirm({ title: label, confirmText: "Confirm", danger: false }))) return;
+    const ok = await showConfirm({
+      title: `${verb} all ${n} ${tab} candidate${n === 1 ? "" : "s"}?`,
+      message: tab === "Approved"
+        ? "Every candidate in Approved will be moved to Not Approved."
+        : "Every candidate in this tab will be moved to Approved.",
+      confirmText: verb,
+      danger,
+    });
+    if (!ok) return;
 
     const btn = $("#analytics-run-bulk");
     if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
-    try {
-      const j = await api(`/api/analytics/runs/${id}/candidates/bulk_verdict`, {
-        method: "POST",
-        body: { items, verdict, review_status },
-      });
-      // Mirror the verdict change into local state to avoid a round-trip.
-      const touched = new Set(items.map(i => `${i.row_idx}|${i.asin}`));
-      (data.candidates || []).forEach(c => {
-        const k = `${c.row_idx}|${c.asin}`;
-        if (touched.has(k)) {
-          c.verdict = verdict;
-          c.review_status = review_status;
-          if (!c.data) c.data = {};
-          c.data.verdict = verdict;
-        }
-      });
-      if (j && j.counts && data.run) {
-        data.run.total_candidates_found = j.counts.total_candidates_found;
-        data.run.verified_count        = j.counts.verified_count;
-        data.run.review_count          = j.counts.review_count;
-        data.run.not_approved_count    = j.counts.not_approved_count;
-      }
-      renderAnalyticsRunDetail(data);
-    } catch (err) {
-      showToast("Bulk update failed: " + (err.message || err), "error");
-    } finally {
-      if (btn) { btn.disabled = false; btn.style.opacity = "1"; }
-    }
+    try { await _runBulkVerdictAll(from_verdict, to_verdict, review_status); }
+    finally { if (btn) { btn.disabled = false; btn.style.opacity = "1"; } }
   });
+
+  // "Bulk approve…" — opens a modal to pick which category to approve everything from.
+  $("#analytics-run-bulk-approve")?.addEventListener("click", () => {
+    const data = state.analyticsRun.data;
+    if (!data || !data.run) return;
+    _showBulkApproveModal(data.run);
+  });
+
+  function _showBulkApproveModal(run) {
+    const cats = [
+      { key: "review",       label: "Review",       count: run.review_count || 0 },
+      { key: "not_approved", label: "Not Approved", count: run.not_approved_count || 0 },
+    ].filter(c => c.count > 0);
+    if (!cats.length) { showToast("Nothing to approve — Review and Not Approved are empty.", "info"); return; }
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:200;";
+    const rowsHtml = cats.map(c => `
+      <button class="bulk-cat-row" data-cat="${c.key}">
+        <span>Approve all from <b>${c.label}</b></span>
+        <span class="bulk-cat-count">${c.count}</span>
+      </button>`).join("");
+    backdrop.innerHTML = `
+      <div class="bg-white rounded-xl w-[420px] p-6 shadow-xl" role="dialog" aria-modal="true" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+        <div class="font-semibold mb-1" style="color:var(--navy-800);">Bulk approve</div>
+        <div class="text-sm mb-3" style="color:#6b7480;">Choose a category — every candidate in it moves to Approved (marked Manually Approved).</div>
+        <div class="bulk-cat-list">${rowsHtml}</div>
+        <div class="flex justify-end mt-4">
+          <button class="btn btn-secondary bulk-cancel">Cancel</button>
+        </div>
+      </div>`;
+
+    function close() { document.removeEventListener("keydown", onKey); backdrop.remove(); }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    backdrop.querySelector(".bulk-cancel").addEventListener("click", close);
+    backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey);
+    backdrop.querySelectorAll(".bulk-cat-row").forEach(b => {
+      b.addEventListener("click", async () => {
+        const cat = cats.find(c => c.key === b.dataset.cat);
+        close();
+        const ok = await showConfirm({
+          title: `Approve all ${cat.count} ${cat.label} candidate${cat.count === 1 ? "" : "s"}?`,
+          message: "They'll be moved to Approved and marked Manually Approved. You can still change individual items afterwards.",
+          confirmText: "Approve all",
+          danger: false,
+        });
+        if (!ok) return;
+        await _runBulkVerdictAll(cat.key, "verified", "Manually Approved");
+      });
+    });
+    document.body.appendChild(backdrop);
+  }
 
   // ==========================================================================
   //  AI Check modal
