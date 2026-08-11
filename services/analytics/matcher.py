@@ -51,6 +51,7 @@ _PACK_RE = re.compile(
     r'|\bbox\s+of\s+(\d+)\b'           # "box of 36"
     r'|\bset\s+of\s+(\d+)\b'           # "set of 36"
     r'|\bcount\s+of\s+(\d+)\b'         # "count of 36"
+    r'|\bcase\s+of\s+(\d+)\b'          # "case of 12"
     r'|\b(\d+)\s*[-\s]?count\b'        # "36 count", "36-count", "36count"
     r'|\b(\d+)\s*[-\s]?ct\b'           # "36ct", "36 ct", "36-ct"
     r'|\b(\d+)\s*[-\s]?pack\b'         # "36 pack", "36-pack"
@@ -84,6 +85,17 @@ _MULTIPLIER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The authoritative "<word> of N" pack forms — the FULL, unambiguous phrasing.
+# Preferred over a bare "Nct"/"N count" because those can be a SKU code
+# ("85020CT Toilet Bowl Cleaner" is not a pack of 85020), whereas "Case of 12"
+# is explicit. Per the user: if a title has both, take the "…of N" one.
+_PACK_OF_RE = re.compile(
+    r'\b(?:pack|box|set|count|case)\s+of\s+(\d+)\b', re.IGNORECASE
+)
+# A bare "Nct"/"N count"/"N pack" above this is almost certainly a SKU/model
+# number, not a pack size — ignore it. (Explicit "…of N" forms are NOT capped.)
+_MAX_BARE_PACK = 1000
+
 # Volume size extraction — oz / fl oz / ounce / ml / l / gal
 # Uses negative lookbehind (?<![.\d]) instead of \b so that a leading-decimal
 # size like ".5 oz" is captured as 0.5 rather than 5 (which \b would give by
@@ -94,6 +106,11 @@ _SIZE_RE = re.compile(
     r'|liter[s]?|litre[s]?|gallon[s]?|gal|l)\b',
     re.IGNORECASE,
 )
+
+# Truncated 'oz' — vendor feeds sometimes drop the 'o' ("7.25Z" for 7.25 oz).
+# Deliberately tight: the number must be a standalone token (start / space /
+# open-bracket before it) so a product code like "ABC5Z" never false-matches.
+_TRUNC_OZ_RE = re.compile(r'(?:^|[\s(\[/])(\d+(?:\.\d+)?)\s*z\b', re.IGNORECASE)
 
 # Weight extraction — lb / kg only (avoids false positives from "g" or "oz" alone)
 _WEIGHT_RE = re.compile(
@@ -280,13 +297,23 @@ def _s(value: Any) -> str:
 def _pack_count(text: str) -> int:
     """
     Extract a count/pack number from a product title. Returns 1 if none found.
-    Handles: 'pack of N', 'box of N', 'N count', 'N-count', 'Nct', 'N pack',
-             'N pk', 'N piece', 'N pcs', etc.
+    Handles: 'pack of N', 'box of N', 'case of N', 'N count', 'N-count', 'Nct',
+             'N pack', 'N pk', 'N piece', 'N pcs', etc.
+
+    Priority: the explicit "<word> of N" form ("Case of 12") wins over a bare
+    "Nct"/"N count", because a bare token glued to a big number is usually a SKU
+    code ("85020CT") rather than a pack of 85020. Bare counts above
+    _MAX_BARE_PACK are ignored for the same reason.
     """
-    m = _PACK_RE.search(text)
-    if not m:
-        return 1
-    return int(next(g for g in m.groups() if g is not None))
+    m = _PACK_OF_RE.search(text or "")   # authoritative "…of N" form first
+    if m:
+        return int(m.group(1))
+    # Fall back to bare forms, skipping SKU-sized numbers.
+    for m in _PACK_RE.finditer(text or ""):
+        n = int(next(g for g in m.groups() if g is not None))
+        if 1 <= n <= _MAX_BARE_PACK:
+            return n
+    return 1
 
 
 def _extract_volume_ml(text: str) -> float | None:
@@ -303,6 +330,11 @@ def _extract_volume_ml(text: str) -> float | None:
     clean = _PACK_RE.sub(' ', text.lower())
     m = _SIZE_RE.search(clean)
     if not m:
+        # Fallback: a truncated 'oz' unit ("7.25Z") so a garbled vendor unit still
+        # yields a size to compare instead of silently matching on brand+title.
+        mt = _TRUNC_OZ_RE.search(clean)
+        if mt:
+            return float(mt.group(1)) * 29.5735
         return None
     val = float(m.group(1))
     unit = re.sub(r'[\s.]+', '', m.group(2).lower())  # "fl oz" → "floz"
@@ -610,6 +642,34 @@ def _size_match(src_title: str, amz_title: str, amz_size_attr: str = "") -> bool
             return True
 
     return False
+
+
+def _amz_size_ambiguous(src_title: str, amz_title: str, amz_size_attr: str) -> bool:
+    """True when the match rests on an internally-contradictory Amazon size: the
+    vendor volume agrees with Amazon's structured size ATTRIBUTE, but Amazon's
+    (single-size) TITLE shows a DIFFERENT volume — e.g. vendor 2.1 oz, attribute
+    "2.1 Fl Oz", title "3.3 Fl Oz".  The pairing only 'matched' because we trusted
+    the attribute over the title, so it should go to Review, not auto-verify.
+
+    Targeted on purpose: fires ONLY when vendor≈attr, vendor≠title, and title≠attr.
+    If the vendor has no size, or agrees with the title, nothing is flagged — so
+    normal matches and kit/bundle titles (skipped via the single-size guard) are
+    unaffected."""
+    if not amz_size_attr:
+        return False
+    src = _extract_volume_ml(src_title)
+    if not (src and src > 0):
+        return False
+    clean_t = _PACK_RE.sub(' ', (amz_title or '').lower())
+    if len(_SIZE_RE.findall(clean_t)) != 1:   # multi-size (kit) or no size → don't judge
+        return False
+    t = _extract_volume_ml(amz_title)
+    a = _extract_volume_ml(amz_size_attr)
+    if not (t and a and t > 0 and a > 0):
+        return False
+    return (_within_10pct(src, a)
+            and not _within_10pct(src, t)
+            and not _within_10pct(t, a))
 
 
 def _effective_pack(src_title: str, amz_title: str) -> tuple[int, bool]:
@@ -947,16 +1007,18 @@ def _garment_sizes(title: str) -> set[str]:
     return out
 
 
-def _apparel_size_mismatch(src_title: str, amz_title: str) -> bool:
+def _apparel_size_mismatch(src_title: str, amz_title: str, amz_size_attr: str = "") -> bool:
     """
-    Return True when BOTH titles state an apparel/garment size and the two size
-    sets are disjoint — e.g. vendor "X-Large" vs Amazon "Medium" (a different
-    SKU → hard reject).  Overlapping ranges ("Large" vs "Large/X-Large", which
-    share "L") do NOT fire.  Only fires when both sides carry a size, so an
-    item with no garment size is never penalised.
+    Return True when the vendor and Amazon both state an apparel/garment size and
+    the two size sets are disjoint — e.g. vendor "Small" vs Amazon "X-Large" (a
+    different SKU → hard reject).  The Amazon size is read from its TITLE **and its
+    structured size attribute** ("X-Large (1 Pair)"), because compression/apparel
+    listings often keep the size only in the attribute, not the title.  Overlapping
+    ranges ("Large" vs "Large/X-Large") do NOT fire; an item with no garment size
+    on either side is never penalised.
     """
     src = _garment_sizes(src_title)
-    amz = _garment_sizes(amz_title)
+    amz = _garment_sizes(amz_title) | _garment_sizes(amz_size_attr)
     if not src or not amz:
         return False
     return src.isdisjoint(amz)
@@ -1412,6 +1474,20 @@ def calculate_confidence(
         (brand_confirmed and _model_in_title(src_model, _s(amazon.get("title"))))
         or mpn_field_exact
     )
+    # Item-ID / MPN CONTRADICTION — the negative counterpart of mpn_field_exact:
+    # the vendor part number and Amazon's structured MPN are BOTH specific and
+    # DIFFERENT (neither a variant/substring of the other). For medical SKUs the
+    # part number is the definitive identity, so this signals a DIFFERENT SKU —
+    # e.g. JOBST vendor "114818" vs Amazon MPN "114821" (a different size of the
+    # same line). Used below to block the brand+title floor, so near-identical
+    # titles across sizes don't all auto-verify against one ASIN.
+    mpn_field_conflict = (
+        len(_src_model_an) >= 4 and any(c.isdigit() for c in _src_model_an)
+        and len(_amz_mpn_an) >= 4
+        and _src_model_an != _amz_mpn_an
+        and _src_model_an not in _amz_mpn_an
+        and _amz_mpn_an not in _src_model_an
+    )
 
     # Detect multi-pack / bundle mismatches (same per-unit product, Amazon lists
     # a different bundle count — e.g. vendor case of 144 vs Amazon "3 Count").
@@ -1448,6 +1524,13 @@ def calculate_confidence(
     )
     if upc_match and (brand_confirmed or size_confirmed):
         total = 100.0
+    elif upc_match and best_title_ratio >= 60:
+        # UPC found + a decent title agreement → approve. A matching barcode is a
+        # strong same-product signal and most such hits are correct; the title
+        # guard (≥60) keeps a barcode cross-attached to an unrelated product in
+        # Review, and the hard-reject caps below still override a real size/
+        # gender/colour/count contradiction.
+        total = max(total, VERIFIED_FLOOR)
     elif brand_confirmed and (size_confirmed or model_confirmed):
         # Same brand + (same per-unit size OR exact model number) = same item.
         total = max(total, VERIFIED_FLOOR)
@@ -1458,6 +1541,14 @@ def calculate_confidence(
         # title-agreement guard prevents a coincidental cross-domain part-number
         # collision from auto-verifying an unrelated product.
         total = max(total, VERIFIED_FLOOR)
+
+    # Identifier contradiction overrides the brand+title/model floor: if the vendor
+    # part number and Amazon's MPN are both specific and disagree — and there's no
+    # UPC match to prove same-SKU — it's a different SKU (a same-brand line whose
+    # sizes share one title). Soft-cap to Review so a human decides instead of
+    # auto-approving every size against one ASIN.
+    if mpn_field_conflict and not upc_match:
+        total = min(total, 80.0)
 
     # Detect per-unit size mismatches (e.g. 26.2 oz vs 12.1 oz, 2 lb vs 5 lb).
     # Also checks the Amazon structured size attribute when the title has no size.
@@ -1475,6 +1566,16 @@ def calculate_confidence(
         size_mismatch = False
     if size_mismatch:
         total = min(total, 29.0)
+
+    # Amazon's own title size vs its structured size attribute disagree (e.g. title
+    # "3.3 Fl Oz" but attribute "2.1 Fl Oz") — the listing is internally ambiguous.
+    # Don't let a size confirmation silently VERIFY it; soft-cap to Review so a human
+    # decides which size is right. (Only when it isn't already a hard size mismatch.)
+    size_conflict = _amz_size_ambiguous(
+        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
+    )
+    if size_conflict and not size_mismatch:
+        total = min(total, 80.0)
 
     # Detect explicit gender contradictions: both titles carry a gender marker
     # and they disagree (one men's, one women's).  If only one title specifies
@@ -1537,7 +1638,7 @@ def calculate_confidence(
     # a different SKU and a hard reject.  Runs after the floors so it overrides
     # even a UPC match (different sizes carry different UPCs anyway).
     apparel_size_mismatch = _apparel_size_mismatch(
-        _s(source.get("title")), _s(amazon.get("title"))
+        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
     )
     if apparel_size_mismatch:
         total = min(total, 29.0)
@@ -1552,10 +1653,12 @@ def calculate_confidence(
         "size_match": size_confirmed,
         "model_confirmed": model_confirmed,
         "mpn_field_exact": mpn_field_exact,
+        "mpn_field_conflict": mpn_field_conflict,
         "mpn_variation_score": round(mpn_variation_score, 1),
         "pack_mismatch": pack_mismatch,
         "effective_pack": effective_pack,
         "size_mismatch": size_mismatch,
+        "size_conflict": size_conflict,
         "gender_mismatch": gender_mismatch,
         "color_mismatch": color_mismatch,
         "count_mismatch": count_mismatch,

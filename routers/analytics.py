@@ -58,7 +58,7 @@ router = APIRouter(prefix="/analytics")
 
 _PREVIEW_LIMIT = 25
 MAX_PAGE_SIZE = 1000
-MAX_TITLE_PAGES = 10
+MAX_TITLE_PAGES = 100   # explicit page count ceiling; 0 = unlimited (runner-bounded)
 
 
 def _parse_raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
@@ -614,7 +614,9 @@ async def create_analytics_run(
     saved_brand_col  = brand.strip() if brand.strip() else (mapping_dict.get("brand") or "")
     saved_brand_mode = "text" if brand.strip() else "col"
 
-    pages_per_title = clamp_int(pages_per_title, 1, MAX_TITLE_PAGES, 5)
+    # 0 = unlimited (walk every page Amazon returns); the runner bounds it with a
+    # safety cap. Positive values are capped at MAX_TITLE_PAGES.
+    pages_per_title = clamp_int(pages_per_title, 0, MAX_TITLE_PAGES, 5)
 
     # Validate passthrough_cols — must be a JSON array of strings if provided.
     pt_cols_raw = (passthrough_cols or "").strip()
@@ -852,6 +854,61 @@ def bulk_update_candidate_verdict(
         "run_id": int(run_id),
         "updated": updated,
         "verdict": verdict,
+        "review_status": review_status,
+        "counts": counts,
+    }
+
+
+@router.post("/runs/{run_id}/candidates/bulk_verdict_all")
+def bulk_update_candidate_verdict_all(
+    run_id: int,
+    body: dict = Body(...),
+) -> dict[str, Any]:
+    """
+    Apply a verdict to EVERY candidate currently in a given verdict bucket for the
+    run — entirely server-side, so it never depends on which rows the client has
+    loaded (the paginated detail view only holds one page per tab). Powers the
+    per-tab "Approve/Reject/Promote All" buttons and the "Bulk approve" category
+    modal.
+
+    Body: {"from_verdict": "review"|"not_approved"|"verified",
+           "to_verdict":   "verified"|"review"|"not_approved",
+           "review_status": str (optional, e.g. "Manually Approved")}
+
+    A non-empty review_status marks the change as a manual decision so the run
+    detail's auto-promotion/conflict logic leaves it alone afterwards.
+    """
+    from_verdict = (body.get("from_verdict") or "").lower().strip()
+    to_verdict = (body.get("to_verdict") or "").lower().strip()
+    review_status = body.get("review_status") or ""
+    if from_verdict not in _VERDICT_VALUES or to_verdict not in _VERDICT_VALUES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"from_verdict / to_verdict must be one of {sorted(_VERDICT_VALUES)}",
+        )
+
+    with database._LOCK, database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        # Single bulk UPDATE: flip the verdict column and mirror verdict +
+        # review_status into data_json (via json_set) so the stored blob stays
+        # consistent with the column the queries read.
+        cur = conn.execute(
+            "UPDATE analytics_candidates "
+            "SET verdict=?, review_status=?, "
+            "    data_json=json_set(data_json, '$.verdict', ?, '$.review_status', ?) "
+            "WHERE run_id=? AND verdict=?",
+            (to_verdict, review_status, to_verdict, review_status,
+             int(run_id), from_verdict),
+        )
+        updated = cur.rowcount
+        counts = _recompute_run_counts(conn, int(run_id))
+
+    return {
+        "ok": True,
+        "run_id": int(run_id),
+        "updated": updated,
+        "from_verdict": from_verdict,
+        "to_verdict": to_verdict,
         "review_status": review_status,
         "counts": counts,
     }
@@ -1218,7 +1275,7 @@ def export_analytics_run(
 
         cand_rows = conn.execute(
             f"""
-            SELECT row_idx, asin, confidence, verdict, sales_rank,
+            SELECT row_idx, asin, confidence, verdict, sales_rank, amz_pack,
                    COALESCE(
                        json_extract(data_json, '$.amazon.title'), ''
                    ) AS amz_title,
@@ -1269,7 +1326,7 @@ def export_analytics_run(
 
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-        "ASIN", "Amazon Title", "Amazon Brand", "BSR", "Confidence",
+        "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
     ] + pt_cols  # passthrough columns appended after fixed columns
 
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
@@ -1288,6 +1345,7 @@ def export_analytics_run(
             c["asin"] or "",
             c["amz_title"] or "",
             c["amz_brand"] or "",
+            c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
         ] + pt_values)

@@ -325,6 +325,7 @@ def init_db() -> None:
                 asin         TEXT PRIMARY KEY,
                 brand        TEXT DEFAULT '',
                 manufacturer TEXT DEFAULT '',
+                amz_pack     TEXT DEFAULT '',
                 created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -374,6 +375,9 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_plib_brand ON pair_library(brand)"
         )
+        # additive: amz_pack column on existing pair_library tables
+        if not _column_exists(conn, "pair_library", "amz_pack"):
+            conn.execute("ALTER TABLE pair_library ADD COLUMN amz_pack TEXT DEFAULT ''")
 
         # Brand Analytics tables -------------------------------------------
         conn.execute("""
@@ -817,6 +821,7 @@ def upsert_library_pair(
     ids: dict[str, list[str]],
     brand: str = "",
     manufacturer: str = "",
+    amz_pack: str = "",
 ) -> dict:
     """
     Insert/update one Pair Library entry.  ``ids`` maps id_type → ordered list
@@ -852,6 +857,8 @@ def upsert_library_pair(
                 sets.append("brand=?");        params.append(brand)
             if manufacturer:
                 sets.append("manufacturer=?"); params.append(manufacturer)
+            if amz_pack:
+                sets.append("amz_pack=?");     params.append(amz_pack)
             params.append(asin)
             conn.execute(
                 f"UPDATE pair_library SET {', '.join(sets)} WHERE asin=?", params
@@ -859,8 +866,8 @@ def upsert_library_pair(
             out["updated"] = 1
         else:
             conn.execute(
-                "INSERT INTO pair_library(asin, brand, manufacturer) VALUES (?, ?, ?)",
-                (asin, brand or "", manufacturer or ""),
+                "INSERT INTO pair_library(asin, brand, manufacturer, amz_pack) VALUES (?, ?, ?, ?)",
+                (asin, brand or "", manufacturer or "", amz_pack or ""),
             )
             out["created"] = 1
 
@@ -908,6 +915,60 @@ def upsert_library_pair(
                             (form, asin),
                         )
                         out["blacklist_cleared"] += cur.rowcount
+    return out
+
+
+def delete_library_pair(asin: str, id_type: str = "", identifier: str = "") -> dict:
+    """
+    Remove an incorrect Pair Library entry.
+
+    * With ``id_type``+``identifier`` → drop just that one identifier from the ASIN.
+    * Otherwise → drop the whole ASIN (all its identifiers).
+
+    Reverses the verified_items mirror too: any 'Pair Library Import' verified row
+    for this ASIN whose barcode form is no longer backed by a remaining upc/ean
+    identifier is deleted, so runs stop auto-approving the bad pair. If the ASIN has
+    no identifiers left, its pair_library row is removed. (Blacklist is untouched —
+    a shared UPC may still be valid for other ASINs.)
+    """
+    asin = str(asin or "").strip().upper()
+    out = {"deleted_ids": 0, "deleted_asin": 0, "verified_cleared": 0}
+    if not asin:
+        return out
+    with _LOCK, _connect() as conn:
+        if id_type and identifier:
+            cur = conn.execute(
+                "DELETE FROM pair_library_ids WHERE asin=? AND id_type=? AND identifier=?",
+                (asin, str(id_type).strip().lower(), str(identifier).strip()),
+            )
+        else:
+            cur = conn.execute("DELETE FROM pair_library_ids WHERE asin=?", (asin,))
+        out["deleted_ids"] = cur.rowcount
+
+        # Barcode forms still legitimately mirrored for this ASIN after the delete.
+        keep_forms: set[str] = set()
+        for row in conn.execute(
+            "SELECT identifier FROM pair_library_ids "
+            "WHERE asin=? AND id_type IN ('upc','ean')", (asin,)
+        ).fetchall():
+            keep_forms.update(_upc_mirror_forms(row["identifier"]))
+
+        for vr in conn.execute(
+            "SELECT upc FROM verified_items "
+            "WHERE asin=? AND review_status='Pair Library Import'", (asin,)
+        ).fetchall():
+            if vr["upc"] not in keep_forms:
+                c = conn.execute(
+                    "DELETE FROM verified_items WHERE upc=? AND asin=?", (vr["upc"], asin)
+                )
+                out["verified_cleared"] += c.rowcount
+
+        left = conn.execute(
+            "SELECT COUNT(*) AS n FROM pair_library_ids WHERE asin=?", (asin,)
+        ).fetchone()["n"]
+        if left == 0:
+            c = conn.execute("DELETE FROM pair_library WHERE asin=?", (asin,))
+            out["deleted_asin"] = c.rowcount
     return out
 
 
@@ -970,6 +1031,7 @@ def pair_library_rows(brand: str = "") -> list[dict]:
             "asin": a,
             "brand": r["brand"] or "",
             "manufacturer": r["manufacturer"] or "",
+            "amz_pack": (r["amz_pack"] if "amz_pack" in r.keys() else "") or "",
             "updated_at": r["updated_at"],
             "upc": upc, "upc_aliases": upc_al,
             "ean": ean, "ean_aliases": ean_al,

@@ -594,6 +594,7 @@
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
       "quick-search":   $("#view-quick-search"),
+      "create-po":      $("#view-create-po"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -621,11 +622,20 @@
     if (view === "history") loadHistory();
     if (view === "analytics") loadAnalyticsRuns();
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
+    if (view === "create-po") initCreatePo();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
+  }
+
+  // ========================================================================
+  //  Create PO — rendered by the standalone module in /static/create_po.js
+  // ========================================================================
+  function initCreatePo() {
+    const el = document.getElementById("view-create-po");
+    if (el && window.CreatePO) window.CreatePO.mount(el);
   }
 
   // View-aware DOM id helper: pick the right set of IDs for the current view.
@@ -2983,7 +2993,14 @@
           <td class="font-mono text-xs">${escapeHtml(r.mpn || "")}</td>
           <td class="font-mono text-xs">${escapeHtml(r.ean || "")}</td>
           <td class="text-xs">${escapeHtml(r.brand || "")}</td>
-          <td class="text-xs" style="color:#6b7480;">${escapeHtml((r.updated_at || "").slice(0, 10))}</td>`;
+          <td class="text-xs" style="color:#6b7480;">${escapeHtml((r.updated_at || "").slice(0, 10))}</td>
+          <td class="text-right"></td>`;
+        const btn = document.createElement("button");
+        btn.className = "plib-del-btn";
+        btn.title = "Remove this ASIN from the Pair Library";
+        btn.textContent = "✕";
+        btn.addEventListener("click", () => removeLibraryPair(r));
+        tr.lastElementChild.appendChild(btn);
         libBody.appendChild(tr);
       });
       $("#plib-results").classList.toggle("hidden", rows.length === 0);
@@ -2991,6 +3008,27 @@
 
     $("#pairs-empty").classList.add("hidden");
     $("#pairs-results").classList.remove("hidden");
+  }
+
+  // ---- Pair Library: remove an incorrect entry ----------------------------
+  async function removeLibraryPair(r) {
+    const bits = [r.upc && `UPC ${r.upc}`, r.mpn && `MPN ${r.mpn}`, r.ean && `EAN ${r.ean}`]
+      .filter(Boolean).join(", ");
+    const ok = await showConfirm({
+      title: "Remove from Pair Library?",
+      message: `Remove ASIN ${r.asin}${bits ? " (" + bits + ")" : ""} and all its identifiers `
+        + `from the Pair Library? Runs will stop auto-approving this pair. `
+        + `Re-import the correct file to restore it.`,
+      confirmText: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("/api/pairs/library/delete", { method: "POST", body: { asin: r.asin } });
+      showToast(`Removed ${r.asin} from the Pair Library`, "success");
+      await loadPairLibStats();
+      searchPairs();   // re-run the current search so the row disappears
+    } catch (e) { showToast(e.message, "error"); }
   }
 
   // ---- Pair Library: stats + brand datalist -------------------------------
@@ -3103,7 +3141,6 @@
       return;
     }
     const matched  = resp.headers.get("X-Plib-Matched")  || "0";
-    const added    = resp.headers.get("X-Plib-Added")    || "0";
     const notFound = resp.headers.get("X-Plib-Notfound") || "0";
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
@@ -3111,9 +3148,8 @@
     a.href = url; a.download = "pair_lookup_results.xlsx";
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-    resEl.textContent = `Last lookup: ${matched} matched, ${added} added to library, ${notFound} not found.`;
-    showToast(`Lookup done — ${matched} matched, ${added} new pairs saved, ${notFound} not found.`, "success", 7000);
-    if (Number(added) > 0) loadPairLibStats();
+    resEl.textContent = `Last lookup: ${matched} matched, ${notFound} not found.`;
+    showToast(`Lookup done — ${matched} matched, ${notFound} not found.`, "success", 7000);
   });
 
   // ========================================================================
@@ -3674,6 +3710,13 @@
     state.analyticsRun._firstRender = true;   // triggers entrance animations on first render only
     // Reset per-run view state so the previous run's tab/search/sort
     // don't bleed into the next one.
+    // CRITICAL: also drop the previous run's candidate data + per-tab page cache —
+    // otherwise two runs with the SAME status (both "Complete") reuse the first
+    // run's cached candidate rows (fetchAnalyticsRunDetail only clears the cache on a
+    // status CHANGE), so the table shows the wrong run's candidates.
+    state.analyticsRun.data = null;
+    state.analyticsRun.tabPageData = {};
+    state.analyticsRun._lastStatus = null;
     state.analyticsRun.tab = "Approved";
     state.analyticsRun.search = "";
     state.analyticsRun.sortKey = "confidence";
@@ -3819,6 +3862,11 @@
         return `BSR ${Number(rank).toLocaleString()} < min`;
       return "Category or quality mismatch";
     }
+
+    // Vendor item ID / MPN disagrees with Amazon's part number → capped to review
+    if (sc.mpn_field_conflict) return "Item ID / MPN mismatch";
+    // Amazon's own title size vs listing size disagree → capped to review
+    if (sc.size_conflict) return "Amazon size conflict (title vs listing)";
 
     // Pack mismatch → capped at 80 → review
     if (sc.pack_mismatch) {
@@ -4887,73 +4935,112 @@
 
   // Bulk action — tab-aware: rejects everything on the Approved tab,
   // promotes everything on Not Approved, approves everything on Review.
-  $("#analytics-run-bulk")?.addEventListener("click", async () => {
+  // Shared server-side bulk: move EVERY candidate in `from_verdict` → `to_verdict`
+  // for the current run. Done server-side so it never misses rows the paginated
+  // detail view hasn't loaded (the old client-side filter silently hit nothing
+  // when the tab's candidates weren't in the in-memory snapshot). Refreshes after.
+  async function _runBulkVerdictAll(from_verdict, to_verdict, review_status) {
     const id = state.analyticsRun.id;
+    if (!id) return;
+    try {
+      const j = await api(`/api/analytics/runs/${id}/candidates/bulk_verdict_all`, {
+        method: "POST",
+        body: { from_verdict, to_verdict, review_status },
+      });
+      showToast(`Updated ${j.updated} candidate${j.updated === 1 ? "" : "s"}.`, "success");
+      state.analyticsRun.tabPageData = {};   // force a clean re-fetch of the current tab
+      await fetchAnalyticsRunDetail();
+    } catch (err) {
+      showToast("Bulk update failed: " + (err.message || err), "error");
+    }
+  }
+
+  // Per-tab "Approve All / Promote All / Reject All" — now applies to the WHOLE
+  // tab bucket (not just the loaded page) via the server-side endpoint.
+  $("#analytics-run-bulk")?.addEventListener("click", async () => {
     const data = state.analyticsRun.data;
-    if (!id || !data) return;
+    if (!state.analyticsRun.id || !data || !data.run) return;
     const tab = state.analyticsRun.tab;
     if (tab === "All") return;
 
-    let verdict, review_status;
-    if (tab === "Approved")          { verdict = "not_approved"; review_status = "Manually Rejected"; }
-    else if (tab === "Not Approved") { verdict = "verified";     review_status = "Manually Approved"; }
-    else                             { verdict = "verified";     review_status = "Reviewed"; }
+    let from_verdict, to_verdict, review_status, verb, danger;
+    if (tab === "Approved")          { from_verdict = "verified";     to_verdict = "not_approved"; review_status = "Manually Rejected"; verb = "Reject";  danger = true;  }
+    else if (tab === "Not Approved") { from_verdict = "not_approved"; to_verdict = "verified";     review_status = "Manually Approved"; verb = "Promote"; danger = false; }
+    else                             { from_verdict = "review";       to_verdict = "verified";     review_status = "Reviewed";          verb = "Approve"; danger = false; }
 
-    // Honour the current search filter — bulk only hits visible rows.
-    const q = (state.analyticsRun.search || "").toLowerCase().trim();
-    const wanted = _TAB_TO_VERDICT[tab];
-    const srcByIdx = {};
-    (data.catalog_rows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
-    const items = (data.candidates || []).filter(c => {
-      if ((c.verdict || "").toLowerCase() !== wanted) return false;
-      if (!q) return true;
-      const src = srcByIdx[c.row_idx] || {};
-      const amz = (c.data && c.data.amazon) || {};
-      const hay = [
-        src.title, src.brand, src.upc, src.itemid,
-        c.asin, amz.title, amz.brand, amz.manufacturer,
-      ].map(v => String(v || "").toLowerCase()).join(" ");
-      return hay.includes(q);
-    }).map(c => ({ row_idx: c.row_idx, asin: c.asin }));
+    const countOf = { verified: data.run.verified_count || 0, review: data.run.review_count || 0, not_approved: data.run.not_approved_count || 0 };
+    const n = countOf[from_verdict] || 0;
+    if (n === 0) { showToast(`Nothing to ${verb.toLowerCase()} in ${tab}.`, "info"); return; }
 
-    if (items.length === 0) return;
-    const label =
-        tab === "Approved"     ? `Reject ${items.length} candidate${items.length === 1 ? "" : "s"}?`
-      : tab === "Not Approved" ? `Promote ${items.length} candidate${items.length === 1 ? "" : "s"} to Approved?`
-      :                          `Approve ${items.length} candidate${items.length === 1 ? "" : "s"}?`;
-    if (!(await showConfirm({ title: label, confirmText: "Confirm", danger: false }))) return;
+    const ok = await showConfirm({
+      title: `${verb} all ${n} ${tab} candidate${n === 1 ? "" : "s"}?`,
+      message: tab === "Approved"
+        ? "Every candidate in Approved will be moved to Not Approved."
+        : "Every candidate in this tab will be moved to Approved.",
+      confirmText: verb,
+      danger,
+    });
+    if (!ok) return;
 
     const btn = $("#analytics-run-bulk");
     if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
-    try {
-      const j = await api(`/api/analytics/runs/${id}/candidates/bulk_verdict`, {
-        method: "POST",
-        body: { items, verdict, review_status },
-      });
-      // Mirror the verdict change into local state to avoid a round-trip.
-      const touched = new Set(items.map(i => `${i.row_idx}|${i.asin}`));
-      (data.candidates || []).forEach(c => {
-        const k = `${c.row_idx}|${c.asin}`;
-        if (touched.has(k)) {
-          c.verdict = verdict;
-          c.review_status = review_status;
-          if (!c.data) c.data = {};
-          c.data.verdict = verdict;
-        }
-      });
-      if (j && j.counts && data.run) {
-        data.run.total_candidates_found = j.counts.total_candidates_found;
-        data.run.verified_count        = j.counts.verified_count;
-        data.run.review_count          = j.counts.review_count;
-        data.run.not_approved_count    = j.counts.not_approved_count;
-      }
-      renderAnalyticsRunDetail(data);
-    } catch (err) {
-      showToast("Bulk update failed: " + (err.message || err), "error");
-    } finally {
-      if (btn) { btn.disabled = false; btn.style.opacity = "1"; }
-    }
+    try { await _runBulkVerdictAll(from_verdict, to_verdict, review_status); }
+    finally { if (btn) { btn.disabled = false; btn.style.opacity = "1"; } }
   });
+
+  // "Bulk approve…" — opens a modal to pick which category to approve everything from.
+  $("#analytics-run-bulk-approve")?.addEventListener("click", () => {
+    const data = state.analyticsRun.data;
+    if (!data || !data.run) return;
+    _showBulkApproveModal(data.run);
+  });
+
+  function _showBulkApproveModal(run) {
+    const cats = [
+      { key: "review",       label: "Review",       count: run.review_count || 0 },
+      { key: "not_approved", label: "Not Approved", count: run.not_approved_count || 0 },
+    ].filter(c => c.count > 0);
+    if (!cats.length) { showToast("Nothing to approve — Review and Not Approved are empty.", "info"); return; }
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:200;";
+    const rowsHtml = cats.map(c => `
+      <button class="bulk-cat-row" data-cat="${c.key}">
+        <span>Approve all from <b>${c.label}</b></span>
+        <span class="bulk-cat-count">${c.count}</span>
+      </button>`).join("");
+    backdrop.innerHTML = `
+      <div class="bg-white rounded-xl w-[420px] p-6 shadow-xl" role="dialog" aria-modal="true" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+        <div class="font-semibold mb-1" style="color:var(--navy-800);">Bulk approve</div>
+        <div class="text-sm mb-3" style="color:#6b7480;">Choose a category — every candidate in it moves to Approved (marked Manually Approved).</div>
+        <div class="bulk-cat-list">${rowsHtml}</div>
+        <div class="flex justify-end mt-4">
+          <button class="btn btn-secondary bulk-cancel">Cancel</button>
+        </div>
+      </div>`;
+
+    function close() { document.removeEventListener("keydown", onKey); backdrop.remove(); }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    backdrop.querySelector(".bulk-cancel").addEventListener("click", close);
+    backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey);
+    backdrop.querySelectorAll(".bulk-cat-row").forEach(b => {
+      b.addEventListener("click", async () => {
+        const cat = cats.find(c => c.key === b.dataset.cat);
+        close();
+        const ok = await showConfirm({
+          title: `Approve all ${cat.count} ${cat.label} candidate${cat.count === 1 ? "" : "s"}?`,
+          message: "They'll be moved to Approved and marked Manually Approved. You can still change individual items afterwards.",
+          confirmText: "Approve all",
+          danger: false,
+        });
+        if (!ok) return;
+        await _runBulkVerdictAll(cat.key, "verified", "Manually Approved");
+      });
+    });
+    document.body.appendChild(backdrop);
+  }
 
   // ==========================================================================
   //  AI Check modal
@@ -5721,7 +5808,17 @@
     };
     if (!m.upc)    m.upc    = hit(/^(upc|ean|gtin|barcode)/);
     if (!m.itemid) m.itemid = hit(/(itemid|itemnum|partnum|partno|sku|manuf|mpn|model)/);
-    if (!m.title)  m.title  = hit(/(title|desc|product|name)/);
+    if (!m.title) {
+      // Pick the real product-title/description column. Skip supplier/company/number
+      // columns (e.g. "Vendor Name" = "Scholls", "Product Number") — a bare "name"
+      // match used to grab "Vendor Name" and show the brand as the whole title.
+      const bad = (h) => /(vendor|supplier|company|brand)name|number/.test(h);
+      const ranked = [/description|title/, /productname|itemname/, /product|name/];
+      for (const re of ranked) {
+        const idx = state.awiz.headers.findIndex(h => { const n = norm(h); return !bad(n) && re.test(n); });
+        if (idx >= 0) { m.title = String(idx); break; }
+      }
+    }
     // Auto-select brand column and switch to column mode if header found.
     if (!m.brand) {
       const brandHit = hit(/^brand$/);
@@ -5799,7 +5896,9 @@
       showToast("Pick at least one search method (UPC / Item ID / Title).", "error");
       return;
     }
-    const pagesPerTitle = Math.max(1, Math.min(10, parseInt($("#awiz-title-pages")?.value || "1", 10)));
+    // 0 = unlimited (walk every page Amazon returns); positive = explicit cap.
+    const _ppRaw = parseInt($("#awiz-title-pages")?.value ?? "0", 10);
+    const pagesPerTitle = Number.isNaN(_ppRaw) ? 0 : Math.max(0, _ppRaw);
     const aiCleanTitles = !!$("#awiz-title-ai-clean")?.checked;
 
     const fd = new FormData();
@@ -7120,6 +7219,8 @@
       if (scores.scent_mismatch)    reasons.push("Scent/variant mismatch");
       if (scores.media_format_mismatch) reasons.push("Media format (DVD/Blu-ray/etc.)");
       if (scores.category_mismatch) reasons.push("Category mismatch");
+      if (scores.mpn_field_conflict) reasons.push("Item ID / MPN mismatch");
+      if (scores.size_conflict)     reasons.push("Amazon size conflict (title vs listing)");
       if (scores.pack_mismatch)     reasons.push("Pack mismatch");
       const reasonTip = reasons.length ? ` title="${reasons.join(", ")}"` : "";
 

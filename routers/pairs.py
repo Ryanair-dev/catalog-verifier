@@ -76,9 +76,11 @@ _HEADER_MAP = {
     "item id": "mpn", "itemid": "mpn", "item_id": "mpn",
     "brand": "brand", "brand name": "brand",
     "manufacturer": "manufacturer", "mfr": "manufacturer",
+    "amz pack": "amz_pack", "amzpack": "amz_pack", "amz_pack": "amz_pack",
+    "pack": "amz_pack", "pack qty": "amz_pack", "amazon pack": "amz_pack",
 }
 
-_IMPORT_HEADERS = ["ASIN", "UPC", "EAN", "MPN/Item ID", "Brand", "Manufacturer"]
+_IMPORT_HEADERS = ["ASIN", "UPC", "EAN", "MPN/Item ID", "Brand", "Manufacturer", "amz pack"]
 _LOOKUP_HEADERS = ["UPC", "EAN", "MPN/Item ID", "ASIN", "Brand"]
 
 
@@ -217,6 +219,24 @@ async def library_search(body: PairQuery) -> dict:
     return {"results": database.search_pair_library(body.query)}
 
 
+class LibraryDelete(BaseModel):
+    asin: str
+    id_type: str = ""      # optional: drop just one identifier ('upc'|'ean'|'mpn')
+    identifier: str = ""
+
+
+@router.post("/pairs/library/delete")
+async def library_delete(body: LibraryDelete) -> dict:
+    """Remove an incorrect Pair Library entry — a whole ASIN, or one identifier of
+    it. Also clears the verified_items mirror so runs stop auto-approving the pair."""
+    if not body.asin.strip():
+        raise HTTPException(400, "asin is required.")
+    res = database.delete_library_pair(body.asin, body.id_type, body.identifier)
+    if not (res["deleted_ids"] or res["deleted_asin"]):
+        raise HTTPException(404, "No matching Pair Library entry to remove.")
+    return {"removed": True, **res}
+
+
 @router.get("/pairs/library/template")
 async def library_template(kind: str = "import") -> StreamingResponse:
     """Download the fixed import/lookup template with a Notes sheet."""
@@ -241,6 +261,7 @@ async def library_template(kind: str = "import") -> StreamingResponse:
             "Multiple UPCs for one ASIN: separate with commas in the UPC cell — first becomes primary, the rest aliases.",
             "For any ASIN you import, only the UPC(s) you give it count for it in runs (this overrides earlier slipped-through pairs).",
             "Brand/Manufacturer are optional but enable the per-brand export.",
+            "amz pack (optional) — the Amazon pack quantity for that ASIN's listing.",
         ]
         fname = "pair_import_template"
     ns = wb.create_sheet("Notes")
@@ -296,6 +317,7 @@ async def library_import(pairs_file: UploadFile = File(...)) -> dict:
                 asin, ids,
                 brand=_get(cells, cols, "brand"),
                 manufacturer=_get(cells, cols, "manufacturer"),
+                amz_pack=_get(cells, cols, "amz_pack"),
             )
             totals["pairs_created"]     += r["created"]
             totals["pairs_updated"]     += r["updated"]
@@ -309,14 +331,14 @@ async def library_import(pairs_file: UploadFile = File(...)) -> dict:
 
 
 _EXPORT_HEADERS = ["ASIN", "UPC", "UPC Aliases", "EAN", "EAN Aliases",
-                   "MPN/Item ID", "MPN Aliases", "Brand", "Manufacturer", "Updated"]
+                   "MPN/Item ID", "MPN Aliases", "Brand", "Manufacturer", "amz pack", "Updated"]
 
 
 def _library_row_cells(r: dict) -> list:
     return safe_spreadsheet_row([
         r["asin"], r["upc"], r["upc_aliases"], r["ean"], r["ean_aliases"],
         r["mpn"], r["mpn_aliases"], r["brand"], r["manufacturer"],
-        r["updated_at"],
+        r.get("amz_pack", ""), r["updated_at"],
     ])
 
 
@@ -344,9 +366,9 @@ async def library_lookup_export(lookup_file: UploadFile = File(...)) -> Streamin
     Match an uploaded identifier list (UPC/EAN/MPN per row) against the Pair
     Library and return an Excel with Matched + Not Found sheets.
 
-    Rows that carry BOTH an identifier and an ASIN but aren't in the library
-    are saved into it (manual files are ground truth) and reported as Added.
-    Summary counts are returned in X-Plib-* response headers.
+    Read-only lookup: any row whose identifier isn't in the library goes to the
+    Not Found sheet — including rows that supply an ASIN (nothing is auto-saved;
+    use the Import feature to add pairs). Counts are in the X-Plib-* headers.
     """
     data = await read_upload_limited(lookup_file)
     cols, body = _parsed_rows(lookup_file.filename or "", data)
@@ -396,43 +418,20 @@ async def library_lookup_export(lookup_file: UploadFile = File(...)) -> Streamin
                 continue
 
             asins = _find(ids)
-            added_here = None
-            # A valid ASIN supplied that isn't already known for this identifier
-            # is a NEW manually-confirmed pair — save it (additive; a UPC may
-            # legitimately have several ASINs).
-            if _ASIN_RE.fullmatch(in_asin) and in_asin not in asins:
-                in_brand = _get(cells, cols, "brand")
-                database.upsert_library_pair(in_asin, ids, brand=in_brand)
-                added_here = in_asin
-                asins = set(asins) | {in_asin}
-                for t, vals in ids.items():
-                    for v in vals:
-                        id_map.setdefault((t, v), set()).add(in_asin)
-                entry = lib_by_asin.setdefault(in_asin, {
-                    "asin": in_asin, "brand": in_brand, "manufacturer": "",
-                    "upc": "", "upc_aliases": "", "ean": "", "ean_aliases": "",
-                    "mpn": "", "mpn_aliases": "",
-                })
-                for t in ("upc", "ean", "mpn"):
-                    vals = ids.get(t, [])
-                    if vals and not entry.get(t):
-                        entry[t] = vals[0]
-                        entry[f"{t}_aliases"] = ", ".join(vals[1:])
-                n_added += 1
-
+            # Read-only lookup: not in the library → Not Found (even if the row
+            # supplies an ASIN — we don't auto-save; use Import to add pairs).
             if not asins:
-                not_found.append(
-                    [row_no, in_upc, in_ean, in_mpn, in_asin, "Not in Pair Library"])
+                reason = ("Not in Pair Library — ASIN " + in_asin + " supplied (not saved)"
+                          if _ASIN_RE.fullmatch(in_asin) else "Not in Pair Library")
+                not_found.append([row_no, in_upc, in_ean, in_mpn, in_asin, reason])
                 continue
 
             # One output row per matching ASIN — so a UPC lists EVERY ASIN.
             for a in sorted(asins):
-                status = "Added to library" if a == added_here else "Matched"
-                if a != added_here:
-                    n_match_lines += 1
+                n_match_lines += 1
                 lib = lib_by_asin.get(a, {})
                 matched.append([
-                    row_no, in_upc, in_ean, in_mpn, in_asin, status, a,
+                    row_no, in_upc, in_ean, in_mpn, in_asin, "Matched", a,
                     lib.get("brand", ""), lib.get("manufacturer", ""),
                     lib.get("upc", ""), lib.get("upc_aliases", ""),
                     lib.get("ean", ""), lib.get("mpn", ""),

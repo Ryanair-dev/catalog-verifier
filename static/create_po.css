@@ -1,0 +1,86 @@
+/* =========================================================================
+   Create PO — self-contained wizard styling (ported from Claude Design).
+   Everything is scoped under .cpo so it never leaks into the rest of the app.
+   Sidebar from the mockup is intentionally omitted (the app has its own nav).
+   ========================================================================= */
+.cpo{
+  /* Standard app palette (matches every other window: grey-50 bg + white cards) */
+  --bg:#f7f8fa; --bg-2:#eef0f4; --panel:#ffffff; --panel-soft:#f7f8fa; --panel-inset:#f3f4f6;
+  --border:#eef0f4; --border-strong:#e2e6ec;
+  --ink:#0e2a47; --ink-soft:#6b7480; --ink-faint:#9aa3af;
+  --primary:#6b50d4; --primary-ink:#5b42b8; --primary-soft:#f4f0ff;
+  --accent:#e0575f; --accent-soft:#fdecec;
+  --mint:#1f9d55; --mint-soft:#e9f8ee;
+  --amber:#a16207; --amber-soft:#fef7e0;
+  --sky:#2563eb; --sky-soft:#eff6ff;
+  --shadow:0 1px 2px rgba(14,42,71,.04), 0 8px 24px -14px rgba(14,42,71,.12);
+  --shadow-lg:0 18px 44px -24px rgba(107,80,212,.26);
+  position:relative; min-height:100%;
+  background:var(--bg); color:var(--ink);
+  font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.cpo, .cpo *{ box-sizing:border-box; transition:background-color .35s ease, border-color .35s ease, color .25s ease, box-shadow .25s ease; }
+.cpo input, .cpo select, .cpo button{ font-family:inherit; }
+.cpo input::placeholder{ color:var(--ink-faint); }
+.cpo select{ appearance:none; }
+#view-create-po{ height:100%; overflow-y:auto; }
+.cpo-main{ position:relative; z-index:1; padding:26px 30px 60px; max-width:1180px; margin:0 auto; }
+.cpo-hf{ font-family:'Bricolage Grotesque','Plus Jakarta Sans',sans-serif; }
+.cpo-glow{ display:none; }
+
+/* hover helpers (design used a nonstandard style-hover attr) */
+.cpo-lift{ }
+.cpo-lift:hover{ transform:translateY(-2px) scale(1.01); }
+.cpo-drop:hover{ border-color:var(--sky) !important; background:var(--sky-soft) !important; }
+.cpo-editcell{ cursor:text; }
+.cpo-editcell:hover{ box-shadow:inset 0 0 0 1px var(--border-strong); }
+.cpo-navbtn:hover{ color:var(--primary) !important; border-color:var(--primary) !important; }
+.cpo-themebtn:hover{ transform:translateY(-2px) rotate(12deg); border-color:var(--primary) !important; }
+
+@keyframes cpoFadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes cpoFadeIn{from{opacity:0}to{opacity:1}}
+@keyframes cpoFloaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+@keyframes cpoPulseRing{0%{box-shadow:0 0 0 0 rgba(108,76,241,.35)}70%{box-shadow:0 0 0 16px rgba(108,76,241,0)}100%{box-shadow:0 0 0 0 rgba(108,76,241,0)}}
+@keyframes cpoSpin{to{transform:rotate(360deg)}}
+@keyframes cpoIndet{0%{left:-45%}100%{left:100%}}
+@keyframes cpoWiggle{0%,100%{transform:rotate(0)}25%{transform:rotate(-9deg)}75%{transform:rotate(9deg)}}
+@keyframes cpoBlob{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(24px,-20px) scale(1.08)}}
+/* Entrance animation only on first mount (gated) so re-renders don't "flash". */
+.cpo-fadeup{ }
+.cpo-anim .cpo-fadeup{ animation:cpoFadeUp .5s ease both; }
+
+/* Custom dropdown — matches the app's cs- select, themed to .cpo tokens. */
+.cpo-dd{ display:inline-block; position:relative; }
+.cpo-trigger{ display:inline-flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:8px 11px; border:1px solid var(--border); border-radius:10px; background:var(--panel); color:var(--ink); font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer; min-height:34px; }
+.cpo-trigger:hover{ border-color:var(--border-strong); background:var(--panel-inset); }
+.cpo-dd.open .cpo-trigger{ border-color:var(--primary); box-shadow:0 0 0 3px rgba(108,76,241,.15); }
+.cpo-ddlabel{ flex:1; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cpo-caret{ flex-shrink:0; color:var(--ink-faint); transition:transform .16s; }
+.cpo-dd.open .cpo-caret{ transform:rotate(180deg); color:var(--primary-ink); }
+/* The open menu is portaled to <body> (outside .cpo), so re-declare every token
+   it needs here — otherwise the var() lookups resolve to nothing → transparent menu. */
+#cpo-portal{
+  --panel:#ffffff; --panel-inset:#f3f4f6; --border:#eef0f4; --border-strong:#e2e6ec;
+  --ink:#0e2a47; --ink-soft:#6b7480; --ink-faint:#9aa3af;
+  --primary:#6b50d4; --primary-ink:#5b42b8; --primary-soft:#f4f0ff;
+  --shadow-lg:0 18px 44px -24px rgba(107,80,212,.26);
+  font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;
+}
+.cpo-menu{ position:fixed; background:var(--panel); border:1px solid var(--border-strong); border-radius:12px; padding:6px; z-index:99999; max-height:300px; overflow-y:auto; box-shadow:var(--shadow-lg); opacity:1; }
+.cpo-opt{ display:flex; align-items:center; gap:8px; padding:8px 10px; border-radius:8px; font-size:12.5px; color:var(--ink-soft); cursor:pointer; white-space:nowrap; }
+.cpo-opt + .cpo-opt{ margin-top:2px; }
+.cpo-opt:hover{ background:var(--primary-soft); color:var(--primary-ink); }
+.cpo-opt-sel{ background:var(--primary-soft); color:var(--primary-ink); font-weight:800; }
+.cpo-check{ margin-left:auto; color:var(--primary-ink); }
+
+/* Editable brand-name title on the Configure brand cards — looks like a heading
+   until hovered/focused, then reveals it's an input. */
+.cpo-bname{ transition:border-color .12s, background .12s; }
+.cpo-bname:hover{ border-color:var(--border-strong) !important; }
+.cpo-bname:focus{ border-color:var(--primary) !important; background:var(--panel) !important; box-shadow:0 0 0 3px rgba(108,76,241,.15); }
+
+/* SellerCloud re-check spinner shown on a hand-edited SKU cell. */
+.cpo-spin{ width:13px; height:13px; border:2px solid var(--primary); border-top-color:transparent; border-radius:50%; display:inline-block; flex-shrink:0; animation:cpoSpin .6s linear infinite; }
+.cpo-checking{ animation:cpoFadeIn .18s ease both; }
+@media (prefers-reduced-motion: reduce){ .cpo-spin{ animation-duration:1.4s; } .cpo-checking{ animation:none; } }

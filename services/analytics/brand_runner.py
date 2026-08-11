@@ -359,6 +359,18 @@ def _extract_uom_qty(normalized: dict) -> str | None:
 # DB upsert
 # --------------------------------------------------------------------------- #
 
+def _class_ids(normalized: dict) -> set[str]:
+    """Distinct Amazon classificationIds for an item (read from its raw salesRanks).
+    These seed the Phase D per-category drill that beats the per-query result cap."""
+    out: set[str] = set()
+    for sr in ((normalized.get("_raw") or {}).get("salesRanks") or []):
+        for cr in (sr.get("classificationRanks") or []):
+            cid = str(cr.get("classificationId") or "").strip()
+            if cid:
+                out.add(cid)
+    return out
+
+
 def _upsert_item(run_id: int, brand_searched: str, normalized: dict) -> None:
     asin  = normalized.get("asin", "")
     title = normalized.get("title", "") or ""
@@ -528,6 +540,9 @@ def _brand_pipeline(
     _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total_pages)
 
     asin_count = 0
+    # Distinct Amazon category (classificationId) values seen on found items —
+    # seeds the Phase D per-category drill that beats the per-query result cap.
+    seen_class_ids: set[str] = set()
     # Collect exact Amazon brand field values seen during Phase A so Phase B
     # can search them verbatim (catches variants like "Hartmann H" or "Paul Hartmann").
     discovered_amz_brands: dict[str, str] = {}  # lowercase → original-case
@@ -608,6 +623,7 @@ def _brand_pipeline(
                         continue
 
                 _upsert_item(run_id, query, normalized)
+                seen_class_ids |= _class_ids(normalized)
                 asin_count += 1
 
             pages_fetched += 1
@@ -694,6 +710,7 @@ def _brand_pipeline(
 
                 brand_label = amz_b or phase_b_brand_list[0]
                 _upsert_item(run_id, brand_label, normalized)
+                seen_class_ids |= _class_ids(normalized)
                 asin_count += 1
 
             pages_fetched += 1
@@ -762,6 +779,7 @@ def _brand_pipeline(
                                 continue
                         amz_b = (normalized.get("brand") or normalized.get("manufacturer") or "").strip()
                         _upsert_item(run_id, amz_b or related_new[0], normalized)
+                        seen_class_ids |= _class_ids(normalized)
                         asin_count += 1
 
                     pages_fetched += 1
@@ -776,6 +794,98 @@ def _brand_pipeline(
                     if not next_token:
                         break  # exhausted
                     time.sleep(PAGE_SLEEP)
+
+    # ── Phase D: category-partitioned brand scan ─────────────────────────── #
+    # Amazon caps each keyword query at ~a few thousand results, so a large brand
+    # keyword ("McKesson" → ~2,900) truncates when paged. Re-running the SAME
+    # keyword + brandNames filter but restricted to ONE category (classificationId)
+    # at a time returns each category's own small slice (well under the cap), so
+    # paging each to exhaustion and unioning recovers the depth-capped tail.
+    # (SP-API rejects a brandNames-only query — it must ride on the keyword.)
+    # Seed categories are the classificationIds seen on items already found (A-C).
+    ctrl = _check_control(run_id)
+    if ctrl not in ("stop", "pause") and seen_class_ids and search_terms:
+        _names = {_keyword_for_search(t).lower(): _keyword_for_search(t) for t in search_terms}
+        _names.update(discovered_amz_brands)
+        phase_d_brands = list(_names.values())
+        # SP-API requires a keyword, so each per-category scan uses the primary
+        # brand term as the keyword + the brandNames filter for correctness.
+        phase_d_kw = _keyword_for_search(search_terms[0])
+        cats = sorted(seen_class_ids)
+        if not unlimited:
+            total_pages += len(cats) * pages_per_brand
+        log.info("brand_runner run=%d: Phase D — drilling %d categories with brands %s",
+                 run_id, len(cats), phase_d_brands)
+
+        for c_idx, cid in enumerate(cats, start=1):
+            if not phase_d_brands or not phase_d_kw:
+                break
+            ctrl = _check_control(run_id)
+            if ctrl == "stop":
+                clear_control(run_id)
+                _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                return
+            if ctrl == "pause":
+                _update_progress(run_id, status="Paused", phase="Paused")
+                while True:
+                    time.sleep(2)
+                    c = _check_control(run_id)
+                    if c == "stop":
+                        clear_control(run_id)
+                        _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                        return
+                    if c != "pause":
+                        break
+                _update_progress(run_id, status="Searching",
+                                 phase=f"Resumed — category {c_idx}/{len(cats)}")
+
+            next_token = None
+            pages_fetched = 0
+            while True:
+                ctrl = _check_control(run_id)
+                if ctrl in ("stop", "pause"):
+                    break
+                try:
+                    result = catalog.search_by_keywords(
+                        keywords=phase_d_kw,
+                        brand_names=phase_d_brands,
+                        classification_ids=[cid],
+                        page_size=20,
+                        page_token=next_token,
+                    )
+                except Exception as exc:
+                    log.warning("Phase D category %s failed page %d: %s", cid, pages_fetched, exc)
+                    break
+
+                for raw_item in (result.get("items") or []):
+                    normalized = normalize_amazon_item(raw_item)
+                    if _cat_target is not None:
+                        _amz_cat = categorize("", normalized.get("sales_rank_category") or "")
+                        if _amz_cat != UNKNOWN and category_distance(_cat_target, _amz_cat) > _CATEGORY_FILTER_THRESHOLD:
+                            continue
+                    bsr = normalized.get("sales_rank")
+                    if bsr:
+                        if max_rank > 0 and bsr > max_rank:
+                            continue
+                        if min_rank > 0 and bsr < min_rank:
+                            continue
+                    amz_b = (normalized.get("brand") or normalized.get("manufacturer") or "").strip()
+                    _upsert_item(run_id, amz_b or phase_d_brands[0], normalized)
+                    asin_count += 1
+
+                pages_fetched += 1
+                done_pages += 1
+                _tot = 0 if unlimited else max(total_pages, done_pages)
+                _update_progress(
+                    run_id,
+                    phase=f"Category scan {c_idx}/{len(cats)} — p{pages_fetched} · {asin_count} found",
+                    done=done_pages,
+                    total=_tot,
+                )
+                next_token = (result.get("pagination") or {}).get("nextToken")
+                if not next_token:
+                    break
+                time.sleep(PAGE_SLEEP)
 
     # Mark last_asin_updated_at on the run
     with database._LOCK, database._connect() as conn:
