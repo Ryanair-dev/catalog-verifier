@@ -16,11 +16,13 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, brand_analytics, eligibility, export, library, pairs, scans, settings, storage_fees, verify
+from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, library, pairs, scans, settings, storage_fees, verify
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
-load_dotenv()
+# Load from this file's own directory so the cwd doesn't matter (e.g. when the
+# server is launched via `uvicorn --app-dir` from a parent directory).
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -31,6 +33,27 @@ async def _lifespan(app: FastAPI):
     """Ensure DB is initialised and orphaned run states are cleared on startup."""
     database.init_db()
     database.reset_orphaned_running_states()
+    # Warm the live SellerCloud (Azure) catalog cache in the background so the first
+    # Create SKUs run isn't blocked by the ~30s initial pull. Best-effort; the
+    # feature falls back to the local snapshot if this fails.
+    try:
+        from services import azure_sql, sc_reference
+        if azure_sql.is_configured():
+            import threading
+
+            def _warm():
+                azure_sql.fetch_rows(force=True)
+                # Rebuild the saved brand-prefix / manufacturer reference tables from
+                # the fresh pull so Create SKUs reads them instantly (3-char prefixes,
+                # company-scoped, Dove→DOV, Nestlé→Nestlé S.A. + purchaser/sourcer).
+                try:
+                    sc_reference.build_reference(force=False)
+                except Exception:
+                    pass
+
+            threading.Thread(target=_warm, daemon=True).start()
+    except Exception:
+        pass
     yield
 
 
@@ -88,6 +111,7 @@ app.include_router(analytics.router,       prefix="/api", tags=["analytics"])
 app.include_router(brand_analytics.router, prefix="/api", tags=["brand-analytics"])
 app.include_router(eligibility.router,    prefix="/api", tags=["eligibility"])
 app.include_router(storage_fees.router,   prefix="/api", tags=["storage-fees"])
+app.include_router(create_po.router,      prefix="/api", tags=["create-po"])
 
 
 @app.get("/api/health")

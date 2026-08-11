@@ -58,7 +58,7 @@ router = APIRouter(prefix="/analytics")
 
 _PREVIEW_LIMIT = 25
 MAX_PAGE_SIZE = 1000
-MAX_TITLE_PAGES = 10
+MAX_TITLE_PAGES = 100   # explicit page count ceiling; 0 = unlimited (runner-bounded)
 
 
 def _parse_raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
@@ -614,7 +614,9 @@ async def create_analytics_run(
     saved_brand_col  = brand.strip() if brand.strip() else (mapping_dict.get("brand") or "")
     saved_brand_mode = "text" if brand.strip() else "col"
 
-    pages_per_title = clamp_int(pages_per_title, 1, MAX_TITLE_PAGES, 5)
+    # 0 = unlimited (walk every page Amazon returns); the runner bounds it with a
+    # safety cap. Positive values are capped at MAX_TITLE_PAGES.
+    pages_per_title = clamp_int(pages_per_title, 0, MAX_TITLE_PAGES, 5)
 
     # Validate passthrough_cols — must be a JSON array of strings if provided.
     pt_cols_raw = (passthrough_cols or "").strip()
@@ -1273,7 +1275,7 @@ def export_analytics_run(
 
         cand_rows = conn.execute(
             f"""
-            SELECT row_idx, asin, confidence, verdict, sales_rank,
+            SELECT row_idx, asin, confidence, verdict, sales_rank, amz_pack,
                    COALESCE(
                        json_extract(data_json, '$.amazon.title'), ''
                    ) AS amz_title,
@@ -1324,7 +1326,7 @@ def export_analytics_run(
 
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-        "ASIN", "Amazon Title", "Amazon Brand", "BSR", "Confidence",
+        "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
     ] + pt_cols  # passthrough columns appended after fixed columns
 
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
@@ -1343,6 +1345,7 @@ def export_analytics_run(
             c["asin"] or "",
             c["amz_title"] or "",
             c["amz_brand"] or "",
+            c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
         ] + pt_values)

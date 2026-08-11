@@ -50,6 +50,13 @@ UPC_BATCH_SIZE = 20            # SP-API hard cap on identifiers per call
 DEFAULT_TITLE_MAX_PAGES = 5    # what the wizard exposes (Analytics panel)
 TITLE_PAGE_CAP = 10
 PAGE_SLEEP = 0.6               # seconds between paged keyword calls (safety)
+
+
+def _page_limit(max_pages):
+    """Max pages for a keyword search. None => unlimited (walk Amazon's nextToken
+    until it stops — no artificial cap); a positive N => at most N pages."""
+    n = int(max_pages or 0)
+    return None if n <= 0 else max(1, n)
 AI_CLEAN_WORKERS = 3           # parallel GPT-4o-mini calls for title cleaning (Tier 1: 500 RPM)
 
 # Verdict thresholds (mirrors AmazonAsinResearch1 config defaults).
@@ -924,32 +931,53 @@ def _tier2_itemid(
     api: CatalogAPI,
     rows: list[SourceRow],
     run_id: int = 0,
+    max_pages: int = 1,
 ) -> dict[int, list[dict]]:
-    """One keyword search per unique Item ID string."""
-    term_to_rows: dict[str, list[int]] = {}
+    """Keyword search per unique Item ID. Restricts to the row's brand (SP-API
+    brandNames filter) so a bare numeric part number stops returning other brands'
+    products, and paginates per `max_pages` (0 = unlimited)."""
+    # group rows by item id, remembering a brand to scope the search
+    term_to: dict[str, dict] = {}
     for r in rows:
-        if r.itemid:
-            term_to_rows.setdefault(r.itemid, []).append(r.row_idx)
+        if not r.itemid:
+            continue
+        e = term_to.setdefault(r.itemid, {"rows": [], "brand": ""})
+        e["rows"].append(r.row_idx)
+        if not e["brand"] and r.brand:
+            e["brand"] = r.brand
 
+    limit = _page_limit(max_pages)
     out: dict[int, list[dict]] = {}
-    terms = list(term_to_rows.items())
+    terms = list(term_to.items())
     total_terms = len(terms)
-    for i, (term, row_idxs) in enumerate(terms):
+    for i, (term, e) in enumerate(terms):
         if run_id and _check_control(run_id):
             break
         if run_id:
             _update_progress(run_id, done=i + 1, total=total_terms)
-        try:
-            data = api.search_by_keywords(term, page_size=20, max_retries=3)
-        except PermissionError:
-            raise  # 403 — SP-API auth/roles problem; abort with a clear error
-        except Exception as exc:
-            log.warning("ItemID search failed for %r: %s", term, exc)
-            continue
-        items = data.get("items") or []
-        normalized = [normalize_amazon_item(it) for it in items]
-        for ri in row_idxs:
-            out.setdefault(ri, []).extend(normalized)
+        brand = e["brand"]
+        collected: list[dict] = []
+        page_token = None
+        page = 0
+        while True:
+            try:
+                data = api.search_by_keywords(
+                    term, page_token=page_token, page_size=20, max_retries=3,
+                    brand_names=[brand] if brand else None,
+                )
+            except PermissionError:
+                raise  # 403 — SP-API auth/roles problem; abort with a clear error
+            except Exception as exc:
+                log.warning("ItemID search failed for %r: %s", term, exc)
+                break
+            collected.extend(normalize_amazon_item(it) for it in (data.get("items") or []))
+            page += 1
+            page_token = (data.get("pagination") or {}).get("nextToken")
+            if not page_token or (limit is not None and page >= limit):
+                break
+            time.sleep(PAGE_SLEEP)
+        for ri in e["rows"]:
+            out.setdefault(ri, []).extend(collected)
     return out
 
 
@@ -1028,8 +1056,9 @@ def _tier3_title(
             _update_progress(run_id, done=i, total=total_terms)
         page_token = None
         collected: list[dict] = []
-        page_count = max(1, min(TITLE_PAGE_CAP, int(max_pages or DEFAULT_TITLE_MAX_PAGES)))
-        for page in range(page_count):
+        limit = _page_limit(max_pages)
+        page = 0
+        while True:
             try:
                 data = api.search_by_keywords(term, page_token=page_token, page_size=20)
             except PermissionError:
@@ -1039,11 +1068,11 @@ def _tier3_title(
                 break
             items = data.get("items") or []
             collected.extend(normalize_amazon_item(it) for it in items)
+            page += 1
             page_token = (data.get("pagination") or {}).get("nextToken")
-            if not page_token:
+            if not page_token or (limit is not None and page >= limit):
                 break
-            if page < page_count - 1:
-                time.sleep(PAGE_SLEEP)
+            time.sleep(PAGE_SLEEP)
         for ri in row_idxs:
             out.setdefault(ri, []).extend(collected)
     return out
@@ -1174,7 +1203,7 @@ def _rescore_pipeline(
                 with database._LOCK, _with_conn() as conn:
                     conn.executemany(
                         "UPDATE analytics_candidates "
-                        "SET confidence=?, verdict=?, data_json=?, sales_rank=? "
+                        "SET confidence=?, verdict=?, amz_pack=?, data_json=?, sales_rank=? "
                         "WHERE run_id=? AND row_idx=? AND asin=?",
                         cand_batch,
                     )
@@ -1309,8 +1338,22 @@ def _rescore_pipeline(
             cand_data["scores"] = scores
             cand_data["verdict"] = verdict
 
+            # Refresh amz_pack from the recomputed effective_pack (so the "Case of
+            # 12" fix reaches existing runs on rescore), else the SP-API attribute.
+            _eff = scores.get("effective_pack")
+            if _eff and _eff > 1:
+                new_amz_pack = _eff
+            else:
+                _amz = cand_data.get("amazon") or {}
+                _raw = _amz.get("item_package_quantity") or _amz.get("number_of_items")
+                try:
+                    _ri = int(float(_raw)) if _raw else None
+                    new_amz_pack = _ri if _ri and _ri > 1 else None
+                except (TypeError, ValueError):
+                    new_amz_pack = None
+
             cand_batch.append((
-                float(conf), verdict, json.dumps(cand_data, default=str),
+                float(conf), verdict, new_amz_pack, json.dumps(cand_data, default=str),
                 cand_sales_rank,   # write back to the sales_rank DB column
                 run_id, row_idx, str(c["asin"]),
             ))
@@ -1393,7 +1436,8 @@ def start_analytics_run(
     brand_col / brand_mode: saved for rescore pre-population.
     passthrough_cols: JSON array of vendor column header names to carry into export.
     """
-    pages_per_title = max(1, min(TITLE_PAGE_CAP, int(pages_per_title or DEFAULT_TITLE_MAX_PAGES)))
+    # 0 = unlimited (walk every page Amazon returns, no cap); positive N = cap at N.
+    pages_per_title = max(0, int(pages_per_title or 0))
     run_id = _create_run(
         name=name, marketplace=marketplace, search_methods=search_methods,
         pages_per_title=pages_per_title, ai_clean_titles=ai_clean_titles,
@@ -1472,7 +1516,7 @@ def resume_run(run_id: int) -> bool:
         args=(run_id,
               run_d.get("marketplace") or "US",
               search_methods,
-              max(1, min(TITLE_PAGE_CAP, int(run_d.get("pages_per_title") or DEFAULT_TITLE_MAX_PAGES))),
+              int(run_d.get("pages_per_title") or 0),   # 0 = unlimited (see _page_limit)
               bool(run_d.get("ai_clean_titles")),
               source_rows,
               True,       # is_resume=True
@@ -1668,7 +1712,7 @@ def _run_pipeline(
         # --- Tier 2: Item ID -------------------------------------------------
         if "ItemID" in search_methods:
             _update_progress(run_id, phase="Tier 2 / Item ID search")
-            tier2 = _tier2_itemid(api, source_rows, run_id=run_id)
+            tier2 = _tier2_itemid(api, source_rows, run_id=run_id, max_pages=pages_per_title)
             for ri, items in tier2.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "ItemID"))

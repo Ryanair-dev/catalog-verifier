@@ -594,6 +594,7 @@
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
       "quick-search":   $("#view-quick-search"),
+      "create-po":      $("#view-create-po"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -621,11 +622,20 @@
     if (view === "history") loadHistory();
     if (view === "analytics") loadAnalyticsRuns();
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
+    if (view === "create-po") initCreatePo();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
+  }
+
+  // ========================================================================
+  //  Create PO — rendered by the standalone module in /static/create_po.js
+  // ========================================================================
+  function initCreatePo() {
+    const el = document.getElementById("view-create-po");
+    if (el && window.CreatePO) window.CreatePO.mount(el);
   }
 
   // View-aware DOM id helper: pick the right set of IDs for the current view.
@@ -2983,7 +2993,14 @@
           <td class="font-mono text-xs">${escapeHtml(r.mpn || "")}</td>
           <td class="font-mono text-xs">${escapeHtml(r.ean || "")}</td>
           <td class="text-xs">${escapeHtml(r.brand || "")}</td>
-          <td class="text-xs" style="color:#6b7480;">${escapeHtml((r.updated_at || "").slice(0, 10))}</td>`;
+          <td class="text-xs" style="color:#6b7480;">${escapeHtml((r.updated_at || "").slice(0, 10))}</td>
+          <td class="text-right"></td>`;
+        const btn = document.createElement("button");
+        btn.className = "plib-del-btn";
+        btn.title = "Remove this ASIN from the Pair Library";
+        btn.textContent = "✕";
+        btn.addEventListener("click", () => removeLibraryPair(r));
+        tr.lastElementChild.appendChild(btn);
         libBody.appendChild(tr);
       });
       $("#plib-results").classList.toggle("hidden", rows.length === 0);
@@ -2991,6 +3008,27 @@
 
     $("#pairs-empty").classList.add("hidden");
     $("#pairs-results").classList.remove("hidden");
+  }
+
+  // ---- Pair Library: remove an incorrect entry ----------------------------
+  async function removeLibraryPair(r) {
+    const bits = [r.upc && `UPC ${r.upc}`, r.mpn && `MPN ${r.mpn}`, r.ean && `EAN ${r.ean}`]
+      .filter(Boolean).join(", ");
+    const ok = await showConfirm({
+      title: "Remove from Pair Library?",
+      message: `Remove ASIN ${r.asin}${bits ? " (" + bits + ")" : ""} and all its identifiers `
+        + `from the Pair Library? Runs will stop auto-approving this pair. `
+        + `Re-import the correct file to restore it.`,
+      confirmText: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api("/api/pairs/library/delete", { method: "POST", body: { asin: r.asin } });
+      showToast(`Removed ${r.asin} from the Pair Library`, "success");
+      await loadPairLibStats();
+      searchPairs();   // re-run the current search so the row disappears
+    } catch (e) { showToast(e.message, "error"); }
   }
 
   // ---- Pair Library: stats + brand datalist -------------------------------
@@ -3103,7 +3141,6 @@
       return;
     }
     const matched  = resp.headers.get("X-Plib-Matched")  || "0";
-    const added    = resp.headers.get("X-Plib-Added")    || "0";
     const notFound = resp.headers.get("X-Plib-Notfound") || "0";
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
@@ -3111,9 +3148,8 @@
     a.href = url; a.download = "pair_lookup_results.xlsx";
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-    resEl.textContent = `Last lookup: ${matched} matched, ${added} added to library, ${notFound} not found.`;
-    showToast(`Lookup done — ${matched} matched, ${added} new pairs saved, ${notFound} not found.`, "success", 7000);
-    if (Number(added) > 0) loadPairLibStats();
+    resEl.textContent = `Last lookup: ${matched} matched, ${notFound} not found.`;
+    showToast(`Lookup done — ${matched} matched, ${notFound} not found.`, "success", 7000);
   });
 
   // ========================================================================
@@ -3674,6 +3710,13 @@
     state.analyticsRun._firstRender = true;   // triggers entrance animations on first render only
     // Reset per-run view state so the previous run's tab/search/sort
     // don't bleed into the next one.
+    // CRITICAL: also drop the previous run's candidate data + per-tab page cache —
+    // otherwise two runs with the SAME status (both "Complete") reuse the first
+    // run's cached candidate rows (fetchAnalyticsRunDetail only clears the cache on a
+    // status CHANGE), so the table shows the wrong run's candidates.
+    state.analyticsRun.data = null;
+    state.analyticsRun.tabPageData = {};
+    state.analyticsRun._lastStatus = null;
     state.analyticsRun.tab = "Approved";
     state.analyticsRun.search = "";
     state.analyticsRun.sortKey = "confidence";
@@ -3819,6 +3862,11 @@
         return `BSR ${Number(rank).toLocaleString()} < min`;
       return "Category or quality mismatch";
     }
+
+    // Vendor item ID / MPN disagrees with Amazon's part number → capped to review
+    if (sc.mpn_field_conflict) return "Item ID / MPN mismatch";
+    // Amazon's own title size vs listing size disagree → capped to review
+    if (sc.size_conflict) return "Amazon size conflict (title vs listing)";
 
     // Pack mismatch → capped at 80 → review
     if (sc.pack_mismatch) {
@@ -5760,7 +5808,17 @@
     };
     if (!m.upc)    m.upc    = hit(/^(upc|ean|gtin|barcode)/);
     if (!m.itemid) m.itemid = hit(/(itemid|itemnum|partnum|partno|sku|manuf|mpn|model)/);
-    if (!m.title)  m.title  = hit(/(title|desc|product|name)/);
+    if (!m.title) {
+      // Pick the real product-title/description column. Skip supplier/company/number
+      // columns (e.g. "Vendor Name" = "Scholls", "Product Number") — a bare "name"
+      // match used to grab "Vendor Name" and show the brand as the whole title.
+      const bad = (h) => /(vendor|supplier|company|brand)name|number/.test(h);
+      const ranked = [/description|title/, /productname|itemname/, /product|name/];
+      for (const re of ranked) {
+        const idx = state.awiz.headers.findIndex(h => { const n = norm(h); return !bad(n) && re.test(n); });
+        if (idx >= 0) { m.title = String(idx); break; }
+      }
+    }
     // Auto-select brand column and switch to column mode if header found.
     if (!m.brand) {
       const brandHit = hit(/^brand$/);
@@ -5838,7 +5896,9 @@
       showToast("Pick at least one search method (UPC / Item ID / Title).", "error");
       return;
     }
-    const pagesPerTitle = Math.max(1, Math.min(10, parseInt($("#awiz-title-pages")?.value || "1", 10)));
+    // 0 = unlimited (walk every page Amazon returns); positive = explicit cap.
+    const _ppRaw = parseInt($("#awiz-title-pages")?.value ?? "0", 10);
+    const pagesPerTitle = Number.isNaN(_ppRaw) ? 0 : Math.max(0, _ppRaw);
     const aiCleanTitles = !!$("#awiz-title-ai-clean")?.checked;
 
     const fd = new FormData();
@@ -7159,6 +7219,8 @@
       if (scores.scent_mismatch)    reasons.push("Scent/variant mismatch");
       if (scores.media_format_mismatch) reasons.push("Media format (DVD/Blu-ray/etc.)");
       if (scores.category_mismatch) reasons.push("Category mismatch");
+      if (scores.mpn_field_conflict) reasons.push("Item ID / MPN mismatch");
+      if (scores.size_conflict)     reasons.push("Amazon size conflict (title vs listing)");
       if (scores.pack_mismatch)     reasons.push("Pack mismatch");
       const reasonTip = reasons.length ? ` title="${reasons.join(", ")}"` : "";
 

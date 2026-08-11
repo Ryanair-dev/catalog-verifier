@@ -86,6 +86,9 @@ logs/
 !static/sample/*.xls
 !static/sample/*.csv
 
+# ── SellerCloud catalog index cache (runtime, re-fetched from the API) ────────
+/data/
+
 # ── Jupyter (unlikely here, but common in analytics projects) ─────────────────
 .ipynb_checkpoints/
 

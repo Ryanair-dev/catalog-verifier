@@ -9,3 +9,8 @@ openai==1.54.0
 anthropic>=0.40.0
 rapidfuzz==3.10.0
 pydantic==2.9.2
+# Azure SQL (live SellerCloud catalog view) — pure-Python, no ODBC driver needed
+python-tds>=1.15
+pyopenssl>=24.0
+certifi>=2024.2.2
+azure-identity>=1.17

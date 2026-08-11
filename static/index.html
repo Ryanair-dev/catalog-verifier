@@ -10,7 +10,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=8" />
+  <link rel="stylesheet" href="/static/styles.css?v=11" />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
 <body class="min-h-screen">
 
@@ -35,17 +37,11 @@
         </div>
       </div>
 
-      <div class="section-label">Category</div>
+      <div class="section-label">Scans</div>
       <div class="nav-item active" data-view="cpg">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v6H3z"/><path d="M3 15h18v6H3z"/><circle cx="8" cy="18" r="1"/></svg>
-        CPG
+        Scan
       </div>
-      <div class="nav-item disabled" title="Coming in next phase">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L3 12v8h18v-8l-7-4V2z"/></svg>
-        Medical <span class="locked-tag">Locked</span>
-      </div>
-
-      <div class="section-label">Scans</div>
       <div class="nav-item" data-view="history">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-7 3L3 8"/><polyline points="3 3 3 8 8 8"/><polyline points="12 7 12 12 16 14"/></svg>
         Verification History
@@ -69,6 +65,10 @@
       <div class="nav-item" id="open-tools-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Tools
+      </div>
+      <div class="nav-item" data-view="create-po">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+        Create SKUs
       </div>
 
       <!-- Divider before utility items -->
@@ -95,6 +95,9 @@
 
     <!-- ==================== Main ==================== -->
     <main class="flex-1 overflow-hidden" style="position:relative;">
+
+      <!-- ===== View: Create PO (rendered by /static/create_po.js) ===== -->
+      <div id="view-create-po" class="hidden"></div>
 
       <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
@@ -533,7 +536,7 @@
                 <!-- Import -->
                 <div class="plib-panel">
                   <div class="text-sm font-semibold mb-1" style="color: var(--navy-800)">1 · Import pairs</div>
-                  <div class="text-xs mb-2" style="color:#6b7480;">Fixed template: ASIN | UPC | EAN | MPN/Item ID | Brand | Manufacturer. Multiple UPCs per cell via commas.</div>
+                  <div class="text-xs mb-2" style="color:#6b7480;">Fixed template: ASIN | UPC | EAN | MPN/Item ID | Brand | Manufacturer | amz pack. Multiple UPCs per cell via commas.</div>
                   <input type="file" id="plib-import-file" accept=".xlsx,.xlsm,.csv,.tsv" class="hidden" />
                   <div class="flex items-center gap-2">
                     <button id="plib-import-btn" class="btn btn-primary btn-sm">Import file…</button>
@@ -594,7 +597,7 @@
                 <thead>
                   <tr>
                     <th>ASIN</th><th>UPC</th><th>UPC Aliases</th>
-                    <th>MPN/Item ID</th><th>EAN</th><th>Brand</th><th>Updated</th>
+                    <th>MPN/Item ID</th><th>EAN</th><th>Brand</th><th>Updated</th><th></th>
                   </tr>
                 </thead>
                 <tbody id="plib-results-body"></tbody>
@@ -2473,10 +2476,10 @@
           <div id="awiz-title-opts" class="hidden awiz-title-opts">
             <div class="flex items-center gap-3 mt-1">
               <div class="flex-1">
-                <div class="text-xs font-semibold mb-1" style="color:#334155;">Pages per title</div>
+                <div class="text-xs font-semibold mb-1" style="color:#334155;">Pages per title <span style="font-weight:400;color:#64748b;">(0 = all)</span></div>
                 <div class="flex items-center gap-2">
-                  <input id="awiz-title-pages" type="number" min="1" max="10" value="1" class="abbr-input" style="width:70px;" />
-                  <span class="text-xs" style="color:#64748b;">× 20 results = candidates per title</span>
+                  <input id="awiz-title-pages" type="number" min="0" max="100" value="0" class="abbr-input" style="width:70px;" />
+                  <span class="text-xs" style="color:#64748b;">× 20 results per title · <b>0 = every page Amazon returns</b></span>
                 </div>
                 <div class="text-xs mt-1" style="color:#94a3b8;">Page 1 almost always contains the best match. Extra pages add noise and slow the run significantly.</div>
               </div>
@@ -2531,6 +2534,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=32"></script>
+  <script src="/static/app.js?v=41"></script>
+  <script src="/static/create_po.js?v=26"></script>
 </body>
 </html>

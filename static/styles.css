@@ -1798,6 +1798,17 @@ html, body {
 .analytics-run-del:hover { background: #fee2e2; color: #b91c1c; }
 .analytics-run-del:active { transform: scale(0.92); }
 
+/* Remove-from-Pair-Library button in the library search results. */
+.plib-del-btn {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 7px; background: transparent;
+  color: #b6bdc8; font-size: 12px; line-height: 1; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+.plib-del-btn:hover { background: #fee2e2; color: #b91c1c; }
+.plib-del-btn:active { transform: scale(0.92); }
+
 /* "Bulk approve" category-picker modal rows. */
 .bulk-cat-list { display: flex; flex-direction: column; gap: 8px; }
 .bulk-cat-row {
