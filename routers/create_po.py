@@ -386,7 +386,8 @@ def export(body: dict = Body(...)) -> dict:
     # Tag each batch with a unique ID + today's date → filenames "Bulk_<ID>_<date>.xlsx"
     export_id = uuid.uuid4().hex[:6].upper()
     export_date = datetime.date.today().isoformat()
-    files = cp.build_files(results, sess["config"], tag=f"{export_id}_{export_date}")
+    files = cp.build_files(results, sess["config"], tag=f"{export_id}_{export_date}",
+                           index=sess.get("index"))
 
     cfg = sess["config"]
     # Remember NEW brands we just exported (prefix + manufacturer) so they resolve

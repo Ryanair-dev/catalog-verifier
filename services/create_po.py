@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from openpyxl import Workbook
 
-from services.sellercloud.catalog_index import CatalogIndex
+from services.sellercloud.catalog_index import CatalogIndex, _is_shadow_sku
 
 # Reuse the Analytics engine's brand normalisation so "NIVEA MEN" ≈ "NIVEA",
 # "Parker Labs" ≈ "Parker Laboratories" — same rules everywhere.
@@ -327,6 +327,64 @@ def _main_exists(index: CatalogIndex, upc: str, mpn: str, create_by: str,
     return hits
 
 
+# Shadow/kit ProductID suffixes. Used to (a) recover a MAIN from an ASIN's existing
+# child SKU and (b) detect the ASIN's existing shadow so we REUSE it instead of
+# minting a climber (-FBA2). Handles Ford Medical (-FBA/-FBM), Turba (-FBATRB/-FBMTRB)
+# and collision digits (-FBA2); _QYn is the kit tag.
+_SHADOW_SUFFIX_RE = re.compile(r"-FB[AM][A-Z]*\d*$", re.I)
+_KIT_TAG_RE = re.compile(r"_QY\d+$", re.I)
+
+
+def _strip_to_main(pid: str) -> str:
+    """Strip a shadow/kit ProductID down to its MAIN SKU.
+    'SOC615559-FBA' -> 'SOC615559'; 'DOV266545_QY6-FBA2' -> 'DOV266545'."""
+    return _KIT_TAG_RE.sub("", _SHADOW_SUFFIX_RE.sub("", pid or ""))
+
+
+def _main_from_asin(index: CatalogIndex, asin: str) -> str:
+    """When UPC/MPN find no main but the ASIN is already attached to a shadow/kit,
+    the main exists under another UPC/item-ID — recover it by stripping the shadow/kit
+    suffix off the ASIN's existing child SKU (ShadowOf here stores the channel, not the
+    parent, so we strip). Only returns a main that actually exists in the catalog."""
+    if not (index and asin):
+        return ""
+    for r in index.shadows_for_asin(asin):
+        pid = _s(r.get("ProductID") or r.get("ID"))
+        cand = _strip_to_main(pid)
+        if cand and not _is_shadow_sku(cand) and index.sku_exists(cand):
+            return cand
+    return ""
+
+
+def _existing_shadow(index: CatalogIndex, asin: str, suffix: str,
+                     channel: str = "", main: str = "") -> str | None:
+    """The ASIN's existing shadow ProductID on this channel — reuse it instead of
+    creating a duplicate climber. Matches by ProductID suffix ('-FBA'/'-FBM', '-FBA2',
+    Turba '-FBATRB'); falls back to rows whose ShadowOf equals the channel label
+    ('FBA'/'FBM') — the snapshot stores the channel there — so a malformed shadow name
+    (e.g. 'ULV50200.2') is still recognised. Excludes the main itself. Prefers a suffix
+    match, then the canonical (no collision digit). None if the ASIN has no shadow."""
+    if not (index and asin):
+        return None
+    pat = re.compile(re.escape(suffix) + r"\d*$", re.I)
+    climb = re.compile(re.escape(suffix) + r"\d+$", re.I)
+    chan = channel.strip().upper()
+    main_u = (main or "").upper()
+    cands: list[tuple[bool, str]] = []   # (matched_by_suffix, productid)
+    for r in index.shadows_for_asin(asin):
+        pid = _s(r.get("ProductID") or r.get("ID"))
+        if not pid or pid.upper() == main_u:
+            continue
+        by_suffix = bool(pat.search(pid))
+        by_channel = bool(chan and _s(r.get("ShadowOf")).strip().upper() == chan)
+        if by_suffix or by_channel:
+            cands.append((by_suffix, pid))
+    if not cands:
+        return None
+    cands.sort(key=lambda t: (not t[0], bool(climb.search(t[1])), len(t[1])))
+    return cands[0][1]
+
+
 def derive_rows(
     items: list[dict],
     *,
@@ -392,12 +450,17 @@ def derive_rows(
         def ov(field, default):
             return edits.get(f"{it['_id']}.{field}", default)
 
+        asin = it.get("asin", "")
         base_main = f"{bi.prefix}{id_part}" if (bi.prefix and id_part) else ""
         existing = _main_exists(index, upc, mpn, create_by, brand=bi.brand or brand) if index else []
         if existing and create.get("main", True):
             main = _s(existing[0].get("ProductID") or existing[0].get("ID"))
         else:
-            main = base_main
+            # Not found by UPC/MPN. If the ASIN is already attached to a shadow/kit,
+            # the main exists under another UPC/item-ID — recover it (strip the shadow
+            # suffix) rather than minting a brand-new main. Only falls back to a new
+            # base_main when the ASIN is genuinely unknown.
+            main = _main_from_asin(index, asin) or base_main
         main = ov("main", main) or None
         # "Already on SellerCloud" reflects the FINAL main SKU string (after any hand
         # edit) — not just the UPC/MPN lookup. Reserve it so children never reuse it.
@@ -406,29 +469,32 @@ def derive_rows(
             used_skus.add(main.upper())
 
         # One child SKU per channel for THIS ASIN: a multipack (pack>1) → the _QY{n}
-        # KIT shadow (qty n); otherwise a single-unit shadow (qty 1). Never both, and
-        # every name is unique across the whole batch.
+        # KIT shadow (qty n); otherwise a single-unit shadow (qty 1). Never both.
         pack = int(it.get("pack_qty", 1) or 1)
         is_kit = bool(main) and create.get("kit", True) and pack > 1
         fba = fbm = kit_value = kit_shadows = None
+        fba_on_sc = fbm_on_sc = False
         if main and create.get("shadow", True):
+            # An ASIN has ONE FBA and ONE FBM listing — so REUSE the ASIN's existing
+            # shadow if the catalog already has one, instead of climbing to -FBA2.
+            # Only mint (and only then use the collision ladder) when the ASIN has no
+            # shadow yet for that channel.
+            ex_fba = _existing_shadow(index, asin, suf_fba, "FBA", main)
+            ex_fbm = _existing_shadow(index, asin, suf_fbm, "FBM", main)
             if is_kit:
-                kit_value = f"{main}_QY{pack}"
-                fba = ov("fba", _claim(kit_value, suf_fba))
-                fbm = ov("fbm", _claim(kit_value, suf_fbm))
+                kit_value = _SHADOW_SUFFIX_RE.sub("", ex_fba) if ex_fba else f"{main}_QY{pack}"
+                fba = ov("fba", ex_fba or _claim(f"{main}_QY{pack}", suf_fba))
+                fbm = ov("fbm", ex_fbm or _claim(f"{main}_QY{pack}", suf_fbm))
                 kit_shadows = f"{fba}  ·  {fbm}"
             else:
-                fba = ov("fba", _claim(main, suf_fba))
-                fbm = ov("fbm", _claim(main, suf_fbm))
+                fba = ov("fba", ex_fba or _claim(main, suf_fba))
+                fbm = ov("fbm", ex_fbm or _claim(main, suf_fbm))
             for s in (fba, fbm):        # reserve hand-edited values too
                 if s:
                     used_skus.add(s.upper())
-
-        asin = it.get("asin", "")
-        sc_shadows = {_s(r.get("ProductID") or r.get("ID")).upper()
-                      for r in (index.shadows_for_asin(asin) if (index and asin) else [])}
-        fba_on_sc = bool(fba and fba.upper() in sc_shadows)
-        fbm_on_sc = bool(fbm and fbm.upper() in sc_shadows)
+            # on-SC when we reused an existing shadow, or the minted name already exists
+            fba_on_sc = bool(ex_fba) or (bool(fba) and index is not None and index.sku_exists(fba))
+            fbm_on_sc = bool(ex_fbm) or (bool(fbm) and index is not None and index.sku_exists(fbm))
 
         # note
         note = ""
@@ -549,25 +615,28 @@ _TITLE_PACK_OF_RE = re.compile(r"pack\s+of\s+(\d+)", re.I)
 _TITLE_COUNT_RE = re.compile(r"(\d+)\s*(?:-\s*)?(counts?|ct|cnt|packs?|pk)\b", re.I)
 
 
-def _title_pack(title: str) -> tuple[int, str] | None:
-    """A count/pack quantity stated IN the title → (n, 'count'|'pack'), else None.
-    '…3 Count' → (3,'count'); '…3-pack'/'pack of 3' → (3,'pack'). Only n≥2 (a real
-    multi-unit; a bare '1 count' is just 'Each'). Used for the MAIN SKU's UOM suffix."""
+def _title_pack(title: str) -> tuple[int, str, tuple[int, int]] | None:
+    """A count/pack quantity stated IN the title → (n, 'count'|'pack', span), else
+    None. '…3 Count' → (3,'count',span); '…3-pack'/'pack of 3' → (3,'pack',span).
+    Only n≥2 (a real multi-unit; a bare '1 count' is just 'Each'). Used for the MAIN
+    SKU's UOM suffix; the span lets the caller strip the phrase so it isn't duplicated
+    ('Bandages 10 count' → 'Bandages (10 count)', not '… 10 count (10 count)')."""
     t = title or ""
     m = _TITLE_PACK_OF_RE.search(t)
     if m:
         n = int(m.group(1))
-        return (n, "pack") if n >= 2 else None
+        return (n, "pack", m.span()) if n >= 2 else None
     for m in _TITLE_COUNT_RE.finditer(t):
         n = int(m.group(1))
         if n < 2:
             continue
         w = m.group(2).lower()
-        return n, ("count" if w.startswith(("count", "ct", "cnt")) else "pack")
+        return n, ("count" if w.startswith(("count", "ct", "cnt")) else "pack"), m.span()
     return None
 
 
-def build_files(results: list[RowResult], config: dict, tag: str = "") -> list[tuple[str, bytes]]:
+def build_files(results: list[RowResult], config: dict, tag: str = "",
+                index: CatalogIndex | None = None) -> list[tuple[str, bytes]]:
     """Return [(filename, xlsx-bytes), ...] — the three SellerCloud import files:
 
       bulk.xlsx        — one row PER SKU (main + -FBA/-FBM shadows + kit _QY shadows),
@@ -602,16 +671,23 @@ def build_files(results: list[RowResult], config: dict, tag: str = "") -> list[t
         # prefer the AI-cleaned description (set on the item by the export route);
         # fall back to the raw vendor title.
         title = _s(r.item.get("clean_name")) or _s(r.item.get("name"))
-        parts = [brand, title] if is_cpg else [brand, _s(r.item.get("mpn")), title]
-        base = " ".join(p for p in parts if p).strip()
         # UOM suffix rules differ by SKU type:
         #   MAIN     → the count/pack stated IN the title ('3 Count' → '3 count'), else 'Each'
         #   FBA/FBM  → the amz-pack multiplier ('Each' for 1, 'Pack of N' for a kit)
         if is_main:
             tp = _title_pack(title)
-            suffix = f"{tp[0]} {tp[1]}" if tp else "Each"
+            if tp:
+                n, unit, (a, b) = tp
+                suffix = f"{n} {unit}"
+                # strip the count/pack phrase from the title so it isn't repeated in
+                # the parenthesised UOM: 'Bandages 10 count' → 'Bandages (10 count)'
+                title = re.sub(r"\s{2,}", " ", f"{title[:a]} {title[b:]}").strip(" -,·")
+            else:
+                suffix = "Each"
         else:
             suffix = uom(name_qty)
+        parts = [brand, title] if is_cpg else [brand, _s(r.item.get("mpn")), title]
+        base = " ".join(p for p in parts if p).strip()
         return f"{base} ({suffix})".strip() if base else ""
 
     def cost_and_qtycase(r: RowResult):
@@ -687,14 +763,64 @@ def build_files(results: list[RowResult], config: dict, tag: str = "") -> list[t
     for _col, _w in BULK_COL_WIDTHS.items():
         bs.column_dimensions[_col].width = _w
 
+    # "Existing" sheet — SKUs already on SellerCloud (so they are NOT recreated),
+    # shown with the catalog data we have. (ProductName isn't in the catalog pull yet,
+    # so it stays blank unless the row carries one.)
+    ex_ws = bulk_wb.create_sheet("Existing")
+    ex_hdr = ["ProductID", "ProductName", "Type", "FulfilledBy", "ManufacturerSKU",
+              "UPC", "ASIN", "BrandName", "ManufacturerID", "QtyPerCase", "CostPerCase"]
+    ex_ws.append(ex_hdr)
+    by_sku = getattr(index, "by_sku", {}) if index else {}
+    seen_ex: set = set()
+
+    def _emit_existing(sku: str, kind: str) -> None:
+        if not sku or sku.upper() in seen_ex:
+            return
+        seen_ex.add(sku.upper())
+        row = by_sku.get(sku.upper()) or {}
+        ex_ws.append([
+            _s(row.get("ProductID") or row.get("ID")) or sku,
+            _s(row.get("ProductName")) or None,          # not in the pull yet → blank
+            kind,
+            _s(row.get("FulfilledBy")) or None,
+            _s(row.get("ManufacturerSKU")) or None,
+            _s(row.get("UPC")) or None,
+            _s(row.get("ASIN")) or None,
+            _s(row.get("BrandName")) or None,
+            _s(row.get("ManufacturerName")) or None,
+            row.get("QtyPerCase"), row.get("CostPerCase"),
+        ])
+
+    for r in results:
+        if r.main and r.main_on_sc:
+            _emit_existing(r.main, "main")
+        if r.fba and r.fba_on_sc:
+            _emit_existing(r.fba, "fba")
+        if r.fbm and r.fbm_on_sc:
+            _emit_existing(r.fbm, "fbm")
+
+    # "All" sheet — every product's main + FBA + FBM (created this run AND existing),
+    # with a status so you can see at a glance what still needs creating.
+    all_ws = bulk_wb.create_sheet("All")
+    all_ws.append(["Main SKU", "FBA SKU", "FBM SKU", "ASIN", "Status"])
+    for r in results:
+        flags = [r.main_on_sc if r.main else None,
+                 r.fba_on_sc if r.fba else None,
+                 r.fbm_on_sc if r.fbm else None]
+        present = [f for f in flags if f is not None]
+        status = ("All exist" if present and all(present)
+                  else "New" if present and not any(present)
+                  else "Partial")
+        all_ws.append([r.main, r.fba, r.fbm, _s(r.item.get("asin")) or None, status])
+
     # kits.xlsx — connect each _QY kit shadow (r.fba/r.fbm on a kit row) to its main
     kit_wb = Workbook(); ks = kit_wb.active; ks.title = "Sheet1"
     ks.append(["ParentSKU", "ChildSKU", "QTY", "InventoryDependantOption"])
     for r in results:
         if r.is_kit and r.main:
-            if r.fba:
+            if r.fba and not r.fba_on_sc:
                 ks.append([r.fba, r.main, r.pack, "Independent"])
-            if r.fbm:
+            if r.fbm and not r.fbm_on_sc:
                 ks.append([r.fbm, r.main, r.pack, "All_Components"])
 
     # amz_shadows.xlsx — connect the non-kit shadows to their main
