@@ -84,7 +84,11 @@ class SellerCloudClient:
         params: dict | None = None,
         json: dict | None = None,
         max_retries: int = 5,
+        ok: tuple[int, ...] = (200,),
     ) -> requests.Response:
+        """`ok` lists the status codes that count as success. Writes (PUT/POST)
+        often answer 204/201, which would otherwise fall through to the retry
+        loop and eventually raise."""
         url = f"{self.base_url}{path}"
         did_reauth = False
 
@@ -97,7 +101,7 @@ class SellerCloudClient:
                 timeout=30,
             )
 
-            if resp.status_code == 200:
+            if resp.status_code in ok:
                 return resp
 
             if resp.status_code == 401 and not did_reauth:
@@ -219,6 +223,91 @@ class SellerCloudClient:
             if time.time() > deadline:
                 raise TimeoutError(f"job {job_id} not ready after {timeout}s (status={status})")
             time.sleep(poll)
+
+
+    # ── purchase orders ──────────────────────────────────────────────────
+    # The PO "Other" money field is `TotalInfo.OtherTotal` on the PO detail and
+    # `OtherTotal` on the PUT /Total body. There is NO bulk/batch total endpoint —
+    # a bulk change is a loop of one PUT per PO.
+    def get_purchase_order(self, po_id: int) -> dict:
+        """Full PO detail (PoDataDto). Totals live under `TotalInfo`."""
+        return self._request("GET", f"/api/PurchaseOrders/{po_id}").json()
+
+    def search_purchase_orders(
+        self, *, page_number: int = 1, page_size: int = 50, **filters
+    ) -> dict:
+        """One page of the PO list. Filters are the `model.*` query keys from the
+        spec, passed WITHOUT the prefix — e.g. companyIDList=[164],
+        createDateFrom='2026-01-01', keyword='...', pOStatuses=[1].
+        Returns {'Items': [...], 'TotalResults': N}."""
+        params: dict = {"model.pageNumber": page_number, "model.pageSize": page_size}
+        for k, v in filters.items():
+            if v is not None:
+                params[f"model.{k}"] = v
+        return self._request("GET", "/api/PurchaseOrders", params=params).json()
+
+    def iter_purchase_orders(
+        self, *, page_size: int = 50, max_pages: int | None = None, **filters
+    ) -> Iterator[dict]:
+        page = 1
+        while True:
+            data = self.search_purchase_orders(
+                page_number=page, page_size=page_size, **filters
+            )
+            items = data.get("Items") or []
+            for it in items:
+                yield it
+            total = data.get("TotalResults") or 0
+            if not items or page * page_size >= total:
+                break
+            if max_pages and page >= max_pages:
+                break
+            page += 1
+
+    def update_po_totals(
+        self,
+        po_id: int,
+        *,
+        other_total: float,
+        tax_total: float,
+        shipping_total: float,
+        shipping_total_third_party: float,
+    ) -> None:
+        """PUT /api/PurchaseOrders/{id}/Total.
+
+        WARNING: the DTO carries all four money fields and they are plain
+        (non-nullable) doubles — omitting one sends 0 and WIPES it. Always pass
+        the PO's current Tax/Shipping/3rd-party values back; `set_po_other_total`
+        does that read-modify-write for you."""
+        body = {
+            "TaxTotal": float(tax_total),
+            "OtherTotal": float(other_total),
+            "ShippingTotal": float(shipping_total),
+            "ShippingTotalThirdParty": float(shipping_total_third_party),
+        }
+        self._request(
+            "PUT", f"/api/PurchaseOrders/{po_id}/Total",
+            json=body, ok=(200, 201, 204),
+        )
+
+    def set_po_other_total(self, po_id: int, other_total: float) -> dict:
+        """Change ONLY the PO's `Other` amount, preserving Tax / Shipping /
+        3rd-party shipping. Returns {'before': {...}, 'after': {...}}."""
+        totals = (self.get_purchase_order(po_id).get("TotalInfo") or {})
+        before = {
+            "OtherTotal": float(totals.get("OtherTotal") or 0.0),
+            "TaxTotal": float(totals.get("TaxTotal") or 0.0),
+            "ShippingTotal": float(totals.get("ShippingTotal") or 0.0),
+            "ShippingTotalThirdParty": float(totals.get("ShippingTotalThirdParty") or 0.0),
+        }
+        self.update_po_totals(
+            po_id,
+            other_total=other_total,
+            tax_total=before["TaxTotal"],
+            shipping_total=before["ShippingTotal"],
+            shipping_total_third_party=before["ShippingTotalThirdParty"],
+        )
+        return {"before": before, "after": {**before, "OtherTotal": float(other_total)}}
 
 
 @lru_cache(maxsize=1)

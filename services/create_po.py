@@ -778,9 +778,12 @@ def build_files(results: list[RowResult], config: dict, tag: str = "",
             return
         seen_ex.add(sku.upper())
         row = by_sku.get(sku.upper()) or {}
+        pname = _s(row.get("ProductName"))
+        if not pname and kind in ("fba", "fbm"):   # a shadow → borrow its main's name
+            pname = _s((by_sku.get(_strip_to_main(sku).upper()) or {}).get("ProductName"))
         ex_ws.append([
             _s(row.get("ProductID") or row.get("ID")) or sku,
-            _s(row.get("ProductName")) or None,          # not in the pull yet → blank
+            pname or None,
             kind,
             _s(row.get("FulfilledBy")) or None,
             _s(row.get("ManufacturerSKU")) or None,

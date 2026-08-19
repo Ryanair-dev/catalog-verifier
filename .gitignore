@@ -32,6 +32,7 @@ catalog_verifier.db-shm
 .env.production
 .env.staging
 .env.test
+env.txt
 # Keep .env.example / .env.template (safe to commit as documentation)
 !.env.example
 !.env.template
