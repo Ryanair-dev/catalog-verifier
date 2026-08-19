@@ -28,7 +28,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -45,6 +45,7 @@ from services.analytics.brand_runner import (
     request_stop,
     clear_control,
     request_stop_ai_fill,
+    _clean_ai_fill_fields,
 )
 
 router = APIRouter()
@@ -499,17 +500,16 @@ async def patch_item(run_id: int, asin: str, body: PatchItemBody) -> dict:
 
 
 @router.get("/brand-analytics/runs/{run_id}/ai_fill/estimate")
-async def ai_fill_estimate(run_id: int) -> dict:
+async def ai_fill_estimate(run_id: int, fields: str = "") -> dict:
     _get_run(run_id)  # 404 guard
     client = make_client()
 
+    sel = _clean_ai_fill_fields([f for f in fields.split(",") if f.strip()] if fields else None)
+    ai_col = {"mpn": "ai_mpn", "upc": "ai_upc", "ean": "ai_ean", "gtin": "ai_gtin"}
+    cond = " OR ".join(f"({f} IS NULL AND {ai_col[f]} IS NULL)" for f in sel)
     with _connect() as conn:
         row = conn.execute(
-            """
-            SELECT COUNT(*) AS n FROM brand_analytics_items
-            WHERE run_id=? AND ai_fill_status IS NULL
-              AND (mpn IS NULL OR upc IS NULL OR ean IS NULL OR gtin IS NULL)
-            """,
+            f"SELECT COUNT(*) AS n FROM brand_analytics_items WHERE run_id=? AND ({cond})",
             (run_id,),
         ).fetchone()
     item_count = row["n"] if row else 0
@@ -536,13 +536,14 @@ async def ai_fill_estimate(run_id: int) -> dict:
 
 
 @router.post("/brand-analytics/runs/{run_id}/ai_fill")
-async def trigger_ai_fill(run_id: int) -> dict:
+async def trigger_ai_fill(run_id: int, body: dict = Body(default={})) -> dict:
     _get_run(run_id)  # 404 guard
     client = make_client()
     if client is None:
         raise HTTPException(status_code=503, detail="No AI client available (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
-    start_ai_fill(run_id, client)
-    return {"ok": True, "message": "AI Fill started"}
+    fields = _clean_ai_fill_fields(body.get("fields"))
+    start_ai_fill(run_id, client, fields)
+    return {"ok": True, "message": "AI Fill started", "fields": fields}
 
 
 @router.post("/brand-analytics/runs/{run_id}/ai_fill/stop")

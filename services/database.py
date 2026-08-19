@@ -304,6 +304,21 @@ def init_db() -> None:
         if not _column_exists(conn, "analytics_runs", "ai_decisions_applied"):
             conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_decisions_applied INTEGER DEFAULT 0")
 
+        # additive migration — eligibility (CAN_SELL/NEEDS_APPROVAL/RESTRICTED) + storage fee,
+        # populated for Approved/Review candidates by services/analytics/eligibility_check.py
+        if not _column_exists(conn, "analytics_candidates", "eligibility_status"):
+            conn.execute("ALTER TABLE analytics_candidates ADD COLUMN eligibility_status TEXT")
+        if not _column_exists(conn, "analytics_candidates", "storage_fee"):
+            conn.execute("ALTER TABLE analytics_candidates ADD COLUMN storage_fee REAL")
+        if not _column_exists(conn, "analytics_candidates", "storage_fee_peak"):
+            conn.execute("ALTER TABLE analytics_candidates ADD COLUMN storage_fee_peak REAL")
+        if not _column_exists(conn, "analytics_runs", "elig_check_status"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN elig_check_status TEXT")
+        if not _column_exists(conn, "analytics_runs", "elig_check_done"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN elig_check_done INTEGER DEFAULT 0")
+        if not _column_exists(conn, "analytics_runs", "elig_check_total"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN elig_check_total INTEGER DEFAULT 0")
+
         # additive migration — global ASIN cache (SP-API normalized data, all fetched ASINs)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS global_asin_cache (
@@ -473,6 +488,10 @@ def init_db() -> None:
             ("pack_qty",  "TEXT"),
             ("uom_qty",   "TEXT"),
             ("amz_brand", "TEXT"),   # actual Amazon brand field value (not search query label)
+            ("storage_fee",       "REAL"),   # FBA storage $/unit/mo (off-peak), from dims
+            ("storage_fee_peak",  "REAL"),   # Q4 peak $/unit/mo
+            ("buybox_price",      "REAL"),   # SP-API Product Pricing buy-box price
+            ("eligibility_status", "TEXT"),  # CAN_SELL / NEEDS_APPROVAL / RESTRICTED
         ]:
             try:
                 conn.execute(f"ALTER TABLE brand_analytics_items ADD COLUMN {col} {defn}")
@@ -484,6 +503,18 @@ def init_db() -> None:
             conn.execute("ALTER TABLE brand_analytics_runs ADD COLUMN vetting_mode TEXT DEFAULT 'cpg'")
         except Exception:
             pass
+        for col, defn in [
+            ("source",             "TEXT"),      # 'keepa' | 'spapi' — how ASINs were discovered
+            ("keepa_tokens_spent", "INTEGER"),   # Keepa tokens used this run
+            ("keepa_tokens_left",  "INTEGER"),   # Keepa bucket balance after the run
+            ("elig_check_status",  "TEXT"),      # eligibility/storage enrichment progress (reused)
+            ("elig_check_done",    "INTEGER DEFAULT 0"),
+            ("elig_check_total",   "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE brand_analytics_runs ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
 
         # Additive migration — duplicate catalog rows removed at run creation
         if not _column_exists(conn, "analytics_runs", "duplicate_rows_removed"):
@@ -1656,4 +1687,11 @@ def reset_orphaned_running_states() -> None:
         conn.execute(
             "UPDATE brand_analytics_runs SET status='Stopped' "
             "WHERE status IN ('Searching','Pending')"
+        )
+        # AI Fill runs in a daemon thread that dies with the process; a restart
+        # (or a mid-loop crash) leaves ai_fill_status stuck on 'running' with the
+        # progress frozen. Reset it so the UI un-freezes and re-enables AI Fill.
+        conn.execute(
+            "UPDATE brand_analytics_runs SET ai_fill_status='stopped' "
+            "WHERE ai_fill_status='running'"
         )

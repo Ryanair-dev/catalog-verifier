@@ -342,6 +342,7 @@ def snapshot_rows_from_xlsx(path) -> list[dict]:
                 "ManufacturerName": _norm(g(r, "Manufacturer")),
                 "BrandName": _norm(g(r, "BrandName")), "ASIN": _norm(g(r, "ASIN")),
                 "ShadowOf": _norm(g(r, "ShadowOf")),
+                "ProductName": _norm(g(r, "ProductName")),
                 "QtyPerCase": _norm(g(r, "QtyPerCase")),
                 "FulfilledBy": _norm(g(r, "FulfilledBy")),
             })

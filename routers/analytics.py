@@ -47,6 +47,10 @@ from services.analytics.matcher import calculate_confidence
 from services.analytics.parser import SourceRow as _SourceRow
 from services.analytics.product_categorizer import categorize, category_distance, UNKNOWN, MEDICAL
 from services.analytics.ai_check import start_ai_check, stop_ai_check, is_running as ai_check_running, estimate_cost as ai_check_cost
+from services.analytics.eligibility_check import (
+    start_eligibility_check, stop_eligibility_check,
+    is_running as elig_check_running, approved_review_asins,
+)
 from services.spapi import sp_api_configured, get_catalog_api
 
 router = APIRouter(prefix="/analytics")
@@ -160,6 +164,7 @@ def list_analytics_runs() -> list[dict[str, Any]]:
                    status, progress_phase, progress_done, progress_total,
                    max_rank, min_rank, vetting_mode,
                    ai_check_status, ai_check_done, ai_check_total,
+                   elig_check_status, elig_check_done, elig_check_total,
                    created_at, updated_at
             FROM analytics_runs
             ORDER BY created_at DESC
@@ -244,7 +249,8 @@ def get_run_detail(
         ) if search else ""
         select_cols = (
             "row_idx, asin, sources, confidence, verdict, amz_pack, "
-            "sales_rank, review_status, ai_verdict, ai_reasoning, data_json"
+            "sales_rank, review_status, ai_verdict, ai_reasoning, "
+            "eligibility_status, storage_fee, storage_fee_peak, data_json"
         )
 
         def _base(extra: list) -> list:
@@ -1134,6 +1140,51 @@ def stop_ai_check_endpoint(run_id: int) -> dict[str, Any]:
     return {"ok": True, "was_running": running, "stopping": running}
 
 
+# ── Eligibility (CAN_SELL/NEEDS_APPROVAL/RESTRICTED) + storage fee ─────────────
+@router.get("/runs/{run_id}/eligibility/estimate")
+def eligibility_estimate(run_id: int) -> dict[str, Any]:
+    """How many DISTINCT Approved/Review ASINs would be checked (= live API calls)."""
+    return {
+        "unique_asins": approved_review_asins(run_id),
+        "already_running": elig_check_running(run_id),
+    }
+
+
+@router.post("/runs/{run_id}/eligibility")
+def start_eligibility_endpoint(run_id: int) -> dict[str, Any]:
+    """Fetch eligibility + storage fee for this run's Approved/Review ASINs (background)."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    if elig_check_running(run_id):
+        return {"ok": True, "already_running": True}
+    start_eligibility_check(run_id)
+    return {"ok": True, "started": True}
+
+
+@router.post("/runs/{run_id}/eligibility/stop")
+def stop_eligibility_endpoint(run_id: int) -> dict[str, Any]:
+    """Signal the running eligibility check to stop; clear an orphaned status."""
+    running = elig_check_running(run_id)
+    stop_eligibility_check(run_id)
+    if not running:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT elig_check_status FROM analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        if row and (row["elig_check_status"] or "").startswith("Running"):
+            with database._LOCK, database._connect() as conn:
+                conn.execute(
+                    "UPDATE analytics_runs SET elig_check_status='Stopped' WHERE id=?",
+                    (run_id,),
+                )
+            return {"ok": True, "orphan_cleared": True}
+    return {"ok": True, "was_running": running}
+
+
 @router.post("/runs/{run_id}/ai_check/apply")
 def apply_ai_decisions(run_id: int) -> dict[str, Any]:
     """Apply AI verdicts to candidate verdicts.
@@ -1276,6 +1327,7 @@ def export_analytics_run(
         cand_rows = conn.execute(
             f"""
             SELECT row_idx, asin, confidence, verdict, sales_rank, amz_pack,
+                   eligibility_status, storage_fee, storage_fee_peak,
                    COALESCE(
                        json_extract(data_json, '$.amazon.title'), ''
                    ) AS amz_title,
@@ -1327,6 +1379,7 @@ def export_analytics_run(
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
         "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
+        "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + pt_cols  # passthrough columns appended after fixed columns
 
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
@@ -1348,6 +1401,9 @@ def export_analytics_run(
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
+            c["eligibility_status"] or "",           # blank until the eligibility check is run
+            c["storage_fee"] if c["storage_fee"] is not None else "",
+            c["storage_fee_peak"] if c["storage_fee_peak"] is not None else "",
         ] + pt_values)
         buckets.get((c["verdict"] or "").lower(), buckets["not_approved"]).append(row)
 

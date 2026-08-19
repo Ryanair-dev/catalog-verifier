@@ -396,6 +396,17 @@ def _upsert_item(run_id: int, brand_searched: str, normalized: dict) -> None:
         if image:
             break
 
+    # FBA storage fee (off-peak, Q4 peak) from the SP-API dimensions — free, no extra call.
+    storage_off = storage_peak = None
+    try:
+        from services.storage_fees import extract_dimensions, calc_storage_fee
+        _dims = extract_dimensions(raw.get("attributes") or {})
+        if all(_dims.get(k) is not None for k in ("length_cm", "width_cm", "height_cm", "weight_g")):
+            storage_off, storage_peak = calc_storage_fee(
+                _dims["length_cm"], _dims["width_cm"], _dims["height_cm"], _dims["weight_g"])
+    except Exception:
+        pass
+
     slim = {k: v for k, v in normalized.items() if k != "_raw"}
 
     # Single locked connection: read override then upsert (avoids two lock acquisitions)
@@ -414,8 +425,9 @@ def _upsert_item(run_id: int, brand_searched: str, normalized: dict) -> None:
             """
             INSERT INTO brand_analytics_items
               (run_id, brand_searched, asin, title, bsr, bsr_category,
-               mpn, upc, ean, gtin, amz_brand, pack_qty, uom_qty, image_url, data_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               mpn, upc, ean, gtin, amz_brand, pack_qty, uom_qty, image_url,
+               storage_fee, storage_fee_peak, data_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(run_id, asin) DO UPDATE SET
               title=excluded.title,
               bsr=excluded.bsr,
@@ -428,6 +440,8 @@ def _upsert_item(run_id: int, brand_searched: str, normalized: dict) -> None:
               pack_qty=excluded.pack_qty,
               uom_qty=excluded.uom_qty,
               image_url=excluded.image_url,
+              storage_fee=excluded.storage_fee,
+              storage_fee_peak=excluded.storage_fee_peak,
               data_json=excluded.data_json,
               updated_at=CURRENT_TIMESTAMP
             """,
@@ -438,6 +452,7 @@ def _upsert_item(run_id: int, brand_searched: str, normalized: dict) -> None:
                 amz_brand or None,
                 pack_qty, uom_qty,
                 image or None,
+                storage_off, storage_peak,
                 json.dumps(slim, default=str),
             ),
         )
@@ -484,6 +499,143 @@ def _build_search_queries(search_terms: list[str], vetting_mode: str) -> list[tu
     return queries
 
 
+def _keepa_brand_pipeline(
+    run_id: int,
+    search_terms: list[str],
+    min_rank: int,
+    max_rank: int,
+    vetting_mode: str,
+    category_filter: str,
+) -> None:
+    """Discover ALL of a brand/manufacturer's ASINs from Keepa (past SP-API's recall
+    ceiling), then enrich each via SP-API (BSR / category / UPC/EAN/GTIN/MPN / dims →
+    storage fee). Keeps the same category filtering + item storage as the SP-API path.
+    Keepa token spend/balance are recorded on the run. Buy-box + eligibility are added
+    by their own steps afterward."""
+    from services import keepa
+
+    # brand vs manufacturer for the Keepa selection
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT search_type FROM brand_analytics_runs WHERE id=?", (run_id,)
+        ).fetchone()
+    search_type = ((row[0] if row else "") or "brand").lower()
+
+    try:
+        catalog = get_catalog_api()
+    except Exception as exc:  # noqa: BLE001
+        _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
+        return
+
+    _cat_target = _CATEGORY_FILTER_MAP.get(category_filter.lower()) if category_filter else None
+
+    # ── 1) Keepa discovery ────────────────────────────────────────────────── #
+    _update_progress(run_id, status="Searching", phase="Keepa — finding ASINs…", done=0, total=0)
+    all_asins: set[str] = set()
+    tok_spent = 0
+    tok_left = None
+    for term in search_terms:
+        if _check_control(run_id) == "stop":
+            _update_progress(run_id, status="Stopped", phase="Stopped by user")
+            return
+
+        def _prog(found: int, target: int, _t=term) -> None:
+            _update_progress(run_id, status="Searching",
+                             phase=f"Keepa — {_t}: {found:,}/{target:,} ASINs",
+                             done=found, total=max(target, 1))
+        try:
+            kw = {"manufacturer": term} if search_type == "manufacturer" else {"brand": term}
+            res = keepa.find_asins(progress=_prog, **kw)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[keepa] find_asins failed for %r: %s", term, exc)
+            continue
+        all_asins |= set(res["asins"])
+        tok_spent += int(res.get("tokens_spent") or 0)
+        tok_left = res.get("tokens_left")
+
+    with database._LOCK, database._connect() as conn:
+        conn.execute(
+            "UPDATE brand_analytics_runs SET source='keepa', keepa_tokens_spent=?, "
+            "keepa_tokens_left=? WHERE id=?",
+            (tok_spent, tok_left, run_id),
+        )
+
+    asins = sorted(all_asins)
+    total = len(asins)
+    log.info("brand_runner run=%d: Keepa found %d ASINs (%s); enriching via SP-API",
+             run_id, total, search_type)
+
+    # ── 2) SP-API catalog enrichment (BSR / category / IDs / dims→storage) ──── #
+    _update_progress(run_id, status="Searching",
+                     phase=f"Enriching {total:,} ASINs (BSR / IDs / storage)…", done=0, total=total)
+    kept = 0
+    brand_label = search_terms[0] if search_terms else ""
+
+    def _process(raw_item) -> bool:
+        try:
+            normalized = normalize_amazon_item(raw_item)
+        except Exception:
+            return False
+        if _cat_target:
+            amz_cat = categorize("", normalized.get("sales_rank_category") or "")
+            if amz_cat != UNKNOWN and category_distance(_cat_target, amz_cat) >= _CATEGORY_FILTER_THRESHOLD:
+                return False
+        _upsert_item(run_id, brand_label, normalized)
+        return True
+
+    for i in range(0, total, 20):
+        if _check_control(run_id) == "stop":
+            _update_progress(run_id, status="Stopped", phase="Stopped by user")
+            return
+        while _check_control(run_id) == "pause":
+            _update_progress(run_id, status="Paused", phase="Paused")
+            time.sleep(1)
+            if _check_control(run_id) == "stop":
+                _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                return
+        batch = asins[i:i + 20]
+        got: set[str] = set()
+        try:
+            resp = catalog.search_by_identifiers(
+                batch, id_type="ASIN",
+                included_data="summaries,identifiers,attributes,salesRanks,images",
+            )
+            items = resp.get("items") or []
+        except PermissionError as exc:
+            _update_progress(run_id, status="Error", phase=f"SP-API {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[keepa-enrich] batch %d failed: %s", i, exc)
+            items = []
+        for raw_item in items:
+            a = raw_item.get("asin")
+            if a:
+                got.add(a)
+            if _process(raw_item):
+                kept += 1
+        # searchCatalogItems COLLAPSES/caps variation siblings, silently returning only
+        # ~half of a brand's ASINs. Recover the dropped ones via single getCatalogItem
+        # (each ASIN resolves individually) so the run matches Keepa's full count.
+        for a in batch:
+            if a in got:
+                continue
+            try:
+                raw_item = catalog.get_by_asin(a)
+            except PermissionError as exc:
+                _update_progress(run_id, status="Error", phase=f"SP-API {exc}")
+                return
+            except Exception:
+                raw_item = None
+            if raw_item and raw_item.get("asin") and _process(raw_item):
+                kept += 1
+        _update_progress(run_id, status="Searching", done=min(i + 20, total), total=total,
+                         phase=f"Enriching {min(i + 20, total):,}/{total:,} — {kept:,} kept")
+
+    _update_progress(run_id, status="Complete",
+                     phase=f"Done — {kept:,} products · Keepa {tok_spent} tokens",
+                     done=total, total=total)
+
+
 def _brand_pipeline(
     run_id: int,
     search_terms: list[str],
@@ -493,6 +645,18 @@ def _brand_pipeline(
     vetting_mode: str = "cpg",
     category_filter: str = "",
 ) -> None:
+    # When a Keepa key is configured, discover the FULL brand/manufacturer catalog via
+    # Keepa (beats SP-API's ~6k recall ceiling) and enrich via SP-API. Falls back to the
+    # SP-API keyword search below when Keepa isn't configured.
+    try:
+        from services import keepa
+        if keepa.is_configured():
+            _keepa_brand_pipeline(run_id, search_terms, min_rank, max_rank,
+                                  vetting_mode, category_filter)
+            return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search", run_id, exc)
+
     # 0 = unlimited (paginate until Amazon has no more results)
     unlimited = pages_per_brand == 0
     pages_per_brand = max(1, int(pages_per_brand or 3))
@@ -931,20 +1095,38 @@ def start_brand_run(
 # AI Fill pipeline
 # --------------------------------------------------------------------------- #
 
-_AI_FILL_SYSTEM = (
-    "You are a product data extractor. Given a product title, description, and "
-    "bullet points, extract any of the following identifiers that are explicitly "
-    "stated in the text: MPN (manufacturer part number / model number / item number), "
-    "UPC (12-digit numeric barcode), EAN (13-digit numeric barcode), GTIN (14-digit). "
-    "MPNs are often found in titles as model numbers (e.g. 'Model AC141FB02-M'). "
-    "UPC/EAN/GTIN are numeric codes rarely stated in product text — only return them "
-    "if explicitly present as a numeric string. "
-    "Return ONLY a raw JSON object with keys 'mpn', 'upc', 'ean', 'gtin'. "
-    "Use null for any identifier not found. Never invent or guess values."
-)
+_AI_FILL_FIELDS = ["mpn", "upc", "ean", "gtin"]
+_ID_DESC = {
+    "mpn":  "MPN (manufacturer part number / model number / item number)",
+    "upc":  "UPC (12-digit numeric barcode)",
+    "ean":  "EAN (13-digit numeric barcode)",
+    "gtin": "GTIN (14-digit numeric barcode)",
+}
 
 
-def _ai_fill_one(item: dict, client: Any) -> dict:
+def _clean_ai_fill_fields(fields) -> list[str]:
+    """Validated subset of the ID columns to fill; defaults to all four."""
+    fs = [str(f).strip().lower() for f in (fields or [])]
+    fs = [f for f in fs if f in _AI_FILL_FIELDS]
+    return fs or list(_AI_FILL_FIELDS)
+
+
+def _ai_fill_system(fields: list[str]) -> str:
+    ids  = "; ".join(_ID_DESC[f] for f in fields)
+    keys = ", ".join(f"'{f}'" for f in fields)
+    return (
+        "You are a product data extractor. Given a product title, description, and "
+        "bullet points, extract ONLY the following identifier(s) if EXPLICITLY stated "
+        f"in the text: {ids}. "
+        "MPNs are often found in titles as model numbers (e.g. 'Model AC141FB02-M'). "
+        "UPC/EAN/GTIN are numeric codes rarely stated in product text — only return them "
+        "if explicitly present as a numeric string. "
+        f"Return ONLY a raw JSON object with keys {keys}. "
+        "Use null for any identifier not found. Never invent or guess values."
+    )
+
+
+def _ai_fill_one(item: dict, client: Any, fields: list[str]) -> dict:
     from services.ai_recheck import _is_anthropic, _extract_json
     title   = item.get("title") or ""
     data    = {}
@@ -954,6 +1136,7 @@ def _ai_fill_one(item: dict, client: Any) -> dict:
         pass
     desc    = data.get("description") or ""
     bullets = " ".join(data.get("bullet_points") or [])
+    system  = _ai_fill_system(fields)
 
     user_msg = json.dumps({
         "title":       title,
@@ -966,7 +1149,7 @@ def _ai_fill_one(item: dict, client: Any) -> dict:
             resp = client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=128,
-                system=_AI_FILL_SYSTEM,
+                system=system,
                 messages=[{"role": "user", "content": user_msg}],
                 temperature=0,
             )
@@ -975,7 +1158,7 @@ def _ai_fill_one(item: dict, client: Any) -> dict:
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": _AI_FILL_SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user",   "content": user_msg},
                 ],
                 max_tokens=128,
@@ -988,85 +1171,116 @@ def _ai_fill_one(item: dict, client: Any) -> dict:
         return {}
 
 
-def _ai_fill_pipeline(run_id: int, client: Any) -> None:
+def _ai_fill_pipeline(run_id: int, client: Any, fields: list[str] | None = None) -> None:
     _clear_ai_fill_control(run_id)
+    fields = _clean_ai_fill_fields(fields)
+    ai_col = {"mpn": "ai_mpn", "upc": "ai_upc", "ean": "ai_ean", "gtin": "ai_gtin"}
 
-    # Load items needing fill — only those missing MPN (UPC/EAN/GTIN are
-    # almost never in product text, but we try all four to be thorough)
-    with database._connect() as conn:
-        rows = conn.execute(
-            "SELECT id, asin, title, data_json FROM brand_analytics_items "
-            "WHERE run_id=? AND ai_fill_status IS NULL "
-            "AND (mpn IS NULL OR upc IS NULL OR ean IS NULL OR gtin IS NULL)",
-            (run_id,),
-        ).fetchall()
+    # Load items still needing one of the SELECTED id columns: the real column is
+    # empty AND it hasn't been AI-filled yet. Field-based (not the item ai_fill_status
+    # flag) so a later run for a DIFFERENT column re-processes the same items.
+    cond = " OR ".join(f"({f} IS NULL AND {ai_col[f]} IS NULL)" for f in fields)
 
-    total = len(rows)
-    if total == 0:
-        with database._LOCK, database._connect() as conn:
-            conn.execute(
-                "UPDATE brand_analytics_runs SET ai_fill_status='done', "
-                "ai_fill_done=0, ai_fill_total=0, updated_at=CURRENT_TIMESTAMP "
-                "WHERE id=?",
+    def _write(statements: list[tuple[str, tuple]]) -> bool:
+        """Run one or more writes in a single locked connection, retrying a few
+        times on a transient SQLite lock. Returns False if it ultimately fails
+        (the caller keeps going rather than letting the whole run die)."""
+        for attempt in range(4):
+            try:
+                with database._LOCK, database._connect() as conn:
+                    for sql, params in statements:
+                        conn.execute(sql, params)
+                return True
+            except Exception as wexc:  # noqa: BLE001
+                if attempt == 3:
+                    log.warning("[ai_fill] write failed for run %s: %s", run_id, str(wexc)[:120])
+                    return False
+                time.sleep(0.4)
+        return False
+
+    # Wrap the whole pipeline: an unhandled exception here used to kill the daemon
+    # thread silently, stranding ai_fill_status='running' forever (progress frozen,
+    # UI spinner never completes). Now any crash flips the run to 'error: …'.
+    try:
+        with database._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, asin, title, data_json FROM brand_analytics_items "
+                f"WHERE run_id=? AND ({cond})",
                 (run_id,),
-            )
-        return
+            ).fetchall()
 
-    with database._LOCK, database._connect() as conn:
-        conn.execute(
+        total = len(rows)
+        if total == 0:
+            _write([(
+                "UPDATE brand_analytics_runs SET ai_fill_status='done', "
+                "ai_fill_done=0, ai_fill_total=0, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (run_id,),
+            )])
+            return
+
+        _write([(
             "UPDATE brand_analytics_runs SET ai_fill_status='running', "
             "ai_fill_done=0, ai_fill_total=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (total, run_id),
-        )
+        )])
 
-    done = 0
-    for row in rows:
-        if _check_ai_fill_control(run_id) == "stop":
-            _clear_ai_fill_control(run_id)
-            with database._LOCK, database._connect() as conn:
-                conn.execute(
+        done = 0
+        for row in rows:
+            if _check_ai_fill_control(run_id) == "stop":
+                _clear_ai_fill_control(run_id)
+                _write([(
                     "UPDATE brand_analytics_runs SET ai_fill_status='stopped', "
                     "updated_at=CURRENT_TIMESTAMP WHERE id=?",
                     (run_id,),
-                )
-            return
+                )])
+                return
 
-        item = dict(row)
-        result = _ai_fill_one(item, client)
+            item = dict(row)
+            result = _ai_fill_one(item, client, fields)
 
-        ai_mpn  = (result.get("mpn")  or "").strip() or None
-        ai_upc  = (result.get("upc")  or "").strip() or None
-        ai_ean  = (result.get("ean")  or "").strip() or None
-        ai_gtin = (result.get("gtin") or "").strip() or None
+            # Only update the SELECTED ai_* columns (leave the others untouched).
+            set_parts = []
+            vals: list = []
+            for f in fields:
+                set_parts.append(f"{ai_col[f]}=?")
+                vals.append((result.get(f) or "").strip() or None)
+            set_parts.append("ai_fill_status='done'")
+            set_parts.append("updated_at=CURRENT_TIMESTAMP")
 
-        # Single connection: item update + progress counter (saves lock acquisition)
-        done += 1
-        with database._LOCK, database._connect() as conn:
-            conn.execute(
-                "UPDATE brand_analytics_items SET "
-                "ai_mpn=?, ai_upc=?, ai_ean=?, ai_gtin=?, ai_fill_status='done', "
-                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (ai_mpn, ai_upc, ai_ean, ai_gtin, item["id"]),
-            )
-            conn.execute(
-                "UPDATE brand_analytics_runs SET ai_fill_done=?, "
-                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (done, run_id),
-            )
+            # Item update + progress counter, one connection, retried on lock.
+            done += 1
+            _write([
+                (f"UPDATE brand_analytics_items SET {', '.join(set_parts)} WHERE id=?",
+                 (*vals, item["id"])),
+                ("UPDATE brand_analytics_runs SET ai_fill_done=?, "
+                 "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                 (done, run_id)),
+            ])
 
-    with database._LOCK, database._connect() as conn:
-        conn.execute(
+        _write([(
             "UPDATE brand_analytics_runs SET ai_fill_status='done', "
             "updated_at=CURRENT_TIMESTAMP WHERE id=?",
             (run_id,),
-        )
+        )])
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[ai_fill] pipeline crashed for run %s", run_id)
+        try:
+            with database._LOCK, database._connect() as conn:
+                conn.execute(
+                    "UPDATE brand_analytics_runs SET ai_fill_status=?, "
+                    "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (f"error: {str(exc)[:80]}", run_id),
+                )
+        except Exception:  # noqa: BLE001
+            pass
 
 
-def start_ai_fill(run_id: int, client: Any) -> None:
-    """Launch AI Fill in a background daemon thread."""
+def start_ai_fill(run_id: int, client: Any, fields: list[str] | None = None) -> None:
+    """Launch AI Fill in a background daemon thread. `fields` = which ID columns to
+    fill (mpn/upc/ean/gtin); defaults to all four."""
     t = threading.Thread(
         target=_ai_fill_pipeline,
-        args=(run_id, client),
+        args=(run_id, client, fields),
         daemon=True,
     )
     t.start()

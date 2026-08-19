@@ -3815,6 +3815,19 @@
     "not_approved": "Not Approved",
   };
 
+  // Approval-status badge for the Analytics candidate table.
+  function _eligBadge(status) {
+    if (!status) return '<span style="color:#cbd5e1;">—</span>';
+    const s = String(status).toUpperCase();
+    let bg = "#f1f5f9", fg = "#475569", txt = status;
+    if (s === "CAN_SELL") { bg = "#dcfce7"; fg = "#166534"; txt = "Can sell"; }
+    else if (s === "NEEDS_APPROVAL") { bg = "#fef3c7"; fg = "#92400e"; txt = "Approval"; }
+    else if (s === "RESTRICTED") { bg = "#fee2e2"; fg = "#991b1b"; txt = "Restricted"; }
+    else if (s.startsWith("ERROR")) { bg = "#fee2e2"; fg = "#991b1b"; txt = "Error"; }
+    else if (s === "UNAVAILABLE") { bg = "#f1f5f9"; fg = "#64748b"; txt = "n/a"; }
+    return `<span title="${escapeHtml(String(status))}" style="display:inline-block;padding:1px 7px;font-size:0.68rem;font-weight:700;border-radius:4px;background:${bg};color:${fg};">${escapeHtml(txt)}</span>`;
+  }
+
   // Build a short human-readable reason explaining the verdict.
   function _verdictReason(c) {
     const sc = (c.data && c.data.scores) || {};
@@ -4151,6 +4164,44 @@
         aiBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg> ${aiDone ? "Re-check AI" : aiErr ? "Retry AI Check" : "AI Check"}`;
         aiBtn.disabled = false;
         aiBtn.style.opacity = "1";
+      }
+    }
+
+    // Eligibility & storage button — same visibility rule as AI check.
+    const eligBtn = $("#analytics-run-elig-check");
+    if (eligBtn) {
+      const s3 = (run.status || "").toLowerCase();
+      const canElig = s3 === "complete" || s3 === "paused" || s3 === "stopped" || s3 === "error";
+      const eStatus = (run.elig_check_status || "").toLowerCase();
+      const eRunning = eStatus === "running";
+      const eDone = eStatus.startsWith("done");
+      eligBtn.classList.toggle("hidden", !canElig);
+
+      const eCard = $("#analytics-run-elig-progress-card");
+      if (eCard) {
+        eCard.classList.toggle("hidden", !eRunning);
+        if (eRunning) {
+          const dN = run.elig_check_done || 0, tN = run.elig_check_total || 0;
+          const pct = tN > 0 ? Math.min(100, (dN / tN) * 100) : 0;
+          const bar = $("#analytics-run-elig-progress-bar"); if (bar) bar.style.width = pct + "%";
+          const cnt = $("#analytics-run-elig-progress-counts");
+          if (cnt) cnt.textContent = tN > 0 ? `${dN.toLocaleString()} / ${tN.toLocaleString()}` : "Starting…";
+        }
+      }
+      const eStop = $("#analytics-run-elig-stop");
+      if (eStop) eStop.classList.toggle("hidden", !eRunning);
+
+      if (eRunning) {
+        const dN = run.elig_check_done || 0, tN = run.elig_check_total || 0;
+        eligBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;animation:spin 1.2s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> ${tN > 0 ? `Checking ${dN.toLocaleString()}/${tN.toLocaleString()}…` : "Checking…"}`;
+        eligBtn.disabled = true; eligBtn.style.opacity = "0.7";
+        if (!_runIsActive(run)) {
+          _clearAnalyticsRunPoll();
+          state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
+        }
+      } else {
+        eligBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg> ${eDone ? "Re-check Eligibility" : "Eligibility & Storage"}`;
+        eligBtn.disabled = false; eligBtn.style.opacity = "1";
       }
     }
   }
@@ -4516,6 +4567,8 @@
           <td class="text-xs">${escapeHtml(sources)}</td>
           <td class="text-xs text-center">${c.amz_pack != null ? escapeHtml(String(c.amz_pack)) : "1"}</td>
           <td class="text-xs text-right" style="color:#64748b;">${c.sales_rank != null ? Number(c.sales_rank).toLocaleString() : "—"}</td>
+          <td class="text-center">${_eligBadge(c.eligibility_status)}</td>
+          <td class="text-xs text-right" style="color:#64748b;white-space:nowrap;">${c.storage_fee != null ? "$" + Number(c.storage_fee).toFixed(2) : "—"}</td>
           <td><span class="conf-pill ${confCls}">${conf}%</span></td>
           <td>
             <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
@@ -5088,6 +5141,31 @@
     }
     // Re-enable after a tick so it can't be double-clicked
     setTimeout(() => { if (btn) { btn.disabled = false; } }, 1500);
+  });
+
+  $("#analytics-run-elig-check")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    let n = 0;
+    try { const est = await api(`/api/analytics/runs/${id}/eligibility/estimate`); n = est.unique_asins || 0; } catch (_) {}
+    const mins = Math.max(1, Math.round(n / 5 / 60));
+    const ok = await showConfirm({
+      title: "Check eligibility & storage?",
+      message: `Fetches approval status (CAN_SELL / NEEDS_APPROVAL / RESTRICTED) + storage fee for ${n.toLocaleString()} Approved/Review ASINs. Storage is instant; eligibility makes ~${n.toLocaleString()} live Amazon calls (~${mins} min).`,
+      confirmText: "Run check", cancelText: "Cancel",
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/analytics/runs/${id}/eligibility`, { method: "POST" });
+      _clearAnalyticsRunPoll();
+      state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
+    } catch (e) { showToast("Eligibility check failed to start: " + (e.message || e), "error"); }
+  });
+
+  $("#analytics-run-elig-stop")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    try { await api(`/api/analytics/runs/${id}/eligibility/stop`, { method: "POST" }); } catch (_) {}
+    _clearAnalyticsRunPoll();
+    state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 500);
   });
 
   $("#analytics-run-ai-check")?.addEventListener("click", () => {
@@ -6537,42 +6615,48 @@
     }
   });
 
-  $("#ba-run-ai-fill-btn")?.addEventListener("click", async () => {
-    const id = state.brandAnalytics.run.id;
+  const _aiFillFields = () => {
+    const v = [...document.querySelectorAll(".ba-aifill-field:checked")].map(c => c.value);
+    return v.length ? v : ["mpn", "upc", "ean", "gtin"];
+  };
+  async function _refreshAiFillEstimate() {
+    const id = state.brandAnalytics.run?.id;
     if (!id) return;
-    const modal   = $("#ba-ai-fill-modal");
     const descEl  = $("#ba-ai-fill-modal-desc");
     const cntEl   = $("#ba-ai-fill-modal-count");
     const modelEl = $("#ba-ai-fill-modal-model");
     const costEl  = $("#ba-ai-fill-modal-cost");
     const confirmBtn = $("#ba-ai-fill-modal-confirm");
-    if (!modal) return;
-
-    // Reset and open
-    if (descEl)  descEl.textContent  = "Loading estimate…";
-    if (cntEl)   cntEl.textContent   = "—";
-    if (modelEl) modelEl.textContent = "—";
-    if (costEl)  costEl.textContent  = "—";
+    const fields = _aiFillFields();
+    if (descEl) descEl.textContent = "Loading estimate…";
     if (confirmBtn) confirmBtn.disabled = true;
-    modal.classList.remove("hidden");
-
     try {
-      const est = await api(`/api/brand-analytics/runs/${id}/ai_fill/estimate`);
+      const est = await api(`/api/brand-analytics/runs/${id}/ai_fill/estimate?fields=${fields.join(",")}`);
       if (!est.available) {
         if (descEl) descEl.textContent = "No AI client configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.";
         return;
       }
+      const labels = fields.map(f => f.toUpperCase());
       if (cntEl)   cntEl.textContent   = est.item_count.toLocaleString();
       if (modelEl) modelEl.textContent = est.model;
       if (costEl)  costEl.textContent  = est.item_count === 0 ? "$0.00" : `~$${est.cost_usd_est.toFixed(4)}`;
       if (descEl)  descEl.textContent  = est.item_count === 0
-        ? "All items already have AI-extracted identifiers."
-        : `AI will scan each item's title and description for MPNs (model numbers). UPC/EAN/GTIN are rarely stated in product text but will be extracted if explicitly present.`;
+        ? `All items already have ${labels.join(" / ")} filled.`
+        : `AI scans each item's title & description for the selected ID(s): ${labels.join(", ")}. MPNs appear as model numbers; UPC/EAN/GTIN only when explicitly present.`;
       if (confirmBtn) confirmBtn.disabled = est.item_count === 0;
-    } catch(e) {
+    } catch (e) {
       if (descEl) descEl.textContent = `Estimate failed: ${e.message}`;
     }
+  }
+  $("#ba-run-ai-fill-btn")?.addEventListener("click", async () => {
+    const modal = $("#ba-ai-fill-modal");
+    if (!modal || !state.brandAnalytics.run?.id) return;
+    ["count", "model", "cost"].forEach(k => { const el = $(`#ba-ai-fill-modal-${k}`); if (el) el.textContent = "—"; });
+    modal.classList.remove("hidden");
+    _refreshAiFillEstimate();
   });
+  document.querySelectorAll(".ba-aifill-field").forEach(c =>
+    c.addEventListener("change", _refreshAiFillEstimate));
 
   $("#ba-run-ai-fill-stop")?.addEventListener("click", async () => {
     const id = state.brandAnalytics.run.id;
@@ -6593,9 +6677,10 @@
   $("#ba-ai-fill-modal-confirm")?.addEventListener("click", async () => {
     const id = state.brandAnalytics.run.id;
     if (!id) return;
+    const fields = _aiFillFields();
     $("#ba-ai-fill-modal")?.classList.add("hidden");
     try {
-      await api(`/api/brand-analytics/runs/${id}/ai_fill`, {method:"POST"});
+      await api(`/api/brand-analytics/runs/${id}/ai_fill`, {method:"POST", body:{fields}});
       fetchBARun();
     } catch(e) { showToast(`AI Fill error: ${e.message}`, "error"); }
   });

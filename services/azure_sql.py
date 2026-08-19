@@ -35,6 +35,9 @@ _COLS = [
     "ShadowOf", "QtyPerCase", "CostPerCase", "FulfilledBy", "ProductGroupName",
     "Purchaser", "SOURCE_LEAD", "CompanyName",
 ]
+# Columns that MAY exist in the view — pulled when present, skipped via a graceful
+# retry when the SELECT rejects them, so a wrong column name can never break the pull.
+_OPTIONAL_COLS = ["ProductName"]
 
 # Create SKUs must only consider the user's OWN company's catalog — a brand/SKU that
 # lives only under another company (or none) is treated as new. The wizard's company
@@ -97,29 +100,38 @@ def fetch_rows(force: bool = False) -> list[dict]:
         if not force and cached is not None and (time.time() - _CACHE["at"]) < _CACHE_TTL:
             return cached
 
-    conn = _connect()
+    def _pull(cols: list[str]) -> list[dict]:
+        conn = _connect()
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SELECT {', '.join(cols)} FROM {_VIEW}")
+            pos = {d[0]: i for i, d in enumerate(cur.description)}
+
+            def g(row, name):
+                i = pos.get(name)
+                return row[i] if i is not None else None
+
+            return [{
+                "ProductID": _s(g(r, "ProductID")), "UPC": _s(g(r, "UPC")),
+                "ManufacturerSKU": _s(g(r, "ManufacturerSKU")),
+                "ManufacturerName": _s(g(r, "Manufacturer")),
+                "BrandName": _s(g(r, "BrandName")), "ASIN": _s(g(r, "ASIN")),
+                "ShadowOf": _s(g(r, "ShadowOf")), "QtyPerCase": _s(g(r, "QtyPerCase")),
+                "CostPerCase": _s(g(r, "CostPerCase")), "FulfilledBy": _s(g(r, "FulfilledBy")),
+                "ProductGroupName": _s(g(r, "ProductGroupName")),
+                "ProductName": _s(g(r, "ProductName")),   # "" when the column isn't pulled
+                "CompanyName": _s(g(r, "CompanyName")),
+                "_purchaser": _s(g(r, "Purchaser")), "_sourcer": _s(g(r, "SOURCE_LEAD")),
+            } for r in cur.fetchall()]
+        finally:
+            conn.close()
+
     try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT {', '.join(_COLS)} FROM {_VIEW}")
-        pos = {d[0]: i for i, d in enumerate(cur.description)}
-
-        def g(row, name):
-            i = pos.get(name)
-            return row[i] if i is not None else None
-
-        rows = [{
-            "ProductID": _s(g(r, "ProductID")), "UPC": _s(g(r, "UPC")),
-            "ManufacturerSKU": _s(g(r, "ManufacturerSKU")),
-            "ManufacturerName": _s(g(r, "Manufacturer")),
-            "BrandName": _s(g(r, "BrandName")), "ASIN": _s(g(r, "ASIN")),
-            "ShadowOf": _s(g(r, "ShadowOf")), "QtyPerCase": _s(g(r, "QtyPerCase")),
-            "CostPerCase": _s(g(r, "CostPerCase")), "FulfilledBy": _s(g(r, "FulfilledBy")),
-            "ProductGroupName": _s(g(r, "ProductGroupName")),
-            "CompanyName": _s(g(r, "CompanyName")),
-            "_purchaser": _s(g(r, "Purchaser")), "_sourcer": _s(g(r, "SOURCE_LEAD")),
-        } for r in cur.fetchall()]
-    finally:
-        conn.close()
+        rows = _pull(_COLS + _OPTIONAL_COLS)
+    except Exception as exc:
+        log.warning("[azure_sql] optional columns rejected (%s) — retrying without them",
+                    str(exc)[:120])
+        rows = _pull(_COLS)
 
     with _LOCK:
         _CACHE["rows"], _CACHE["at"] = rows, time.time()
