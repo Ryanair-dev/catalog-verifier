@@ -514,12 +514,16 @@ def _keepa_brand_pipeline(
     by their own steps afterward."""
     from services import keepa
 
-    # brand vs manufacturer for the Keepa selection
+    # brand vs manufacturer for the Keepa selection + the units-sold window (stored on
+    # the run; filtered in Keepa's finder for free, alongside the BSR window)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT search_type FROM brand_analytics_runs WHERE id=?", (run_id,)
+            "SELECT search_type, min_sold, max_sold FROM brand_analytics_runs WHERE id=?",
+            (run_id,),
         ).fetchone()
     search_type = ((row[0] if row else "") or "brand").lower()
+    min_sold = int((row[1] if row and row[1] is not None else 0) or 0)
+    max_sold = int((row[2] if row and row[2] is not None else 0) or 0)
 
     try:
         catalog = get_catalog_api()
@@ -545,7 +549,10 @@ def _keepa_brand_pipeline(
                              done=found, total=max(target, 1))
         try:
             kw = {"manufacturer": term} if search_type == "manufacturer" else {"brand": term}
-            res = keepa.find_asins(progress=_prog, **kw)
+            # BSR window is filtered in Keepa's finder (free) — the ONLY place the Keepa
+            # path applies min/max rank, and it trims the list before SP-API enrichment.
+            res = keepa.find_asins(progress=_prog, min_rank=min_rank, max_rank=max_rank,
+                                   min_sold=min_sold, max_sold=max_sold, **kw)
         except Exception as exc:  # noqa: BLE001
             log.warning("[keepa] find_asins failed for %r: %s", term, exc)
             continue

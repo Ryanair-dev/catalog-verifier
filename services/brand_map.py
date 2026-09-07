@@ -122,9 +122,12 @@ def import_from_sku_extended(
             continue
         if s(r[mi]):
             aggm[b][s(r[mi])] += 1
-        if s(r[pi]) and s(r[pi]) != "0":
+        # Same "Other"-placeholder exclusion as azure_sql.brand_map() -- a value of
+        # "Other" means unassigned, not a real purchaser/sourcer, so it must not
+        # outvote an actual name just because more legacy rows were left unassigned.
+        if s(r[pi]) and s(r[pi]) != "0" and s(r[pi]).lower() != "other":
             aggp[b][s(r[pi])] += 1
-        if s(r[si]) and s(r[si]) != "0":
+        if s(r[si]) and s(r[si]) != "0" and s(r[si]).lower() != "other":
             aggs[b][s(r[si])] += 1
 
     brands = set(aggm) | set(aggp) | set(aggs)

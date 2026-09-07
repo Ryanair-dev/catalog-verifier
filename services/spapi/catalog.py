@@ -80,22 +80,39 @@ class CatalogAPI:
             if limiter:
                 limiter.acquire()
 
-            resp = requests.get(
-                f"{self.endpoint}{path}",
-                headers=self._headers(),
-                params=params,
-                timeout=15,
-            )
+            try:
+                resp = requests.get(
+                    f"{self.endpoint}{path}",
+                    headers=self._headers(),
+                    params=params,
+                    timeout=25,
+                )
+            except requests.RequestException as exc:
+                # Transient network error (timeout / connection reset). During a
+                # large bulk run these are near-certain; retry with backoff rather
+                # than failing the ASIN (which surfaced as empty/ERROR rows before).
+                wait = min(30, 2 ** attempt)
+                log.warning("[net] %s on %s (attempt %d): %s. Backing off %ss",
+                            type(exc).__name__, operation, attempt + 1, str(exc)[:80], wait)
+                time.sleep(wait)
+                continue
 
             if resp.status_code == 200:
                 return resp
 
             elif resp.status_code == 429:
-                wait = 2 ** attempt
+                wait = min(30, 2 ** attempt)
                 log.warning(
                     "[429] Throttled on %s (attempt %d). Backing off %ss",
                     operation, attempt + 1, wait,
                 )
+                time.sleep(wait)
+
+            elif resp.status_code in (500, 502, 503, 504):
+                # Transient Amazon-side error — retry with backoff, don't fail the ASIN.
+                wait = min(30, 2 ** attempt)
+                log.warning("[%d] server error on %s (attempt %d). Backing off %ss",
+                            resp.status_code, operation, attempt + 1, wait)
                 time.sleep(wait)
 
             elif resp.status_code == 403:

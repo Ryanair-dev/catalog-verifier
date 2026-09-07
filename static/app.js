@@ -254,6 +254,8 @@
         discoveredBrands: [],  // [{name, selected}]
         minRank: 0,
         maxRank: 0,
+        minSold: 0,
+        maxSold: 0,
         pagesPerBrand: 10,
         cacheInfo: null,
         saveToLibrary: true,
@@ -595,6 +597,7 @@
       "brand-analytics-run": $("#view-brand-analytics-run"),
       "quick-search":   $("#view-quick-search"),
       "create-po":      $("#view-create-po"),
+      "vendor-offers":  $("#view-vendor-offers"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -623,6 +626,7 @@
     if (view === "analytics") loadAnalyticsRuns();
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
     if (view === "create-po") initCreatePo();
+    if (view === "vendor-offers") initVendorOffers();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
@@ -633,6 +637,14 @@
   // ========================================================================
   //  Create PO — rendered by the standalone module in /static/create_po.js
   // ========================================================================
+  // Vendor Offers (Price Desk) is a self-contained page served with its data
+  // inlined; embed it in an iframe, loaded lazily on first open. The page's own
+  // "Refresh" button reloads it after an upload/assign.
+  function initVendorOffers() {
+    const f = document.getElementById("vendor-offers-frame");
+    if (f && !f.getAttribute("src")) f.setAttribute("src", "/api/vendor-offers/page");
+  }
+
   function initCreatePo() {
     const el = document.getElementById("view-create-po");
     if (el && window.CreatePO) window.CreatePO.mount(el);
@@ -2910,7 +2922,13 @@
       $("#threshold-review").value = state.thresholds.review;
     } catch {}
   }
-  $("#open-settings-btn").addEventListener("click", () => _openPanel("settings-panel"));
+  async function loadPrepFee() {
+    try {
+      const j = await api("/api/settings/prep-out-fee");
+      $("#prep-out-fee").value = Number(j.prep_out_fee);
+    } catch {}
+  }
+  $("#open-settings-btn").addEventListener("click", () => { _openPanel("settings-panel"); loadPrepFee(); });
   $("#settings-close").addEventListener("click", () => _closeActivePanel());
   $("#settings-save").addEventListener("click", async () => {
     const v = Number($("#threshold-verified").value);
@@ -2920,6 +2938,17 @@
       state.thresholds = { verified: Number(j.verified), review: Number(j.review) };
       $("#settings-feedback").textContent = "Saved. Re-run any scan to apply.";
       setTimeout(() => $("#settings-feedback").textContent = "", 3000);
+    } catch (e) {
+      showToast("Failed: " + e.message, "error");
+    }
+  });
+  $("#prep-out-save").addEventListener("click", async () => {
+    const fee = Number($("#prep-out-fee").value);
+    try {
+      const j = await api("/api/settings/prep-out-fee", { method: "POST", body: { prep_out_fee: fee } });
+      $("#prep-out-fee").value = Number(j.prep_out_fee);
+      $("#prep-out-feedback").textContent = "Saved. Applies to the next Offer Analytics export.";
+      setTimeout(() => $("#prep-out-feedback").textContent = "", 3000);
     } catch (e) {
       showToast("Failed: " + e.message, "error");
     }
@@ -6782,6 +6811,8 @@
     wiz.cacheInfo = null;
     wiz.minRank = 0;
     wiz.maxRank = 0;
+    wiz.minSold = 0;
+    wiz.maxSold = 0;
     wiz.pagesPerBrand = 10;
 
     // Reset type buttons
@@ -6815,6 +6846,8 @@
     if (feedbackEl) feedbackEl.textContent = "";
     const minInp = $("#ba-wiz-min-rank"); if (minInp) minInp.value = "0";
     const maxInp = $("#ba-wiz-max-rank"); if (maxInp) maxInp.value = "0";
+    const minSoldInp = $("#ba-wiz-min-sold"); if (minSoldInp) minSoldInp.value = "0";
+    const maxSoldInp = $("#ba-wiz-max-sold"); if (maxSoldInp) maxSoldInp.value = "0";
     const pgsInp = $("#ba-wiz-pages");   if (pgsInp) pgsInp.value = "10";
 
     _baWizGoTo(1);
@@ -6877,8 +6910,8 @@
       <div><b>Type:</b> ${escapeHtml(wiz.searchType)} · <b>Mode:</b> ${wiz.vettingMode === "medical" ? "Medical (MPN priority)" : "CPG (UPC/EAN priority)"}</div>
       <div><b>Sub-brands to search:</b> ${selectedSubs.map(n=>escapeHtml(n)).join(", ") || "—"}</div>
       ${selectedAliases.length ? `<div><b>Aliases included:</b> <span style="color:#6366f1;">${selectedAliases.map(n=>escapeHtml(n)).join(", ")}</span></div>` : ""}
-      <div><b>BSR range:</b> ${wiz.minRank||0} – ${wiz.maxRank||0} (0 = no limit)</div>
-      <div><b>Pages per brand:</b> ${wiz.pagesPerBrand === 0 ? "0 (no limit)" : wiz.pagesPerBrand}</div>
+      <div><b>BSR range:</b> ${wiz.minRank||0} – ${wiz.maxRank||0} (0 = no limit) · filtered in Keepa</div>
+      <div><b>Units sold / mo:</b> ${wiz.minSold||0} – ${wiz.maxSold||0} (0 = no limit) · filtered in Keepa</div>
     `;
   }
 
@@ -6929,15 +6962,16 @@
       // Copy configure defaults
       const minEl = $("#ba-wiz-min-rank");
       const maxEl = $("#ba-wiz-max-rank");
-      const pgsEl = $("#ba-wiz-pages");
       wiz.minRank = parseInt(minEl?.value || "0") || 0;
       wiz.maxRank = parseInt(maxEl?.value || "0") || 0;
-      const _ppb1 = parseInt(pgsEl?.value ?? "10"); wiz.pagesPerBrand = isNaN(_ppb1) ? 10 : Math.max(0, _ppb1);
+      wiz.minSold = Math.max(0, parseInt($("#ba-wiz-min-sold")?.value || "0") || 0);
+      wiz.maxSold = Math.max(0, parseInt($("#ba-wiz-max-sold")?.value || "0") || 0);
       _baWizGoTo(3);
     } else if (wiz.step === 3) {
       wiz.minRank = parseInt($("#ba-wiz-min-rank")?.value || "0") || 0;
       wiz.maxRank = parseInt($("#ba-wiz-max-rank")?.value || "0") || 0;
-      const _ppb2 = parseInt($("#ba-wiz-pages")?.value ?? "10"); wiz.pagesPerBrand = isNaN(_ppb2) ? 10 : Math.max(0, _ppb2);
+      wiz.minSold = Math.max(0, parseInt($("#ba-wiz-min-sold")?.value || "0") || 0);
+      wiz.maxSold = Math.max(0, parseInt($("#ba-wiz-max-sold")?.value || "0") || 0);
       const runName = $("#ba-wiz-run-name")?.value.trim();
       if (!runName) { showToast("Please enter a run name.", "error"); return; }
       _baWizGoTo(4);
@@ -6995,14 +7029,18 @@
       const result = j.result || {};
       const subs    = Array.isArray(result.sub_brands) ? result.sub_brands : [wiz.inputName];
       const aliases = Array.isArray(result.aliases)    ? result.aliases    : [];
+      const counts        = (result.keepa && result.keepa.counts) || {};
       const uniqueSubs    = [...new Set(subs)];
       const uniqueAliases = [...new Set(aliases.filter(a => !uniqueSubs.includes(a)))];
       wiz.discoveredBrands = [
-        ...uniqueSubs.map(n    => ({name: n, selected: true,  type: "sub_brand"})),
-        ...uniqueAliases.map(n => ({name: n, selected: false, type: "alias"})),
+        ...uniqueSubs.map(n    => ({name: n, selected: true,  type: "sub_brand", count: counts[n]})),
+        ...uniqueAliases.map(n => ({name: n, selected: false, type: "alias",     count: counts[n]})),
       ];
       _renderBABrandsCheckboxes();
-      if (statusEl) statusEl.textContent = j.cached ? "From Library ✓" : `AI discovered ${uniqueSubs.length} sub-brand(s), ${uniqueAliases.length} alias(es) ✓`;
+      const nVerified = uniqueSubs.filter(n => counts[n] != null).length;
+      if (statusEl) statusEl.textContent = nVerified
+        ? `Found ${uniqueSubs.length} sub-brand(s) — ${nVerified} verified from Keepa catalog data ✓`
+        : (j.cached ? "From Library ✓" : `AI discovered ${uniqueSubs.length} sub-brand(s), ${uniqueAliases.length} alias(es) ✓`);
 
       // Hide progress bar after a moment
       setTimeout(() => { if (progWrap) progWrap.classList.add("hidden"); }, 1200);
@@ -7036,7 +7074,7 @@
         const i = wiz.discoveredBrands.indexOf(b);
         return `<div class="flex items-center gap-2 ba-brand-row">
           <input type="checkbox" data-ba-brand="${i}" ${b.selected ? "checked" : ""} style="flex-shrink:0;" />
-          <span class="text-sm" style="color:#1e293b;flex:1;">${escapeHtml(b.name)}</span>
+          <span class="text-sm" style="color:#1e293b;flex:1;">${escapeHtml(b.name)}${b.count != null ? ` <span style="color:#64748b;font-size:11px;font-weight:600;">· ${Number(b.count).toLocaleString()} on Amazon</span>` : ""}</span>
           <button type="button" data-ba-brand-delete="${i}" title="Remove" class="ba-brand-remove-btn" aria-label="Remove">×</button>
         </div>`;
       }).join("");
@@ -7112,6 +7150,8 @@
           search_terms:   selected,
           min_rank:       wiz.minRank,
           max_rank:       wiz.maxRank,
+          min_sold:       wiz.minSold,
+          max_sold:       wiz.maxSold,
           pages_per_brand:  wiz.pagesPerBrand,
           vetting_mode:     wiz.vettingMode || "cpg",
           force_refresh:    _baCacheForceRefresh,
@@ -7485,20 +7525,32 @@
   state.tools = {
     eligJobId:    null,
     sfJobId:      null,
+    genJobId:     null,
     eligResults:  [],
     sfResults:    [],
+    genResults:   [],
     eligDone:     false,
     sfDone:       false,
+    genDone:      false,
+    eligFails:    0,
+    sfFails:      0,
+    genFails:     0,
     poll:         null,
-    options:      { eligibility: true, storage: true },
+    options:      { eligibility: true, storage: true, generic: false },
   };
+
+  // A single hiccuped poll (dropped connection, brief server hiccup) must not
+  // permanently freeze a progress bar -- the background job keeps running
+  // regardless of whether we're still polling it. Only give up after several
+  // consecutive failures, and say so when we do.
+  const _TOOLS_POLL_MAX_FAILS = 5;
 
   // ── Open / close ──────────────────────────────────────────────────────────
   $("#open-tools-btn")?.addEventListener("click", () => _openPanel("tools-panel"));
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
 
   // Checkbox label hover highlight
-  ["#tools-opt-elig-wrap","#tools-opt-sf-wrap"].forEach(sel => {
+  ["#tools-opt-elig-wrap","#tools-opt-sf-wrap","#tools-opt-generic-wrap"].forEach(sel => {
     const wrap = $(sel);
     if (!wrap) return;
     wrap.addEventListener("mouseenter", () => wrap.style.background = "#f8fafc");
@@ -7518,6 +7570,214 @@
   // ── Run ───────────────────────────────────────────────────────────────────
   $("#tools-run-btn")?.addEventListener("click", _startToolsRun);
 
+  // ── Check Brand (brand-wide gating) ─────────────────────────────────────────
+  function _escHtml(v) {
+    return String(v ?? "").replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+  }
+
+  function _parseBrands(raw) {
+    // One brand per line; also tolerant of comma-separated CSV rows (takes just
+    // the first cell of each line so an uploaded CSV file with extra columns
+    // does not get swallowed in as fake brands). Deduplicated case-insensitively.
+    const seen = new Set();
+    const out = [];
+    for (const line of String(raw || "").split(/\r?\n/)) {
+      const first = line.split(",")[0].trim().replace(/^"+|"+$/g, "");
+      if (!first) continue;
+      const key = first.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(first);
+    }
+    return out;
+  }
+
+  $("#brand-check-input")?.addEventListener("input", function() {
+    const n = _parseBrands(this.value).length;
+    const el = $("#brand-check-count");
+    if (el) el.textContent = n > 0 ? `${n} brand${n === 1 ? "" : "s"}` : "";
+  });
+
+  // Sample-size mode: fixed count vs percentage of the total Amazon ASINs
+  function _syncBrandCheckMode() {
+    const pct = $("#brand-check-mode-pct")?.checked;
+    const cVal = $("#brand-check-count-val");
+    const pVal = $("#brand-check-pct-val");
+    if (cVal) { cVal.disabled = !!pct; cVal.style.background = pct ? "#f8fafc" : ""; }
+    if (pVal) { pVal.disabled = !pct; pVal.style.background = pct ? "" : "#f8fafc"; }
+  }
+  $("#brand-check-mode-count")?.addEventListener("change", _syncBrandCheckMode);
+  $("#brand-check-mode-pct")?.addEventListener("change", _syncBrandCheckMode);
+
+  function _brandCheckParams() {
+    if ($("#brand-check-mode-pct")?.checked) {
+      const pct = parseFloat($("#brand-check-pct-val")?.value);
+      return { sample_pct: Math.max(1, Math.min(100, isNaN(pct) ? 10 : pct)) };
+    }
+    const n = parseInt($("#brand-check-count-val")?.value, 10);
+    return { sample_size: Math.max(1, Math.min(300, isNaN(n) ? 8 : n)) };
+  }
+
+  // Upload a .txt/.csv of brand names -> appended into the textarea
+  $("#brand-check-file")?.addEventListener("change", async function() {
+    const file = this.files && this.files[0];
+    this.value = "";   // allow re-uploading the same filename again later
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const input = $("#brand-check-input");
+      if (input) {
+        const existing = input.value.trim();
+        input.value = existing ? existing + "\n" + text : text;
+        input.dispatchEvent(new Event("input"));
+      }
+    } catch (e) {
+      showToast("Could not read file: " + e.message, "error");
+    }
+  });
+
+  const _VERDICT_STYLE = {
+    CAN_SELL:       { bg: "#f0fdf4", color: "#16a34a", icon: "\u2713" },
+    NEEDS_APPROVAL: { bg: "#fffbeb", color: "#d97706", icon: "\u26a0" },
+    RESTRICTED:     { bg: "#fef2f2", color: "#dc2626", icon: "\u2717" },
+    MIXED:          { bg: "#fff7ed", color: "#c2410c", icon: "\u26a0" },
+    ALL_DOG:        { bg: "#f8fafc", color: "#64748b", icon: "?" },
+    ERROR:          { bg: "#fef2f2", color: "#dc2626", icon: "!" },
+  };
+
+  const _brandCheckState = { cancel: false, results: [] };
+
+  function _renderSingleBrandResult(r) {
+    const out = $("#brand-check-result");
+    if (!out) return;
+    out.classList.remove("hidden");
+    const style = _VERDICT_STYLE[r.verdict] || _VERDICT_STYLE.ALL_DOG;
+    out.style.background = style.bg;
+    out.style.color = style.color;
+    const dogNote = r.dog_skipped > 0
+      ? ` (${r.dog_skipped} deactivated ASIN${r.dog_skipped === 1 ? "" : "s"} skipped)` : "";
+    out.innerHTML = `<div style="font-weight:700;margin-bottom:2px;">${style.icon} ${_escHtml(r.brand)}</div>` +
+      `<div>${_escHtml(r.summary)}${_escHtml(dogNote)}</div>` +
+      `<div style="margin-top:4px;font-size:11px;opacity:0.75;">${(r.total_asins_in_catalog || 0).toLocaleString()} ASIN${r.total_asins_in_catalog === 1 ? "" : "s"} for this brand on Amazon; ${r.checked.length} checked.</div>`;
+  }
+
+  function _appendBrandRow(r) {
+    const tbody = $("#brand-check-table-body");
+    if (!tbody) return;
+    const style = _VERDICT_STYLE[r.verdict] || _VERDICT_STYLE.ALL_DOG;
+    const dogNote = r.dog_skipped > 0 ? ` (${r.dog_skipped} DOG skipped)` : "";
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    tr.innerHTML =
+      `<td style="padding:5px 6px;font-weight:600;color:#1e293b;white-space:nowrap;">${_escHtml(r.brand)}</td>` +
+      `<td style="padding:5px 6px;white-space:nowrap;"><span style="background:${style.bg};color:${style.color};border-radius:99px;padding:2px 8px;font-weight:600;font-size:11px;">${style.icon} ${_escHtml(r.verdict)}</span></td>` +
+      `<td style="padding:5px 6px;color:#475569;">${_escHtml(r.summary)}${_escHtml(dogNote)}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  async function _checkBrands() {
+    const input = $("#brand-check-input");
+    const btn = $("#brand-check-btn");
+    const singleOut = $("#brand-check-result");
+    const tableWrap = $("#brand-check-table-wrap");
+    const tableBody = $("#brand-check-table-body");
+    const progress = $("#brand-check-progress");
+    const exportBtn = $("#brand-check-export-btn");
+    if (!input || !btn) return;
+
+    const brands = _parseBrands(input.value);
+    if (!brands.length) { showToast("Enter at least one brand.", "warning"); return; }
+
+    const params = _brandCheckParams();
+    _brandCheckState.cancel = false;
+    _brandCheckState.results = [];
+
+    singleOut?.classList.add("hidden");
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.add("hidden");
+
+    const isBulk = brands.length > 1;
+    if (isBulk) {
+      tableWrap?.classList.remove("hidden");
+      progress?.classList.remove("hidden");
+      if (progress) progress.textContent = `0 / ${brands.length} checked…`;
+      btn.textContent = "Cancel";
+      btn.onclick = () => { _brandCheckState.cancel = true; };
+    } else {
+      btn.disabled = true;
+      btn.textContent = "Checking…";
+    }
+
+    let done = 0;
+    let idx = 0;
+    const CONCURRENCY = 2;
+
+    async function worker() {
+      while (idx < brands.length) {
+        if (_brandCheckState.cancel) return;
+        const brand = brands[idx++];
+        let r;
+        try {
+          r = await api("/api/eligibility/check-brand", { method: "POST", body: { brand, ...params } });
+        } catch (e) {
+          r = { brand, verdict: "ERROR", summary: e.message, total_asins_in_catalog: 0, checked: [], dog_skipped: 0 };
+        }
+        _brandCheckState.results.push(r);
+        if (isBulk) _appendBrandRow(r); else _renderSingleBrandResult(r);
+        done++;
+        if (progress) progress.textContent = `${done} / ${brands.length} checked…`;
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, brands.length) }, worker));
+
+    if (isBulk && progress) {
+      progress.textContent = _brandCheckState.cancel
+        ? `Cancelled — ${done} / ${brands.length} checked.`
+        : `Done — ${done} / ${brands.length} checked.`;
+    }
+    if (isBulk) exportBtn?.classList.remove("hidden");
+    btn.disabled = false;
+    btn.textContent = "Check";
+    btn.onclick = _checkBrands;
+  }
+  // NOTE: this button's handler is reassigned at runtime (Cancel mid-run, back to
+  // Check when done) via `btn.onclick = ...`, not addEventListener -- an
+  // addEventListener registered here in ADDITION to those reassignments would
+  // fire alongside them on every click instead of being replaced by them. That
+  // was the cause of a real bug: a second click during a bulk run (meant as
+  // Cancel) also re-triggered a fresh _checkBrands() call through the old
+  // addEventListener, whose newly-reset _brandCheckState.cancel got flipped
+  // back to true moments later by that very same click's onclick handler --
+  // so every run silently stopped after exactly CONCURRENCY (2) brands.
+  const _brandCheckBtn = $("#brand-check-btn");
+  if (_brandCheckBtn) _brandCheckBtn.onclick = _checkBrands;
+  $("#brand-check-input")?.addEventListener("keydown", function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") _checkBrands();
+  });
+
+  $("#brand-check-export-btn")?.addEventListener("click", function() {
+    const rows = _brandCheckState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["brand", "verdict", "summary", "total_asins_on_amazon", "checked", "dog_skipped"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push([r.brand, r.verdict, r.summary, r.total_asins_in_catalog || 0,
+                  r.checked.length, r.dog_skipped || 0].map(_q).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "brand_check.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
   async function _startToolsRun() {
     const input = $("#tools-asin-input");
     if (!input) return;
@@ -7527,15 +7787,17 @@
 
     const wantElig = $("#tools-opt-elig")?.checked ?? true;
     const wantSF   = $("#tools-opt-sf")?.checked ?? true;
-    if (!wantElig && !wantSF) { showToast("Select at least one tool to run.", "warning"); return; }
+    const wantGen  = $("#tools-opt-generic")?.checked ?? false;
+    if (!wantElig && !wantSF && !wantGen) { showToast("Select at least one tool to run.", "warning"); return; }
 
     // Reset state
     const t = state.tools;
     clearTimeout(t.poll); t.poll = null;
-    t.eligJobId = null; t.sfJobId = null;
-    t.eligResults = []; t.sfResults = [];
-    t.eligDone = false; t.sfDone = false;
-    t.options = { eligibility: wantElig, storage: wantSF };
+    t.eligJobId = null; t.sfJobId = null; t.genJobId = null;
+    t.eligResults = []; t.sfResults = []; t.genResults = [];
+    t.eligDone = false; t.sfDone = false; t.genDone = false;
+    t.eligFails = 0; t.sfFails = 0; t.genFails = 0;
+    t.options = { eligibility: wantElig, storage: wantSF, generic: wantGen };
 
     // Reset UI
     const btn = $("#tools-run-btn");
@@ -7547,8 +7809,10 @@
 
     const eligProg = $("#tools-elig-progress");
     const sfProg   = $("#tools-sf-progress");
+    const genProg  = $("#tools-generic-progress");
     if (eligProg) eligProg.classList.toggle("hidden", !wantElig);
     if (sfProg)   sfProg.classList.toggle("hidden", !wantSF);
+    if (genProg)  genProg.classList.toggle("hidden", !wantGen);
     _toolsResetBars();
 
     // Start jobs
@@ -7571,20 +7835,30 @@
     } else {
       t.sfDone = true;
     }
+    if (wantGen) {
+      starts.push(
+        api("/api/generic-check/check", { method: "POST", body: { asins } })
+          .then(j => { t.genJobId = j.job_id; })
+          .catch(e => { showToast("Generic check start failed: " + e.message, "error"); t.genDone = true; })
+      );
+    } else {
+      t.genDone = true;
+    }
 
     await Promise.all(starts);
     t.poll = setTimeout(_toolsPoll, 800);
   }
 
   function _toolsResetBars() {
-    ["#tools-elig-bar","#tools-sf-bar"].forEach(sel => {
+    ["#tools-elig-bar","#tools-sf-bar","#tools-generic-bar"].forEach(sel => {
       const el = $(sel); if (el) el.style.width = "0%";
     });
-    ["#tools-elig-label","#tools-sf-label"].forEach(sel => {
+    ["#tools-elig-label","#tools-sf-label","#tools-generic-label"].forEach(sel => {
       const el = $(sel); if (el) el.textContent = "";
     });
-    [["tp-elig-can","tp-elig-appr","tp-elig-rest","tp-elig-err"],
-     ["tp-sf-ok","tp-sf-nodims","tp-sf-err"]].flat().forEach(id => {
+    [["tp-elig-can","tp-elig-appr","tp-elig-rest","tp-elig-dog","tp-elig-err"],
+     ["tp-sf-ok","tp-sf-nodims","tp-sf-err"],
+     ["tp-gen-generic","tp-gen-not","tp-gen-dog","tp-gen-err"]].flat().forEach(id => {
       const el = document.getElementById(id); if (el) el.textContent = "0";
     });
   }
@@ -7596,6 +7870,7 @@
     if (!t.eligDone && t.eligJobId) {
       try {
         const j = await api(`/api/eligibility/jobs/${t.eligJobId}`);
+        t.eligFails = 0;
         const pct = Math.round((j.done / (j.total || 1)) * 100);
         const bar = $("#tools-elig-bar"); if (bar) bar.style.width = pct + "%";
         const lbl = $("#tools-elig-label");
@@ -7609,13 +7884,22 @@
             ? `✓ ${(j.total||0).toLocaleString()} done`
             : `⚠ ${j.done} / ${j.total} (error)`;
         }
-      } catch { t.eligDone = true; }
+      } catch (e) {
+        t.eligFails++;
+        if (t.eligFails >= _TOOLS_POLL_MAX_FAILS) {
+          t.eligDone = true;
+          const lbl = $("#tools-elig-label");
+          if (lbl) lbl.textContent = "⚠ lost connection (" + (e && e.message || "error") + ")";
+          showToast("eligibility progress: lost connection after " + _TOOLS_POLL_MAX_FAILS + " retries -- the job may still be running server-side.", "error");
+        }
+      }
     }
 
     // Poll storage fees
     if (!t.sfDone && t.sfJobId) {
       try {
         const j = await api(`/api/storage-fees/jobs/${t.sfJobId}`);
+        t.sfFails = 0;
         const pct = Math.round((j.done / (j.total || 1)) * 100);
         const bar = $("#tools-sf-bar"); if (bar) bar.style.width = pct + "%";
         const lbl = $("#tools-sf-label");
@@ -7629,11 +7913,48 @@
             ? `✓ ${(j.total||0).toLocaleString()} done`
             : `⚠ ${j.done} / ${j.total} (error)`;
         }
-      } catch { t.sfDone = true; }
+      } catch (e) {
+        t.sfFails++;
+        if (t.sfFails >= _TOOLS_POLL_MAX_FAILS) {
+          t.sfDone = true;
+          const lbl = $("#tools-sf-label");
+          if (lbl) lbl.textContent = "⚠ lost connection (" + (e && e.message || "error") + ")";
+          showToast("storage-fees progress: lost connection after " + _TOOLS_POLL_MAX_FAILS + " retries -- the job may still be running server-side.", "error");
+        }
+      }
     }
 
-    // Both finished?
-    if (t.eligDone && t.sfDone) {
+    // Poll generic check
+    if (!t.genDone && t.genJobId) {
+      try {
+        const j = await api(`/api/generic-check/jobs/${t.genJobId}`);
+        t.genFails = 0;
+        const pct = Math.round((j.done / (j.total || 1)) * 100);
+        const bar = $("#tools-generic-bar"); if (bar) bar.style.width = pct + "%";
+        const lbl = $("#tools-generic-label");
+        if (lbl) lbl.textContent = `${j.done.toLocaleString()} / ${(j.total||0).toLocaleString()}`;
+        t.genResults = j.results || [];
+        _toolsUpdateGenStats(t.genResults);
+        if (j.status === "complete" || j.status === "error") {
+          t.genDone = true;
+          if (bar) bar.style.width = "100%";
+          if (lbl) lbl.textContent = j.status === "complete"
+            ? `✓ ${(j.total||0).toLocaleString()} done`
+            : `⚠ ${j.done} / ${j.total} (error)`;
+        }
+      } catch (e) {
+        t.genFails++;
+        if (t.genFails >= _TOOLS_POLL_MAX_FAILS) {
+          t.genDone = true;
+          const lbl = $("#tools-generic-label");
+          if (lbl) lbl.textContent = "⚠ lost connection (" + (e && e.message || "error") + ")";
+          showToast("generic-check progress: lost connection after " + _TOOLS_POLL_MAX_FAILS + " retries -- the job may still be running server-side.", "error");
+        }
+      }
+    }
+
+    // All finished?
+    if (t.eligDone && t.sfDone && t.genDone) {
       clearTimeout(t.poll); t.poll = null;
       const btn = $("#tools-run-btn");
       if (btn) { btn.disabled = false; btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg> Run`; }
@@ -7645,16 +7966,16 @@
   }
 
   function _toolsUpdateEligStats(results) {
-    let can = 0, appr = 0, rest = 0, err = 0;
+    let can = 0, appr = 0, rest = 0, dog = 0, err = 0;
     for (const r of results) {
       if (r.status === "CAN_SELL") can++;
       else if (r.status === "NEEDS_APPROVAL") appr++;
-      else if (r.status === "RESTRICTED") rest++;
+      else if (r.status === "RESTRICTED") { if (r.dog) dog++; else rest++; }
       else err++;
     }
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
     set("tp-elig-can", can); set("tp-elig-appr", appr);
-    set("tp-elig-rest", rest); set("tp-elig-err", err);
+    set("tp-elig-rest", rest); set("tp-elig-dog", dog); set("tp-elig-err", err);
   }
 
   function _toolsUpdateSFStats(results) {
@@ -7668,6 +7989,19 @@
     set("tp-sf-ok", ok); set("tp-sf-nodims", noDims); set("tp-sf-err", err);
   }
 
+  function _toolsUpdateGenStats(results) {
+    let gen = 0, not = 0, dog = 0, err = 0;
+    for (const r of results) {
+      if (r.status === "GENERIC") gen++;
+      else if (r.status === "NOT_GENERIC") not++;
+      else if (r.status === "DOG") dog++;
+      else err++;
+    }
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set("tp-gen-generic", gen); set("tp-gen-not", not);
+    set("tp-gen-dog", dog); set("tp-gen-err", err);
+  }
+
   // ── Export (client-side CSV generation) ───────────────────────────────────
   $("#tools-export-btn")?.addEventListener("click", _toolsExport);
 
@@ -7675,10 +8009,13 @@
     const t = state.tools;
     const wantElig = t.options.eligibility;
     const wantSF   = t.options.storage;
+    const wantGen  = t.options.generic;
 
     // Build lookup maps
     const eligMap = {};
-    for (const r of t.eligResults) eligMap[r.asin] = r.status || "";
+    for (const r of t.eligResults) {
+      eligMap[r.asin] = (r.status === "RESTRICTED" && r.dog) ? "RESTRICTED (DOG)" : (r.status || "");
+    }
 
     const sfMap = {};
     for (const r of t.sfResults) {
@@ -7688,10 +8025,14 @@
       };
     }
 
+    const GEN_LABEL = { GENERIC: "Generic", NOT_GENERIC: "Not generic", DOG: "DOG (delisted)", ERROR: "Error" };
+    const genMap = {};
+    for (const r of t.genResults) genMap[r.asin] = GEN_LABEL[r.status] || (r.status || "");
+
     // Collect all ASINs (preserve insertion order, dedup)
     const seen = new Set();
     const allAsins = [];
-    for (const r of [...t.eligResults, ...t.sfResults]) {
+    for (const r of [...t.eligResults, ...t.sfResults, ...t.genResults]) {
       if (!seen.has(r.asin)) { seen.add(r.asin); allAsins.push(r.asin); }
     }
 
@@ -7699,6 +8040,7 @@
     const headers = ["asin"];
     if (wantElig) headers.push("eligibility_status");
     if (wantSF)   { headers.push("fee_offpeak_per_unit_mo"); headers.push("fee_peak_q4_per_unit_mo"); }
+    if (wantGen)  headers.push("generic_status");
 
     // Data rows
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -7710,6 +8052,7 @@
         cols.push(_q(sf.offpeak ?? ""));
         cols.push(_q(sf.peak ?? ""));
       }
+      if (wantGen) cols.push(_q(genMap[asin] ?? ""));
       return cols.join(",");
     });
 

@@ -16,7 +16,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, library, pairs, scans, settings, storage_fees, verify
+from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, generic_check, health_check, library, pairs, scans, settings, storage_fees, vendor_offers, verify
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -54,7 +54,19 @@ async def _lifespan(app: FastAPI):
             threading.Thread(target=_warm, daemon=True).start()
     except Exception:
         pass
+    # Weekly catalog health check (Eligibility + DOG over the Pair Library),
+    # scheduled in-process for Friday 19:00 America/New_York.
+    try:
+        from services import health_check
+        health_check.start_scheduler()
+    except Exception:
+        pass
     yield
+    try:
+        from services import health_check
+        health_check.stop_scheduler()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -110,8 +122,11 @@ app.include_router(settings.router, prefix="/api", tags=["settings"])
 app.include_router(analytics.router,       prefix="/api", tags=["analytics"])
 app.include_router(brand_analytics.router, prefix="/api", tags=["brand-analytics"])
 app.include_router(eligibility.router,    prefix="/api", tags=["eligibility"])
+app.include_router(generic_check.router,  prefix="/api", tags=["generic-check"])
+app.include_router(vendor_offers.router,  prefix="/api", tags=["vendor-offers"])
 app.include_router(storage_fees.router,   prefix="/api", tags=["storage-fees"])
 app.include_router(create_po.router,      prefix="/api", tags=["create-po"])
+app.include_router(health_check.router,   prefix="/api", tags=["health-check"])
 
 
 @app.get("/api/health")

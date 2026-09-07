@@ -52,6 +52,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
         ROI &amp; Cost
       </div>
+      <div class="nav-item" data-view="vendor-offers">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg>
+        Vendor Offers
+      </div>
       <div class="nav-item" data-view="brand-analytics">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         Brand Analytics
@@ -98,6 +102,12 @@
 
       <!-- ===== View: Create PO (rendered by /static/create_po.js) ===== -->
       <div id="view-create-po" class="hidden"></div>
+
+      <!-- ===== View: Vendor Offers (Price Desk) — embedded self-contained page ===== -->
+      <div id="view-vendor-offers" class="hidden" style="height:100%;">
+        <iframe id="vendor-offers-frame" title="Vendor Offers — Price Desk"
+                style="width:100%;height:100%;min-height:80vh;border:0;display:block;"></iframe>
+      </div>
 
       <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
@@ -1373,7 +1383,7 @@
         <!-- Step 3: Configure -->
         <div class="wizard-step hidden" data-bawiz-panel="3">
           <div class="wizard-step-title">Configure the search</div>
-          <div class="wizard-step-hint">Set BSR limits and how many result pages to fetch per brand.</div>
+          <div class="wizard-step-hint">Set the sales-rank (BSR) window for the search.</div>
           <div class="flex items-center gap-2 mb-4 mt-1">
             <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Product type</label>
             <button id="ba-wiz-mode-cpg" class="vetting-mode-btn active" data-bamode="cpg" style="padding:5px 16px;font-size:13px;font-weight:600;border-radius:6px;border:2px solid #16a34a;background:#16a34a;color:#fff;cursor:pointer;">CPG</button>
@@ -1392,11 +1402,17 @@
             <input id="ba-wiz-max-rank" type="number" min="0" step="10000" class="abbr-input" style="width:150px;" placeholder="0 = no limit" />
             <span class="text-xs" style="color:#94a3b8;">ASINs above this rank → excluded</span>
           </div>
-          <div class="flex items-center gap-3 mb-4">
-            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Pages / brand</label>
-            <input id="ba-wiz-pages" type="number" min="0" value="10" class="abbr-input" style="width:90px;" />
-            <span class="text-xs" style="color:#94a3b8;">Each page = 20 results. 0 = no limit (all pages).</span>
+          <div class="flex items-center gap-3 mb-3">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Min units / mo</label>
+            <input id="ba-wiz-min-sold" type="number" min="0" step="50" class="abbr-input" style="width:150px;" placeholder="0 = no limit" />
+            <span class="text-xs" style="color:#94a3b8;">Est. units sold/mo below this → excluded</span>
           </div>
+          <div class="flex items-center gap-3 mb-3">
+            <label class="abbr-label" style="margin-bottom:0;white-space:nowrap;">Max units / mo</label>
+            <input id="ba-wiz-max-sold" type="number" min="0" step="50" class="abbr-input" style="width:150px;" placeholder="0 = no limit" />
+            <span class="text-xs" style="color:#94a3b8;">Est. units sold/mo above this → excluded</span>
+          </div>
+          <div class="text-xs mb-4" style="color:#94a3b8;">BSR and units-sold/mo are filtered directly in Keepa when the ASINs are found — no extra tokens. Units/mo uses Amazon's "bought in past month" figure, so it excludes products with no published figure. Leave at 0 to include everything.</div>
           <div id="ba-wiz-cache-notice" class="hidden px-3 py-2 rounded text-xs" style="background:#fef9c3;border:1px solid #fde68a;color:#92400e;"></div>
         </div>
 
@@ -1567,6 +1583,13 @@
             <div style="font-size:11px;color:#94a3b8;">FBA monthly fee per unit — non-peak &amp; Q4 peak columns.</div>
           </div>
         </label>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-generic-wrap">
+          <input type="checkbox" id="tools-opt-generic" style="accent-color:#8b5cf6;width:15px;height:15px;" />
+          <div>
+            <div style="font-size:13px;font-weight:600;color:#1e293b;">Generic Check</div>
+            <div style="font-size:11px;color:#94a3b8;">Is each ASIN Generic (SB85) or a DOG (delisted) ASIN? Validation-only — no listing is created.</div>
+          </div>
+        </label>
       </div>
 
       <!-- Run button -->
@@ -1592,6 +1615,7 @@
             <span style="font-size:11px;background:#f0fdf4;color:#16a34a;border-radius:99px;padding:2px 8px;font-weight:600;">✓ <span id="tp-elig-can">0</span> can sell</span>
             <span style="font-size:11px;background:#fffbeb;color:#d97706;border-radius:99px;padding:2px 8px;font-weight:600;">⚠ <span id="tp-elig-appr">0</span> needs approval</span>
             <span style="font-size:11px;background:#fef2f2;color:#dc2626;border-radius:99px;padding:2px 8px;font-weight:600;">✗ <span id="tp-elig-rest">0</span> restricted</span>
+            <span style="font-size:11px;background:#f8fafc;color:#64748b;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-elig-dog">0</span> DOG</span>
             <span style="font-size:11px;background:#f8fafc;color:#94a3b8;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-elig-err">0</span> error</span>
           </div>
         </div>
@@ -1613,7 +1637,89 @@
           </div>
         </div>
 
+        <!-- Generic check progress row -->
+        <div id="tools-generic-progress" class="hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+            <span style="font-size:12px;font-weight:600;color:#8b5cf6;">Generic Check</span>
+            <span id="tools-generic-label" style="font-size:11px;color:#94a3b8;"></span>
+          </div>
+          <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+            <div id="tools-generic-bar" style="height:100%;background:linear-gradient(90deg,#8b5cf6,#a78bfa);border-radius:99px;width:0%;transition:width 0.4s ease;"></div>
+          </div>
+          <div id="tools-generic-stats" style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+            <span style="font-size:11px;background:#f5f3ff;color:#7c3aed;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-gen-generic">0</span> generic</span>
+            <span style="font-size:11px;background:#f0fdf4;color:#16a34a;border-radius:99px;padding:2px 8px;font-weight:600;">✓ <span id="tp-gen-not">0</span> not generic</span>
+            <span style="font-size:11px;background:#f8fafc;color:#64748b;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-gen-dog">0</span> DOG</span>
+            <span style="font-size:11px;background:#fef2f2;color:#dc2626;border-radius:99px;padding:2px 8px;font-weight:600;"><span id="tp-gen-err">0</span> error</span>
+          </div>
+        </div>
+
       </div><!-- /tools-progress-section -->
+
+      <!-- Check Brand (brand-wide gating) -->
+      <div style="border-top:1px solid #e2e8f0;padding-top:16px;">
+        <div class="abbr-section-title" style="margin-bottom:4px;">Check Brand (gating)</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+          Are we gated on a brand across the board? Samples a few of each brand's
+          live ASINs straight from Amazon's own catalog instead of checking ASINs
+          one at a time — a brand block ("not approved to list this brand")
+          applies uniformly. One brand per line, or upload a .txt/.csv.
+        </div>
+
+        <textarea id="brand-check-input" rows="3"
+          placeholder="ColorStay&#10;Babor&#10;Bodum&#10;… one brand per line"
+          style="width:100%;box-sizing:border-box;resize:vertical;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+          <label for="brand-check-file" class="btn btn-secondary text-xs" style="cursor:pointer;">
+            Upload list…
+          </label>
+          <input id="brand-check-file" type="file" accept=".txt,.csv" class="hidden" />
+          <span id="brand-check-count" style="font-size:11px;color:#94a3b8;"></span>
+        </div>
+
+        <!-- Sample-size settings -->
+        <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#94a3b8;">Check:</span>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#1e293b;cursor:pointer;">
+            <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked style="accent-color:#6366f1;" />
+            a fixed number
+          </label>
+          <input id="brand-check-count-val" type="number" min="1" max="300" value="8"
+            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#1e293b;cursor:pointer;">
+            <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" style="accent-color:#6366f1;" />
+            a %
+          </label>
+          <input id="brand-check-pct-val" type="number" min="1" max="100" value="10" disabled
+            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;background:#f8fafc;" />
+          <span style="font-size:11px;color:#94a3b8;">of each brand's live ASINs (capped at 300).</span>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:10px;">
+          <button id="brand-check-btn" class="btn btn-secondary whitespace-nowrap" style="flex:1;justify-content:center;">Check</button>
+          <button id="brand-check-export-btn" class="btn btn-secondary text-xs hidden" style="white-space:nowrap;">Download CSV</button>
+        </div>
+
+        <div id="brand-check-progress" class="hidden" style="font-size:11px;color:#94a3b8;margin-top:8px;"></div>
+
+        <!-- Single-brand result (kept for the 1-brand case) -->
+        <div id="brand-check-result" class="hidden" style="margin-top:10px;font-size:12px;line-height:1.5;padding:10px 12px;border-radius:8px;"></div>
+
+        <!-- Bulk results table (2+ brands) -->
+        <div id="brand-check-table-wrap" class="hidden" style="margin-top:10px;overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
+                <th style="padding:4px 6px;">Brand</th>
+                <th style="padding:4px 6px;">Verdict</th>
+                <th style="padding:4px 6px;">Detail</th>
+              </tr>
+            </thead>
+            <tbody id="brand-check-table-body"></tbody>
+          </table>
+        </div>
+      </div>
 
       <!-- Export button (shown when done) -->
       <button id="tools-export-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;">
@@ -1753,6 +1859,19 @@
       </div>
       <button id="settings-save" class="btn btn-primary w-full">Save thresholds</button>
       <div id="settings-feedback" class="text-xs" style="color: var(--green-500);"></div>
+
+      <div style="border-top:1px solid #e2e6ec; margin-top:10px; padding-top:12px">
+        <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Prep &amp; Out fee</label>
+        <div class="flex items-center gap-2 mt-1">
+          <span class="text-xs" style="color:#6b7480;">$</span>
+          <input type="number" id="prep-out-fee" min="0" step="0.01"
+                 class="w-28 text-sm rounded border px-3 py-2" style="border-color: #e2e6ec;" />
+          <span class="text-xs" style="color:#6b7480;">/ unit</span>
+        </div>
+        <div class="text-xs mt-1" style="color:#6b7480;">Per-unit prep &amp; outbound cost used by the vendor Offer Analytics export.</div>
+        <button id="prep-out-save" class="btn btn-primary w-full" style="margin-top:8px">Save fee</button>
+        <div id="prep-out-feedback" class="text-xs" style="color: var(--green-500);"></div>
+      </div>
     </div>
   </div>
 
@@ -2572,7 +2691,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=43"></script>
-  <script src="/static/create_po.js?v=26"></script>
+  <script src="/static/app.js?v=48"></script>
+  <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

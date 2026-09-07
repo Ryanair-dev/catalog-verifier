@@ -23,8 +23,10 @@ Runs:
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,7 +37,10 @@ from openpyxl.styles import Font
 from pydantic import BaseModel
 
 from services import database
+from services import keepa
 from services.ai_recheck import make_client
+
+log = logging.getLogger(__name__)
 from services.safety import clamp_int, safe_spreadsheet_row
 from services.analytics.brand_discovery import discover_brands
 from services.analytics.brand_runner import (
@@ -154,32 +159,77 @@ class DiscoverBody(BaseModel):
     entity_type: str = "brand"
 
 
+def _merge_dedup(*lists) -> list[str]:
+    """Merge brand-name lists preserving order, deduping case-insensitively."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for lst in lists:
+        for v in (lst or []):
+            v = str(v).strip()
+            k = v.lower()
+            if v and k not in seen:
+                seen.add(k)
+                out.append(v)
+    return out
+
+
 @router.post("/brand-analytics/discover")
 async def discover(body: DiscoverBody) -> dict:
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
 
-    # Check library cache first
+    # Base sub-brands: from the library cache if present, else AI discovery.
     with _connect() as conn:
         cached = conn.execute(
             "SELECT * FROM brand_library WHERE LOWER(name)=LOWER(?)", (name,)
         ).fetchone()
 
     if cached:
-        d = dict(cached)
-        d["sub_brands"] = json.loads(d.get("sub_brands") or "[]")
-        d["aliases"] = json.loads(d.get("aliases") or "[]")
-        return {"cached": True, "result": d}
+        result = dict(cached)
+        result["sub_brands"] = json.loads(result.get("sub_brands") or "[]")
+        result["aliases"] = json.loads(result.get("aliases") or "[]")
+        was_cached = True
+    else:
+        result = {}
+        try:
+            result = discover_brands(name, body.entity_type, make_client()) or {}
+        except Exception as exc:  # noqa: BLE001 — AI failure must not block the Keepa pass
+            log.warning("[discover] AI discovery failed for %r: %s", name, exc)
+        was_cached = False
 
-    client = make_client()
-    result = discover_brands(name, body.entity_type, client)
+    entity_type = result.get("entity_type") or body.entity_type
+    ai_subs = list(result.get("sub_brands") or [])
+    ai_alias = list(result.get("aliases") or [])
 
-    # Auto-save to library
+    # Data-driven pass: the AI guesses sub-brands from world knowledge and misses house
+    # product lines (e.g. it never lists 'Flowflex' for ACON). Keepa surfaces the REAL
+    # ones by reading the brand field of products whose MANUFACTURER matches the seed —
+    # returning verified brands with their exact product counts.
+    if keepa.is_configured():
+        try:
+            kh = await asyncio.to_thread(keepa.discover_sub_brands, name, ai_subs + ai_alias)
+            real = [b["value"] for b in kh.get("brands", [])]   # already sorted by count desc
+            result["sub_brands"] = _merge_dedup(real, ai_subs)  # verified first, then AI-only
+            result["keepa"] = {
+                "counts": {b["value"]: b["count"] for b in kh.get("brands", [])},
+                "tokens_spent": kh.get("tokens_spent"),
+                "tokens_left": kh.get("tokens_left"),
+            }
+            if real:
+                result.pop("error", None)   # Keepa delivered even if the AI errored
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[discover] Keepa sub-brand pass failed for %r: %s", name, exc)
+            result["sub_brands"] = _merge_dedup(ai_subs)
+    else:
+        result["sub_brands"] = _merge_dedup(ai_subs)
+
+    result["name"] = name
+    result["entity_type"] = entity_type
+    result["aliases"] = ai_alias
+
+    # Persist the merged result to the library (so the verified brands recall instantly).
     if result and not result.get("error"):
-        sub_brands_json = json.dumps(result.get("sub_brands") or [])
-        aliases_json    = json.dumps(result.get("aliases") or [])
-        entity_type     = result.get("entity_type") or body.entity_type
         with database._LOCK, _connect() as conn:
             conn.execute(
                 """
@@ -192,10 +242,11 @@ async def discover(body: DiscoverBody) -> dict:
                   discovered_by='ai',
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (entity_type, name, sub_brands_json, aliases_json),
+                (entity_type, name, json.dumps(result.get("sub_brands") or []),
+                 json.dumps(ai_alias)),
             )
 
-    return {"cached": False, "result": result}
+    return {"cached": was_cached, "result": result}
 
 
 # --------------------------------------------------------------------------- #
@@ -208,6 +259,8 @@ class CreateRunBody(BaseModel):
     search_terms: list[str]
     min_rank: int = 0
     max_rank: int = 0
+    min_sold: int = 0
+    max_sold: int = 0
     pages_per_brand: int = 10
     library_id: int | None = None
     force_refresh: bool = False
@@ -276,13 +329,14 @@ async def create_run(body: CreateRunBody) -> dict:
             """
             INSERT INTO brand_analytics_runs
               (name, search_type, search_terms, library_id,
-               min_rank, max_rank, pages_per_brand, vetting_mode, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+               min_rank, max_rank, min_sold, max_sold, pages_per_brand, vetting_mode, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
             """,
             (
                 name, search_type, terms_json,
                 body.library_id,
-                int(body.min_rank), int(body.max_rank), pages_per_brand,
+                int(body.min_rank), int(body.max_rank),
+                max(0, int(body.min_sold)), max(0, int(body.max_sold)), pages_per_brand,
                 vetting_mode,
             ),
         )

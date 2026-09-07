@@ -13,12 +13,16 @@ import threading
 import time
 import uuid
 
+import requests
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.spapi import get_catalog_api, sp_api_configured
-from services.storage_fees import extract_dimensions, get_size_tier, calc_storage_fee
+from services.storage_fees import (
+    extract_dimensions, get_size_tier, calc_storage_fee,
+    storage_cache_get, storage_cache_put,
+)
 from services.safety import safe_spreadsheet_value
 
 router = APIRouter()
@@ -93,6 +97,21 @@ async def start_check(body: CheckBody) -> dict:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         lock = threading.Lock()
 
+        # Serve cached storage results instantly (60-day TTL); only the ASINs not
+        # in the cache hit getCatalogItem. This is what makes a repeat lookup fast.
+        cached = storage_cache_get(asins)
+        for asin in asins:
+            hit = cached.get(asin)
+            if hit is not None:
+                hit = {**hit, "from_cache": True}
+                with lock:
+                    job["results"].append(hit)
+                    job["done"] += 1
+        to_fetch = [a for a in asins if a not in cached]
+        if not to_fetch:
+            job["status"] = "complete"
+            return
+
         try:
             api = get_catalog_api()
         except Exception as exc:
@@ -123,6 +142,7 @@ async def start_check(body: CheckBody) -> dict:
                 return {
                     "asin":       asin,
                     "title":      title,
+                    "dog":        False,          # in the catalog = live listing
                     "length_in":  dims["length_in"],
                     "width_in":   dims["width_in"],
                     "height_in":  dims["height_in"],
@@ -132,10 +152,29 @@ async def start_check(body: CheckBody) -> dict:
                     "fee_peak":    fee_peak,
                     "status":     "ok" if tier else "no_dimensions",
                 }
+            except requests.HTTPError as exc:
+                # 404 = not in the Amazon catalog → DOG (dead/delisted). The dims
+                # call already tells us this, so DOG is captured for free here — no
+                # need for a separate DOG lookup.
+                if getattr(exc.response, "status_code", None) == 404:
+                    return {
+                        "asin": asin, "title": "", "dog": True, "status": "dog",
+                        "length_in": None, "width_in": None, "height_in": None,
+                        "weight_lb": None, "size_tier": None,
+                        "fee_offpeak": None, "fee_peak": None,
+                    }
+                return {
+                    "asin": asin, "title": "", "dog": None, "status": "error",
+                    "error": str(exc),
+                    "length_in": None, "width_in": None, "height_in": None,
+                    "weight_lb": None, "size_tier": None,
+                    "fee_offpeak": None, "fee_peak": None,
+                }
             except Exception as exc:
                 return {
                     "asin":   asin,
                     "title":  "",
+                    "dog":    None,
                     "status": "error",
                     "error":  str(exc),
                     "length_in": None, "width_in": None, "height_in": None,
@@ -145,13 +184,16 @@ async def start_check(body: CheckBody) -> dict:
 
         try:
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            fresh: list[dict] = []
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(fetch_one, asin): asin for asin in asins}
+                futures = {pool.submit(fetch_one, asin): asin for asin in to_fetch}
                 for future in as_completed(futures):
                     result = future.result()
                     with lock:
                         job["results"].append(result)
                         job["done"] += 1
+                        fresh.append(result)
+            storage_cache_put(fresh)     # cache ok/no_dimensions/dog (never errors)
             job["status"] = "complete"
         except Exception as exc:
             job["status"] = "error"
@@ -187,11 +229,13 @@ async def export_job(job_id: str, mode: str = "offpeak") -> StreamingResponse:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["asin", fee_col])
+    writer.writerow(["asin", "dog", fee_col])
     for r in job["results"]:
         fee_val = r.get("fee_peak") if use_peak else r.get("fee_offpeak")
+        dog = r.get("dog")
         writer.writerow([
             safe_spreadsheet_value(r["asin"]),
+            "DOG" if dog is True else ("" if dog is None else "live"),
             "" if fee_val is None else safe_spreadsheet_value(fee_val),
         ])
 
