@@ -17,3 +17,10 @@ azure-identity>=1.17
 # Vendor Offer Analytics (Price Desk) — vendor catalog parsers
 pandas>=2.0
 xlrd>=2.0          # BILO's .xls (BIFF8) files
+# services/health_check.py uses zoneinfo.ZoneInfo("America/New_York") at import
+# time for its weekly scheduler. Windows (and some minimal Linux images) ship no
+# system IANA tz database, so zoneinfo needs this PyPI package as its data
+# source or it raises "No time zone found with key America/New_York" on import,
+# crashing the whole app at startup. It only worked without this locally by
+# accident (pulled in transitively by another package) -- declare it directly.
+tzdata>=2024.1
