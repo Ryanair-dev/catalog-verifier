@@ -1,0 +1,1413 @@
+<title>Price Desk</title>
+<style>
+/* This file is deliberately pure ASCII. Punctuation is written as an HTML
+   entity (&middot; &mdash; &hellip;) because we don't control the wrapping
+   <head> and so can't count on a charset declaration -- without one every
+   such character renders as mojibake. Product names in the inlined data are
+   safe already: json.dumps escapes them to \uXXXX. */
+
+/* -- tokens -------------------------------------------------------------
+   Light palette lives on bare :root. Dark redefines ONLY tokens, guarded so
+   an explicit light choice beats a dark OS, and again on [data-theme="dark"]
+   so the toggle wins the other way. No component ever declares a colour
+   literal -- everything reads through a token. */
+/* Retheme to match the catalog-verifier app: grey-50 window, white cards, Inter,
+   the app's purple primary + teal pop, flat (no shadows), light-only. The whole
+   page is token-driven, so remapping these values restyles everything. */
+:root {
+  --paper:      #f7f8fa;   /* app grey-50 window */
+  --band:       #f2f3f7;   /* subtle zebra stripe */
+  --card:       #ffffff;
+  --rule:       #e2e6ec;   /* app grey-200 border */
+  --rule-soft:  #eef0f4;   /* app grey-100 */
+  --ink:        #37404c;   /* app grey-700 text */
+  --ink-soft:   #6b7480;   /* app grey-500 */
+  --ink-faint:  #9aa1ab;
+  --accent:     #4d37a1;   /* app purple-700 — structure/primary */
+  --accent-soft:#e6e0fa;   /* app purple-100 */
+  --stamp:      #0f8a8d;   /* app teal-500 — cheapest / savings pop */
+  --stamp-soft: #ecfafa;   /* app teal-50 */
+  --stale:      #d47818;   /* app orange-500 */
+  --stale-soft: #fff1e0;   /* app orange-50 */
+  --v0: #ec4899;  /* BILO         — pink */
+  --v1: #2563eb;  /* Cencora      — blue */
+  --v2: #f59e0b;  /* Diamond      — amber */
+  --v3: #1f9d55;  /* Quality King — green */
+  --shadow: none;          /* app is flat */
+  --drawer-shadow: -18px 0 60px -20px rgba(14,42,71,.22);
+
+  --display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --body:    'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono:    ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --row-h: 66px;
+}
+#themeBtn { display: none; }   /* app is light-only */
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);          /* explicit: a transparent body borrows the host ground */
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+.lbl {
+  font-family: var(--display);
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  font-weight: 600;
+}
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--stamp); outline-offset: 2px; }
+
+/* -- masthead ----------------------------------------------------------- */
+.masthead {
+  border-bottom: 1px solid var(--rule);
+  background: var(--card);
+  padding: 22px clamp(16px, 3vw, 34px) 0;
+}
+.mast-top { display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap; }
+.wordmark {
+  font-family: var(--display);
+  text-transform: none;
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 800;
+  line-height: 1.08;
+  letter-spacing: -.02em;
+  margin: 0;
+  color: var(--ink);
+}
+.wordmark em {
+  font-style: normal;
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  color: var(--ink-soft);
+}
+.mast-meta { margin-left: auto; text-align: right; font-size: 11px; color: var(--ink-soft); }
+.mast-meta .lbl { font-size: 10px; display: block; color: var(--ink-faint); }
+.mast-meta .num { font-size: 14px; color: var(--ink); }
+
+.cadence {
+  display: flex; gap: 0; flex-wrap: wrap;
+  border-top: 1px solid var(--rule-soft);
+  margin-top: 18px;
+}
+.cad {
+  padding: 10px 20px 12px 14px;
+  border-right: 1px solid var(--rule-soft);
+  display: flex; flex-direction: column; gap: 1px;
+  border-left: 3px solid var(--vc);
+}
+.cad b { font-family: var(--display); text-transform: uppercase; letter-spacing: .06em; font-size: 13px; font-weight: 600; }
+.cad span { font-size: 10.5px; color: var(--ink-soft); }
+.cad .num { font-size: 11px; }
+
+/* -- stats -------------------------------------------------------------- */
+.stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+  gap: 1px; background: var(--rule-soft);
+  border-bottom: 1px solid var(--rule);
+}
+.stat { background: var(--paper); padding: 16px clamp(14px, 2.4vw, 26px) 18px; }
+.stat .lbl { font-size: 10px; color: var(--ink-faint); }
+.stat .v {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: clamp(24px, 3.1vw, 34px); line-height: 1.1; margin-top: 5px;
+  letter-spacing: -.02em;
+}
+.stat .sub { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+.stat.hero .v { color: var(--stamp); }
+
+/* -- controls ----------------------------------------------------------- */
+.controls {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--card);
+  border-bottom: 1px solid var(--rule);
+  padding: 12px clamp(14px, 2.4vw, 26px);
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  box-shadow: 0 6px 18px -18px rgba(0,0,0,.5);
+}
+.search { position: relative; flex: 1 1 250px; min-width: 200px; max-width: 380px; }
+.search input {
+  width: 100%; padding: 9px 12px 9px 30px;
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px;
+}
+.search input::placeholder { color: var(--ink-faint); }
+.search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; stroke: var(--ink-faint); fill: none; stroke-width: 2; }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 11px; font-weight: 600;
+  padding: 6px 11px; border-radius: 2px; cursor: pointer;
+  background: var(--paper); color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--vc, var(--rule));
+  transition: background .16s, color .16s, transform .16s;
+}
+.chip:hover { transform: translateY(-1px); }
+.chip[aria-pressed="true"] { background: var(--vc, var(--accent)); color: var(--card); border-color: var(--vc, var(--accent)); }
+.chip.plain { border-left-width: 1px; }
+.chip.plain[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+/* an action, not a filter -- the stamp colour marks it as the thing that does
+   something rather than the things that narrow the list */
+.chip.act {
+  border-left-width: 1px; border-color: var(--stamp); color: var(--stamp);
+  background: var(--stamp-soft);
+}
+.chip.act:hover { background: var(--stamp); color: var(--card); }
+.chip.act[disabled] { opacity: .55; cursor: progress; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px);
+  background: var(--ink); color: var(--paper);
+  font-family: var(--mono); font-size: 12.5px;
+  padding: 11px 18px; border-radius: 2px; box-shadow: var(--shadow);
+  max-width: min(560px, 92vw); z-index: 60;
+  opacity: 0; pointer-events: none; transition: opacity .22s, transform .22s;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.bad { background: var(--stamp); }
+
+.assign { border-top: 1px solid var(--rule); margin-top: 18px; padding-top: 14px; }
+.assign p { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 10px; max-width: 46ch; }
+.assign form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.assign label { display: flex; flex-direction: column; gap: 3px; }
+.assign .lbl { font-size: 9px; color: var(--ink-faint); }
+.assign input {
+  font-family: var(--mono); font-size: 13px; padding: 7px 9px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px; width: 130px;
+}
+.assign input.pack { width: 62px; }
+.assign button {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 11px; font-weight: 600; padding: 8px 13px; cursor: pointer;
+  background: var(--accent); color: var(--card);
+  border: 1px solid var(--accent); border-radius: 2px;
+}
+.assign button[disabled] { opacity: .55; cursor: progress; }
+.assign .hint { font-size: 11px; color: var(--ink-faint); margin-top: 8px; }
+
+/* -- import modal ------------------------------------------------------- */
+.modal {
+  position: fixed; z-index: 41; left: 50%; top: 50%;
+  transform: translate(-50%, -46%) scale(.985);
+  width: min(680px, 94vw); max-height: 88vh; overflow-y: auto;
+  background: var(--card); border: 2px solid var(--ink); border-radius: 3px;
+  box-shadow: 0 24px 70px -24px rgba(0,0,0,.6);
+  padding: 22px clamp(16px, 3vw, 28px) 0;
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s, transform .24s cubic-bezier(.22,1,.36,1);
+}
+.modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.m-title { font-size: 24px; margin: 3px 40px 14px 0; line-height: 1.15; }
+.m-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--ink); }
+.m-tab {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 11.5px; font-weight: 600; padding: 9px 15px; cursor: pointer;
+  background: none; border: 1px solid var(--rule); border-bottom: none;
+  color: var(--ink-soft); border-radius: 2px 2px 0 0; margin-bottom: -1px;
+}
+.m-tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.m-pane { padding: 16px 0 4px; }
+.m-help { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 62ch; }
+#pairsText {
+  width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
+  padding: 10px; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px; resize: vertical;
+}
+.m-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 11px; }
+.m-field { display: flex; flex-direction: column; gap: 3px; }
+.m-field .lbl { font-size: 9px; color: var(--ink-faint); }
+.m-field select { padding: 8px 9px; }
+.filebtn {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
+  font-size: 10.5px; font-weight: 600; padding: 8px 12px; cursor: pointer;
+  border: 1px dashed var(--rule); border-radius: 2px; color: var(--ink-soft);
+  background: var(--paper);
+}
+.filebtn:hover { border-color: var(--accent); color: var(--accent); }
+.filebtn input { display: none; }
+.m-file { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); align-self: center; }
+.m-go, .m-ghost {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 11px; font-weight: 600; padding: 9px 14px; cursor: pointer;
+  border-radius: 2px;
+}
+.m-go { background: var(--accent); color: var(--card); border: 1px solid var(--accent); }
+.m-ghost { background: var(--paper); color: var(--ink-soft); border: 1px solid var(--rule); }
+.m-ghost:hover { color: var(--accent); border-color: var(--accent); }
+.m-go[disabled], .m-ghost[disabled] { opacity: .5; cursor: not-allowed; }
+.m-out {
+  margin: 14px 0 4px; padding: 12px 14px; border-radius: 2px;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  font-size: 12.5px; max-height: 220px; overflow-y: auto;
+}
+.m-out.bad { border-left-color: var(--stamp); }
+.m-out b { font-family: var(--mono); }
+.m-out ul { margin: 8px 0 0; padding-left: 18px; }
+.m-out li { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); margin-bottom: 2px; }
+.m-out pre {
+  font-family: var(--mono); font-size: 11px; white-space: pre-wrap;
+  margin: 8px 0 0; color: var(--ink-soft);
+}
+.m-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid var(--rule); margin-top: 16px;
+  padding: 13px 0; position: sticky; bottom: 0; background: var(--card);
+}
+.m-foot span { font-size: 11.5px; color: var(--ink-faint); flex: 1 1 220px; }
+
+select {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 11px; font-weight: 600; padding: 6px 8px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--rule); border-radius: 2px; cursor: pointer;
+}
+.count { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); white-space: nowrap; }
+.count b { color: var(--ink); font-size: 13px; }
+
+/* -- ledger ------------------------------------------------------------- */
+.ledger-head, .row {
+  display: grid;
+  grid-template-columns: minmax(180px, 3.1fr) 56px minmax(150px, 2.3fr) 132px 104px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 clamp(14px, 2.4vw, 26px);
+  max-width: 100%;
+}
+.ledger-head {
+  height: 34px; border-bottom: 1px solid var(--ink);
+  background: var(--paper); position: sticky; z-index: 15;
+  top: var(--controls-h, 57px);   /* measured at runtime -- the bar wraps */
+}
+.ledger-head span { font-family: var(--display); text-transform: uppercase; letter-spacing: .1em; font-size: 9.5px; color: var(--ink-faint); }
+.ledger-head .r { text-align: right; }
+
+#scroller { position: relative; overflow-y: auto; height: 62vh; min-height: 340px; }
+#spacer { position: relative; width: 100%; }
+.row {
+  position: absolute; left: 0; right: 0; height: var(--row-h);
+  border-bottom: 1px solid var(--rule-soft);
+  cursor: pointer;
+  background: var(--paper);
+}
+.row.alt { background: var(--band); }          /* greenbar banding */
+.row:hover { background: var(--accent-soft); }
+.row.sel { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--stamp); }
+
+.item-name {
+  font-size: 14px; line-height: 1.22; margin: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.item-sub { display: flex; gap: 8px; align-items: center; margin-top: 3px; flex-wrap: wrap; }
+.item-sub .num { font-size: 10.5px; color: var(--ink-faint); }
+.flag {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
+  font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 1px;
+  background: var(--stale-soft); color: var(--stale);
+}
+.flag.none { background: var(--accent-soft); color: var(--accent); }
+
+.vcount { font-family: var(--mono); font-size: 17px; text-align: center; color: var(--ink-soft); }
+.vcount.multi { color: var(--ink); }
+.vcount i { display: block; font-family: var(--display); font-style: normal; font-size: 8.5px; letter-spacing: .08em; color: var(--ink-faint); text-transform: uppercase; }
+
+/* Price ladder: each vendor's quote as a dot on a track, cheapest at the left.
+   The lane is inset so a dot at 0% or 100% can't clip, and the only text is the
+   premium at the right -- the cheapest price is already its own column, so
+   repeating it here just collided with the marker. */
+.ladder { position: relative; height: 30px; }
+.ladder .lane { position: absolute; left: 8px; right: 54px; top: 0; bottom: 0; }
+.ladder .track {
+  position: absolute; left: 0; right: 0; top: 14px; height: 2px;
+  background: var(--rule); border-radius: 2px;
+}
+.ladder .span-fill {
+  position: absolute; left: 0; right: 0; top: 14px; height: 2px;
+  background: var(--stamp); opacity: .38; border-radius: 2px;
+}
+.dot {
+  position: absolute; top: 10.5px; width: 9px; height: 9px; margin-left: -4.5px;
+  border-radius: 50%; background: var(--vc);
+}
+/* the winner reads as a ring, not a bigger blob, so it stays distinct from the
+   others without dominating the row */
+.dot.best {
+  top: 7.5px; width: 15px; height: 15px; margin-left: -7.5px;
+  background: var(--paper); border: 3px solid var(--vc); box-sizing: border-box;
+  z-index: 2;
+}
+.ladder .prem {
+  position: absolute; right: 0; top: 8px; width: 50px; text-align: right;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 11px; color: var(--ink-soft);
+}
+.ladder .sole {
+  position: absolute; right: 0; top: 9.5px; width: 50px; text-align: right;
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 9px; color: var(--ink-faint);
+}
+.ladder.single .track { opacity: .35; }
+
+.best-cell { text-align: right; }
+.best-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 17px; color: var(--stamp); letter-spacing: -.01em; }
+.best-who { font-family: var(--display); text-transform: uppercase; letter-spacing: .05em; font-size: 9.5px; color: var(--ink-soft); margin-top: 1px; }
+.save-cell { text-align: right; }
+.save-amt { font-family: var(--mono); font-size: 14px; }
+.save-pct { font-family: var(--display); font-size: 9.5px; letter-spacing: .06em; color: var(--ink-faint); text-transform: uppercase; }
+.stamp-mark {
+  display: inline-block; font-family: var(--display); text-transform: uppercase;
+  font-size: 8.5px; letter-spacing: .1em; font-weight: 600;
+  color: var(--stamp); border: 1.5px solid var(--stamp); padding: 1px 4px;
+  border-radius: 2px; transform: rotate(-3.5deg);
+}
+.dash { color: var(--ink-faint); font-family: var(--mono); font-size: 13px; }
+
+.empty { padding: 60px 26px; text-align: center; color: var(--ink-soft); }
+.empty .lbl { font-size: 15px; color: var(--ink); display: block; margin-bottom: 6px; }
+
+/* -- drawer ------------------------------------------------------------- */
+.scrim {
+  position: fixed; inset: 0; background: rgba(12,20,15,.42);
+  opacity: 0; pointer-events: none; transition: opacity .28s; z-index: 40;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(470px, 94vw);
+  background: var(--card); border-left: 2px solid var(--ink);
+  box-shadow: var(--drawer-shadow);
+  transform: translateX(101%); transition: transform .34s cubic-bezier(.22,1,.36,1);
+  z-index: 41; overflow-y: auto; padding: 22px clamp(16px, 3vw, 26px) 40px;
+}
+.drawer.open { transform: none; }
+.drawer-x {
+  position: absolute; top: 14px; right: 16px; background: none; border: 1px solid var(--rule);
+  color: var(--ink-soft); width: 26px; height: 26px; border-radius: 2px; cursor: pointer;
+  font-family: var(--mono); font-size: 13px; line-height: 1;
+}
+.drawer-x:hover { color: var(--stamp); border-color: var(--stamp); }
+.d-title { font-size: 20px; line-height: 1.2; margin: 4px 40px 6px 0; }
+.d-ids { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.d-ids div .lbl { font-size: 9px; color: var(--ink-faint); display: block; }
+.d-ids div .num { font-size: 12px; }
+.d-sum {
+  display: flex; gap: 20px; align-items: baseline;
+  border-top: 2px solid var(--ink); border-bottom: 1px solid var(--rule);
+  margin: 16px 0 4px; padding: 12px 0;
+}
+.d-sum .big { font-family: var(--mono); font-size: 30px; color: var(--stamp); letter-spacing: -.02em; }
+.d-sum .who { font-family: var(--display); text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
+.d-sum .note { margin-left: auto; text-align: right; font-size: 11px; color: var(--ink-soft); }
+
+.q { border-bottom: 1px solid var(--rule-soft); padding: 12px 0 12px 12px; border-left: 3px solid var(--vc); }
+.q.win { background: var(--stamp-soft); }
+.q-top { display: flex; align-items: baseline; gap: 10px; }
+.q-name { font-family: var(--display); text-transform: uppercase; letter-spacing: .05em; font-size: 12.5px; font-weight: 600; }
+.q-cost { margin-left: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 17px; }
+.q.win .q-cost { color: var(--stamp); }
+.q-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); gap: 8px 12px; margin-top: 8px; }
+.q-grid div .lbl { font-size: 8.5px; color: var(--ink-faint); display: block; }
+.q-grid div .num { font-size: 12px; }
+.q-delta { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); }
+
+.sect { font-family: var(--display); text-transform: uppercase; letter-spacing: .11em; font-size: 10px; color: var(--ink-faint); margin: 22px 0 8px; }
+.foot { padding: 20px clamp(14px, 2.4vw, 26px) 30px; border-top: 1px solid var(--rule); font-size: 11.5px; color: var(--ink-soft); }
+.foot p { margin: 0 0 7px; max-width: 68ch; }
+.foot code { font-family: var(--mono); font-size: 11px; background: var(--band); padding: 1px 4px; }
+
+.theme-btn {
+  background: var(--paper); border: 1px solid var(--rule); color: var(--ink-soft);
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
+  font-size: 10px; padding: 6px 9px; border-radius: 2px; cursor: pointer;
+}
+.theme-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* -- motion: the print feed --------------------------------------------- */
+@keyframes feed { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+@keyframes tickIn { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes stampIn { 0% { opacity: 0; transform: rotate(-16deg) scale(1.5); } 60% { opacity: 1; } 100% { opacity: 1; transform: rotate(-3.5deg) scale(1); } }
+.feed-in { animation: feed .34s cubic-bezier(.22,1,.36,1) backwards; }
+.dot { animation: tickIn .4s cubic-bezier(.22,1,.36,1) backwards; }
+.stamp-mark { animation: stampIn .42s cubic-bezier(.3,1.4,.5,1) backwards; }
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001s !important; animation-delay: 0s !important; transition-duration: .001s !important; }
+}
+/* The five columns need ~700px before padding. Between roughly 700 and 900px
+   the Saving column is what has to go -- it's derivable from the two prices and
+   repeated in the drawer, whereas the ladder is the whole point of the view.
+   Below ~700px the ladder goes too and the row falls back to identity + price. */
+@media (max-width: 900px) {
+  .ledger-head, .row { grid-template-columns: minmax(150px, 3fr) 50px minmax(120px, 2fr) 124px; }
+  .ledger-head .h-save, .row .save-cell { display: none; }
+}
+@media (max-width: 700px) {
+  .ledger-head, .row { grid-template-columns: minmax(0, 2.4fr) 44px 112px; gap: 10px; }
+  .ledger-head .h-ladder, .row .ladder { display: none; }
+}
+@media (max-width: 560px) {
+  .controls { gap: 9px; }
+  .search { max-width: none; }
+  .wordmark { font-size: 34px; }
+}
+</style>
+
+<header class="masthead">
+  <div class="mast-top">
+    <h1 class="wordmark"><em>Ford Medical</em>Price Desk</h1>
+    <div class="mast-meta">
+      <span class="lbl">Catalogs current to</span>
+      <span class="num" id="asOf">&mdash;</span>
+      <div style="margin-top:8px"><button class="theme-btn" id="themeBtn" type="button">Theme</button></div>
+    </div>
+  </div>
+  <div class="cadence" id="cadence"></div>
+</header>
+
+<section class="stats" id="stats"></section>
+
+<div class="controls">
+  <label class="search">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.2-4.2"/></svg>
+    <input id="q" type="search" placeholder="Search item or UPC&hellip;" autocomplete="off" aria-label="Search item or UPC">
+  </label>
+  <div class="chips" id="vchips" role="group" aria-label="Filter by vendor"></div>
+  <div class="chips">
+    <button class="chip plain" id="fContested" type="button" aria-pressed="false">Contested only</button>
+    <button class="chip plain" id="fStale" type="button" aria-pressed="false">Stale only</button>
+    <button class="chip plain" id="fAsin" type="button" aria-pressed="true">Has ASIN</button>
+    <button class="chip plain" id="fNoAsin" type="button" aria-pressed="false">Needs ASIN</button>
+  </div>
+  <button class="chip act" id="btnImport" type="button">Import</button>
+  <button class="chip act" id="btnExport" type="button">Export to Excel</button>
+  <select id="sort" aria-label="Sort by">
+    <option value="save">Sort: biggest saving</option>
+    <option value="spreadpct">Sort: widest spread %</option>
+    <option value="cheap">Sort: lowest cost</option>
+    <option value="dear">Sort: highest cost</option>
+    <option value="vendors">Sort: most vendors</option>
+    <option value="stale">Sort: stalest first</option>
+    <option value="name">Sort: item A&ndash;Z</option>
+  </select>
+  <div class="count" id="count"></div>
+</div>
+
+<div class="ledger-head">
+  <span>Item</span>
+  <span style="text-align:center">Vendors</span>
+  <span class="h-ladder">Price spread &mdash; cheapest at left</span>
+  <span class="r">Cheapest</span>
+  <span class="r h-save">Saving</span>
+</div>
+<div id="scroller"><div id="spacer"></div></div>
+
+<footer class="foot" id="foot"></footer>
+
+<div class="scrim" id="scrim"></div>
+<div class="scrim" id="impScrim"></div>
+<section class="modal" id="impModal" role="dialog" aria-modal="true"
+         aria-labelledby="impTitle" aria-hidden="true">
+  <button class="drawer-x" id="impX" type="button" aria-label="Close">&#10005;</button>
+  <p class="lbl" style="font-size:9.5px;color:var(--ink-faint);margin:0">Feed the desk</p>
+  <h2 class="m-title" id="impTitle">Import</h2>
+
+  <div class="m-tabs" role="tablist">
+    <button class="m-tab" id="tabPairs" role="tab" aria-selected="true" type="button">UPC &rarr; ASIN matches</button>
+    <button class="m-tab" id="tabOffer" role="tab" aria-selected="false" type="button">Vendor offer file</button>
+    <button class="m-tab" id="tabLookup" role="tab" aria-selected="false" type="button">Price-check a list</button>
+  </div>
+
+  <!-- UPC -> ASIN -->
+  <div class="m-pane" id="panePairs">
+    <div id="plSync" style="margin-bottom:12px">
+      <div class="m-row" style="margin:0">
+        <button class="m-ghost" id="btnSyncPL" type="button">Sync from Pair Library</button>
+        <span class="m-help" style="margin:0">Auto-attach ASINs where a vendor <b>UPC</b> matches a
+          Pair-Library barcode. Nothing else joins.</span>
+      </div>
+      <div class="m-out" id="syncOut" hidden></div>
+    </div>
+    <p class="m-help">Or paste two columns straight out of Excel &mdash; UPC and ASIN, either
+      order. One item per line. A header row is fine, and a pack size in a third
+      column is picked up if it's there.</p>
+    <textarea id="pairsText" rows="7" spellcheck="false"
+      placeholder="074312025327&#9;B000PR8WIA&#10;307667750003&#9;B0056I9G9M&#9;2"></textarea>
+    <div class="m-row">
+      <label class="filebtn">Choose a csv / xlsx instead
+        <input type="file" id="pairsFile" accept=".csv,.xlsx,.xls,.xlsm"></label>
+      <span class="m-file" id="pairsFileName"></span>
+      <button class="m-ghost" id="btnPairsCheck" type="button">Check first</button>
+      <button class="m-go" id="btnPairsImport" type="button" disabled>Import</button>
+    </div>
+    <div class="m-out" id="pairsOut" hidden></div>
+  </div>
+
+  <!-- vendor offer file -->
+  <div class="m-pane" id="paneOffer" hidden>
+    <p class="m-help">Upload the file a vendor just sent. It merges into what's already
+      stored &mdash; prices it mentions are refreshed, new items added, and anything it
+      doesn't mention is kept with its previous date.</p>
+    <div class="m-row">
+      <label class="m-field"><span class="lbl">Vendor</span>
+        <select id="offerVendor"></select></label>
+      <label class="filebtn">Choose the offer file
+        <input type="file" id="offerFile" accept=".csv,.xlsx,.xls,.xlsm"></label>
+      <span class="m-file" id="offerFileName"></span>
+      <button class="m-go" id="btnOfferUpload" type="button" disabled>Upload &amp; ingest</button>
+    </div>
+    <p class="m-help" id="offerFormatNote"></p>
+    <div class="m-out" id="offerOut" hidden></div>
+  </div>
+
+  <!-- price-check a want-list -->
+  <div class="m-pane" id="paneLookup" hidden>
+    <p class="m-help">Paste the <b>UPCs or ASINs</b> you're interested in (one per line, or
+      comma/tab separated &mdash; the two can be mixed). The export tells you, for each,
+      the <b>cheapest vendor and cost</b> on the desk &mdash; or marks it <b>NOT FOUND</b>
+      if no vendor carries it.</p>
+    <textarea id="lookupText" rows="8" spellcheck="false"
+      placeholder="074312025327&#10;B000PR8WIA&#10;307667750003"></textarea>
+    <div class="m-row">
+      <label class="filebtn">Choose a csv / txt instead
+        <input type="file" id="lookupFile" accept=".csv,.txt,.tsv"></label>
+      <span class="m-file" id="lookupFileName"></span>
+      <button class="m-go" id="btnLookupExport" type="button" disabled>Download price check</button>
+    </div>
+    <div class="m-out" id="lookupOut" hidden></div>
+  </div>
+
+  <div class="m-foot">
+    <span id="impFootNote">Changes land in the database immediately. Refresh to see them.</span>
+    <button class="m-ghost" id="btnRebuild" type="button">Refresh</button>
+  </div>
+</section>
+
+<!-- export scope chooser -->
+<div class="scrim" id="expScrim"></div>
+<section class="modal" id="expModal" role="dialog" aria-modal="true" aria-labelledby="expTitle"
+         aria-hidden="true" style="max-width:400px">
+  <button class="drawer-x" id="expX" type="button" aria-label="Close">&#10005;</button>
+  <p class="lbl" style="font-size:9.5px;color:var(--ink-faint);margin:0">Offer Analytics export</p>
+  <h2 class="m-title" id="expTitle">What should the export include?</h2>
+  <p class="m-help">Filter to one vendor first to scope the file to that vendor's cheapest items.</p>
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <button class="m-go" id="expAll" type="button">Everything</button>
+    <button class="m-go" id="expAvail" type="button">Only items with available qty</button>
+  </div>
+</section>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Item detail" aria-hidden="true">
+  <button class="drawer-x" id="drawerX" type="button" aria-label="Close">&#10005;</button>
+  <div id="drawerBody"></div>
+</aside>
+
+<script>
+"use strict";
+// Normally the ledger JSON is inlined here by /api/vendor-offers/page. If it
+// WASN'T -- the page got served as a static file, or the running backend still
+// has an older /page route that doesn't inline -- don't die. A null DATA used to
+// crash this whole script on the first `DATA.vendors`, which silently killed
+// every button (Import included). Instead, fetch the ledger ourselves.
+const __INLINED = /*__DATA__*/null;
+if (__INLINED) {
+  boot(__INLINED);
+} else {
+  fetch("/api/vendor-offers/data")
+    .then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+    .then(boot)
+    .catch(err => {
+      const s = document.getElementById("scroller");
+      if (s) s.innerHTML = `<div class="empty"><span class="lbl">Couldn't load the price data</span>`
+        + `The backend didn't return the ledger (${String((err && err.message) || err)}). `
+        + `If you just deployed new code, restart the server; otherwise check that `
+        + `<span class="num">/api/vendor-offers/data</span> responds.</div>`;
+    });
+}
+
+function boot(DATA) {
+const V = DATA.vendors, NV = V.length;
+const VLATEST = DATA.vendorLatest;
+const RAW = DATA.items;
+const RH = 66, OVER = 6;
+
+const day = s => Date.parse(s + "T00:00:00Z") / 86400000;
+// Staleness is measured against THAT vendor's own newest catalog, not a global
+// date -- vendors send on different cadences (Cencora daily, Quality King
+// Tuesdays), so a global yardstick would brand a perfectly current Tuesday
+// price as stale the moment a daily vendor files.
+const LATEST_DAY = V.map(v => day(VLATEST[v]));
+
+/* -- derive: one enriched record per item ------------------------------- */
+const ITEMS = RAW.map((r, idx) => {
+  // build_ledger emits [upc, title, asin, pack, status, #asins, offers[]] -- 7
+  // fields, with the ASIN-count at [5] and the offers array at [6]. (An earlier
+  // copy of this page destructured only 6, reading the #asins NUMBER as `offers`
+  // and throwing "offers is not iterable" on real data.)
+  const [upc, name, asin, pack, status, nAsins, offers] = r;
+  let best = Infinity, worst = -Infinity;
+  for (const o of offers) { if (o[1] < best) best = o[1]; if (o[1] > worst) worst = o[1]; }
+  const bestR = Math.round(best * 1e4) / 1e4;
+  const winners = [], quotes = [];
+  for (const o of offers) {
+    const [vi, cost, qpc, aq, last, first] = o;
+    const stale = Math.max(0, LATEST_DAY[vi] - day(last));
+    const q = { vi, cost, qpc, aq, last, first, stale,
+                win: Math.round(cost * 1e4) / 1e4 === bestR };
+    quotes.push(q);
+    if (q.win) winners.push(vi);
+  }
+  quotes.sort((a, b) => a.cost - b.cost);
+  winners.sort((a, b) => V[a].localeCompare(V[b]));   // stable, so a tie reads the same every render
+  // runner-up = cheapest quote strictly above the winning price
+  let next = null;
+  for (const q of quotes) if (Math.round(q.cost * 1e4) / 1e4 > bestR) { next = q.cost; break; }
+  const save = next === null ? null : next - best;
+  const maxStale = quotes.reduce((m, q) => q.win ? Math.max(m, q.stale) : m, 0);
+  return { idx, upc, name: name || "(no description)", asin, pack, status,
+           quotes, best, worst, winners, next, save,
+           savePct: save === null ? null : save / next,
+           spread: worst - best, spreadPct: worst > 0 ? (worst - best) / worst : 0,
+           nv: new Set(quotes.map(q => q.vi)).size,
+           stale: maxStale, hasV: quotes.reduce((m, q) => m | (1 << q.vi), 0),
+           search: (upc + " " + (name || "")).toLowerCase() };
+});
+
+const money = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+const money2 = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const vColor = vi => `var(--v${vi})`;
+
+/* -- masthead furniture ------------------------------------------------- */
+document.getElementById("asOf").textContent = DATA.asOf || "no catalogs loaded";
+
+// An empty desk is a normal state -- straight after a reset, before the first
+// catalog arrives. Say what to do rather than showing an empty grid.
+if (!ITEMS.length) {
+  document.getElementById("scroller").innerHTML =
+    `<div class="empty"><span class="lbl">No catalogs loaded yet</span>
+       The database is empty. Use <b>Import &rarr; Vendor offer file</b> to upload a
+       vendor's price list, then press <b>Rebuild page</b>.<br><br>
+       <span style="font-size:12px;color:var(--ink-faint)">Items only appear once they
+       have an ASIN, so the product-listings master needs loading too &mdash;
+       <span class="num">python build_database.py</span> does both.</span></div>`;
+}
+
+(() => {
+  const wins = new Array(NV).fill(0), carries = new Array(NV).fill(0);
+  for (const it of ITEMS) {
+    for (const q of it.quotes) carries[q.vi]++;
+    for (const vi of it.winners) wins[vi]++;
+  }
+  document.getElementById("cadence").innerHTML = V.map((v, i) =>
+    `<div class="cad" style="--vc:${vColor(i)}">
+       <b>${esc(v)}</b>
+       <span class="num">${carries[i].toLocaleString()} items &middot; ${wins[i].toLocaleString()} cheapest</span>
+       <span>latest catalog <span class="num">${VLATEST[v]}</span></span>
+     </div>`).join("");
+})();
+
+/* -- stat strip, mechanical count-up ------------------------------------ */
+(() => {
+  const contested = ITEMS.filter(i => i.nv > 1);
+  const pot = contested.reduce((s, i) => s + (i.save || 0), 0);
+  const top = contested.reduce((m, i) => Math.max(m, i.save || 0), 0);
+  const staleN = ITEMS.filter(i => i.stale > 0).length;
+  const tiles = [
+    { l: "Items tracked", v: ITEMS.length, s: `${DATA.items.reduce((s, r) => s + r[6].length, 0).toLocaleString()} vendor quotes` },
+    { l: "More than one vendor", v: contested.length, s: `${(contested.length / ITEMS.length * 100).toFixed(1)}% of the book` },
+    { l: "Saving per unit, if you always buy cheapest", v: pot, money: true, s: "summed across contested items", hero: true },
+    { l: "Biggest single saving", v: top, money: true, s: "per unit, one item" },
+    { l: "Prices carried over", v: staleN, s: "not in that vendor's newest file" },
+  ];
+  document.getElementById("stats").innerHTML = tiles.map((t, i) =>
+    `<div class="stat feed-in${t.hero ? " hero" : ""}" style="animation-delay:${80 + i * 55}ms">
+       <span class="lbl">${t.l}</span>
+       <div class="v" data-to="${t.v}" data-money="${t.money ? 1 : 0}">0</div>
+       <div class="sub">${t.s}</div>
+     </div>`).join("");
+
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.querySelectorAll(".stat .v").forEach((el, i) => {
+    const to = +el.dataset.to, isM = el.dataset.money === "1";
+    const fmt = n => isM ? money2(n) : Math.round(n).toLocaleString();
+    // Paint the real figure FIRST, then let the roll-up overwrite it. rAF never
+    // fires in a tab that isn't compositing, and a dashboard stuck showing 0 is
+    // far worse than one that skipped its animation.
+    el.textContent = fmt(to);
+    if (reduce) return;
+    const dur = 1100, t0 = performance.now() + 140 + i * 55;
+    const step = now => {
+      const p = Math.min(1, Math.max(0, (now - t0) / dur));
+      el.textContent = fmt(to * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+})();
+
+/* -- filter + sort ------------------------------------------------------ */
+// asin defaults ON: an offer we can't list isn't actionable, so the report opens
+// on sellable items. "Needs ASIN" is the deliberate way into the rest.
+const state = { q: "", vendors: 0, contested: false, stale: false,
+                asin: true, noAsin: false, sort: "save" };
+let view = [];
+
+function apply() {
+  const term = state.q.trim().toLowerCase();
+  view = ITEMS.filter(it => {
+    if (term && !it.search.includes(term)) return false;
+    if (state.vendors && !(it.hasV & state.vendors)) return false;
+    if (state.contested && it.nv < 2) return false;
+    if (state.stale && it.stale === 0) return false;
+    if (state.asin && !it.asin) return false;
+    if (state.noAsin && it.asin) return false;
+    return true;
+  });
+  const S = state.sort;
+  view.sort(
+    S === "save"      ? (a, b) => (b.save || 0) - (a.save || 0) || a.best - b.best
+  : S === "spreadpct" ? (a, b) => b.spreadPct - a.spreadPct
+  : S === "cheap"     ? (a, b) => a.best - b.best
+  : S === "dear"      ? (a, b) => b.best - a.best
+  : S === "vendors"   ? (a, b) => b.nv - a.nv || (b.save || 0) - (a.save || 0)
+  : S === "stale"     ? (a, b) => b.stale - a.stale || (b.save || 0) - (a.save || 0)
+  :                     (a, b) => a.name.localeCompare(b.name));
+
+  const nc = view.filter(i => i.nv > 1).length;
+  const sv = view.reduce((s, i) => s + (i.save || 0), 0);
+  document.getElementById("count").innerHTML =
+    `<b>${view.length.toLocaleString()}</b> item${view.length === 1 ? "" : "s"}`
+    + ` &middot; ${nc.toLocaleString()} contested &middot; ${money2(sv)} saving`;
+
+  document.getElementById("spacer").style.height = (view.length * RH) + "px";
+  first = -1;
+  render(true);
+}
+
+/* -- virtualized ledger ------------------------------------------------- */
+const scroller = document.getElementById("scroller"), spacer = document.getElementById("spacer");
+let first = -1, pool = [], selected = null, firstPaint = true;
+
+function ladderHTML(it, animate) {
+  if (it.quotes.length === 1) {
+    const q = it.quotes[0];
+    return `<div class="ladder single"><div class="lane"><div class="track"></div>
+      <div class="dot best" style="--vc:${vColor(q.vi)};left:0;animation:none"
+        title="${esc(V[q.vi])} &mdash; ${money(q.cost)}"></div></div>
+      <span class="sole">sole</span></div>`;
+  }
+  const span = it.worst - it.best || 1;
+  const dots = it.quotes.map((q, i) => {
+    const pos = ((q.cost - it.best) / span) * 100;
+    const d = animate ? `animation-delay:${i * 50}ms` : "animation:none";
+    return `<div class="dot${q.win ? " best" : ""}" style="--vc:${vColor(q.vi)};left:${pos}%;${d}"
+             title="${esc(V[q.vi])} &mdash; ${money(q.cost)}"></div>`;
+  }).join("");
+  // premium of the dearest quote over the cheapest -- more use than repeating a
+  // price, and it says at a glance how much the vendor choice is worth
+  const prem = it.best > 0 ? Math.round((it.worst / it.best - 1) * 100) : 0;
+  return `<div class="ladder"><div class="lane"><div class="track"></div>
+    <div class="span-fill"></div>${dots}</div>
+    <span class="prem" title="the dearest quote is ${prem}% above the cheapest">+${prem}%</span></div>`;
+}
+
+function rowHTML(it, i, animate) {
+  const who = it.winners.map(vi => V[vi]).join(" / ");
+  const flag = it.stale > 0
+    ? `<span class="flag">carried over ${it.stale}d</span>`
+    : (it.status ? `<span class="flag">${esc(it.status)}</span>` : "");
+  const save = it.save === null
+    ? `<span class="dash">&mdash;</span>`
+    : `<div class="save-amt" style="color:var(--stamp)">${money(it.save)}</div>
+       <div class="save-pct">${(it.savePct * 100).toFixed(0)}% less</div>`;
+  const stamp = it.winners.length > 1 ? `<span class="stamp-mark">tie</span>` : "";
+  return `<div class="item">
+      <p class="item-name">${esc(it.name)}</p>
+      <div class="item-sub"><span class="num">${it.upc}</span>${it.asin ? `<span class="num">${it.asin}</span>` : ""}${flag}</div>
+    </div>
+    <div class="vcount${it.nv > 1 ? " multi" : ""}">${it.nv}<i>quoting</i></div>
+    ${ladderHTML(it, animate)}
+    <div class="best-cell">
+      <div class="best-cost">${money(it.best)}</div>
+      <div class="best-who">${esc(who)} ${stamp}</div>
+    </div>
+    <div class="save-cell">${save}</div>`;
+}
+
+function render(force) {
+  const st = scroller.scrollTop;
+  const start = Math.max(0, Math.floor(st / RH) - OVER);
+  if (!force && start === first) return;
+  first = start;
+  const visible = Math.ceil(scroller.clientHeight / RH) + OVER * 2;
+  const end = Math.min(view.length, start + visible);
+
+  while (pool.length < end - start) {
+    const d = document.createElement("div");
+    d.className = "row";
+    d.addEventListener("click", () => openDrawer(+d.dataset.i));
+    spacer.appendChild(d);
+    pool.push(d);
+  }
+  for (let p = 0; p < pool.length; p++) {
+    const el = pool[p], i = start + p;
+    if (i >= end) { el.style.display = "none"; continue; }
+    const it = view[i];
+    el.style.display = "";
+    el.style.top = (i * RH) + "px";
+    el.dataset.i = i;
+    el.className = "row" + (i % 2 ? " alt" : "") + (selected === it.idx ? " sel" : "")
+                 + (firstPaint && p < visible ? " feed-in" : "");
+    if (firstPaint && p < visible) el.style.animationDelay = (140 + p * 26) + "ms";
+    else el.style.animationDelay = "";
+    el.innerHTML = rowHTML(it, firstPaint && p < 14);
+  }
+  if (view.length === 0) {
+    spacer.innerHTML = `<div class="empty"><span class="lbl">Nothing matches</span>
+      Try clearing a filter, or search a different UPC.</div>`;
+    pool = [];
+  }
+  firstPaint = false;
+}
+scroller.addEventListener("scroll", () => render(false), { passive: true });
+addEventListener("resize", () => render(true));
+
+// The control bar wraps to two or three lines on narrow viewports, so the
+// column header's sticky offset is measured rather than hard-coded.
+(() => {
+  const bar = document.querySelector(".controls");
+  const sync = () => document.documentElement.style.setProperty(
+    "--controls-h", bar.offsetHeight + "px");
+  sync();
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(bar);
+  else addEventListener("resize", sync);
+})();
+
+/* -- drawer ------------------------------------------------------------- */
+const scrim = document.getElementById("scrim"), drawer = document.getElementById("drawer");
+function openDrawer(vi) {
+  const it = view[vi]; if (!it) return;
+  selected = it.idx;
+  const who = it.winners.map(x => V[x]).join(" / ");
+  const q0 = it.quotes[0];
+  document.getElementById("drawerBody").innerHTML = `
+    <p class="lbl" style="font-size:9.5px;color:var(--ink-faint);margin:0">Item detail</p>
+    <h2 class="d-title">${esc(it.name)}</h2>
+    <div class="d-ids">
+      <div><span class="lbl">UPC</span><span class="num">${it.upc}</span></div>
+      ${it.asin ? `<div><span class="lbl">ASIN</span><span class="num">${it.asin}</span></div>` : ""}
+      ${it.pack ? `<div><span class="lbl">Amz pack</span><span class="num">${it.pack}</span></div>` : ""}
+      ${it.status ? `<div><span class="lbl">Listing</span><span class="num">${esc(it.status)}</span></div>` : ""}
+    </div>
+    <div class="d-sum">
+      <div>
+        <div class="big">${money(it.best)}</div>
+        <div class="who">${esc(who)}${it.winners.length > 1 ? ' <span class="stamp-mark">tie</span>' : ""}</div>
+      </div>
+      <div class="note">
+        ${it.save === null
+          ? "Only vendor quoting this item"
+          : `<b style="font-family:var(--mono);color:var(--stamp);font-size:15px">${money(it.save)}</b>
+             under ${esc(V[it.quotes.find(q => !q.win).vi])}<br>${(it.savePct * 100).toFixed(1)}% cheaper per unit`}
+      </div>
+    </div>
+    <div class="sect">Every quote, cheapest first</div>
+    ${it.quotes.map(q => `
+      <div class="q${q.win ? " win" : ""}" style="--vc:${vColor(q.vi)}">
+        <div class="q-top">
+          <span class="q-name">${esc(V[q.vi])}</span>
+          ${q.win ? '<span class="stamp-mark">cheapest</span>' : ""}
+          <span class="q-cost">${money(q.cost)}</span>
+        </div>
+        <div class="q-grid">
+          <div><span class="lbl">Qty / case</span><span class="num">${q.qpc ?? "&mdash;"}</span></div>
+          <div><span class="lbl">Available</span><span class="num">${q.aq == null ? "&mdash;" : q.aq.toLocaleString()}</span></div>
+          <div><span class="lbl">Last quoted</span><span class="num">${q.last}</span></div>
+          <div><span class="lbl">First seen</span><span class="num">${q.first}</span></div>
+        </div>
+        ${q.win ? "" : `<div class="q-delta">${money(q.cost - it.best)} more than ${esc(V[it.winners[0]])}
+           &middot; ${((q.cost / it.best - 1) * 100).toFixed(1)}% over</div>`}
+        ${q.stale > 0 ? `<div class="q-delta" style="color:var(--stale)">Carried over &mdash; ${q.stale} days behind
+           ${esc(V[q.vi])}'s latest catalog (${VLATEST[V[q.vi]]}). Confirm before buying.</div>` : ""}
+      </div>`).join("")}
+    ${it.nv === 1 ? `<div class="sect">Sole source</div>
+      <p style="font-size:12.5px;color:var(--ink-soft);margin:0">No other vendor quotes this UPC, so there's
+      nothing to compare against. ${esc(V[q0.vi])}'s price stands as the cheapest by default.</p>` : ""}
+    ${it.asin ? "" : `
+      <div class="assign">
+        <div class="sect" style="margin-top:0">No ASIN yet</div>
+        <p>This item is in the database but can't be sold until it's matched to an
+           Amazon listing, so it stays out of the report. Found the ASIN? Add it here.</p>
+        <form id="asinForm" autocomplete="off">
+          <label><span class="lbl">ASIN</span>
+            <input name="asin" placeholder="B0..." maxlength="10" required></label>
+          <label><span class="lbl">Amz pack</span>
+            <input name="pack" class="pack num" type="number" min="1" value="1"></label>
+          <button type="submit">Assign</button>
+        </form>
+        <div class="hint">Saved to asin_assignments.csv as well as the database, so a
+          rebuild can't lose it. Needs the local server.</div>
+      </div>`}`;
+
+  const form = document.getElementById("asinForm");
+  if (form) form.addEventListener("submit", async e => {
+    e.preventDefault();
+    const btn = form.querySelector("button");
+    const asin = form.asin.value.trim().toUpperCase();
+    const pack = form.pack.value || 1;
+    if (!/^B0[A-Z0-9]{8}$/.test(asin)) {
+      toast(`"${asin}" isn't an ASIN. They look like B0 then 8 letters or digits.`, true);
+      form.asin.focus();
+      return;
+    }
+    btn.disabled = true; btn.textContent = "Saving...";
+    try {
+      const res = await fetch("/api/vendor-offers/assign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc: it.upc, asin, amazon_pack_size: +pack }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || res.statusText);
+      toast(j.message || `${asin} assigned to ${it.upc}.`);
+      // reflect it immediately; the stored data refreshes on the next build
+      it.asin = asin;
+      openDrawer(vi);
+    } catch (err) {
+      toast("Couldn't save: " + err.message + " -- the local server has to be running.", true);
+      btn.disabled = false; btn.textContent = "Assign";
+    }
+  });
+  scrim.classList.add("open"); drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  document.getElementById("drawerX").focus();
+  render(true);
+}
+function closeDrawer() {
+  scrim.classList.remove("open"); drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+  selected = null; render(true);
+}
+scrim.addEventListener("click", closeDrawer);
+document.getElementById("drawerX").addEventListener("click", closeDrawer);
+addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+/* -- controls ----------------------------------------------------------- */
+document.getElementById("vchips").innerHTML = V.map((v, i) =>
+  `<button class="chip" type="button" aria-pressed="false" data-v="${i}" style="--vc:${vColor(i)}">${esc(v)}</button>`).join("");
+document.getElementById("vchips").addEventListener("click", e => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  const bit = 1 << +b.dataset.v, on = !(state.vendors & bit);
+  state.vendors = on ? state.vendors | bit : state.vendors & ~bit;
+  b.setAttribute("aria-pressed", String(on));
+  apply();
+});
+for (const [id, key] of [["fContested", "contested"], ["fStale", "stale"],
+                         ["fAsin", "asin"], ["fNoAsin", "noAsin"]]) {
+  document.getElementById(id).addEventListener("click", e => {
+    state[key] = !state[key];
+    e.currentTarget.setAttribute("aria-pressed", String(state[key]));
+    // Has-ASIN and Needs-ASIN are opposites; holding both on shows nothing, so
+    // switching one on releases the other rather than emptying the list.
+    if (state.asin && state.noAsin) {
+      const other = key === "asin" ? "noAsin" : "asin";
+      state[other] = false;
+      document.getElementById(other === "asin" ? "fAsin" : "fNoAsin")
+              .setAttribute("aria-pressed", "false");
+    }
+    apply();
+  });
+}
+
+/* -- toast ------------------------------------------------------------- */
+let toastTimer;
+function toast(msg, bad) {
+  let el = document.getElementById("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast"; el.className = "toast";
+    el.setAttribute("role", "status");
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.className = "toast show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = "toast"; }, bad ? 7000 : 4200);
+}
+
+/* -- export (Offer Analytics, template format) -------------------------- */
+// The .xlsx is built server-side in Ford Medical's Analytics template, joining the
+// current view's UPCs to the Azure Keepa data + live SP-API (Approved + Storage).
+// When exactly one vendor is filtered, the export keeps only that vendor's cheapest
+// items and names the file after it. That's slow, so it runs as a polled job.
+function focusVendorName() {
+  const idxs = [];
+  for (let i = 0; i < V.length; i++) if (state.vendors & (1 << i)) idxs.push(i);
+  return idxs.length === 1 ? V[idxs[0]] : null;
+}
+const btnExport = document.getElementById("btnExport");
+const expModal = document.getElementById("expModal");
+const expScrim = document.getElementById("expScrim");
+let exportJob = null;                       // {id, cancelled} while a job is running
+const EXPORT_LABEL = btnExport ? btnExport.textContent : "Export to Excel";
+
+function closeExportScope() {
+  if (!expModal) return;
+  expModal.classList.remove("open"); expScrim.classList.remove("open");
+  expModal.setAttribute("aria-hidden", "true");
+}
+
+// Start the export job with the chosen scope, then poll → download.
+async function startAnalyticsExport(onlyAvailable) {
+  btnExport.textContent = "Starting…";
+  try {
+    const start = await fetch("/api/vendor-offers/analytics-export/start", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
+                             has_asin: !!state.asin, only_available: !!onlyAvailable }),
+    });
+    const sj = await start.json().catch(() => ({}));
+    if (!start.ok) throw new Error(sj.detail || start.statusText);
+    exportJob = { id: sj.job_id, cancelled: false };
+    for (;;) {
+      await new Promise(r => setTimeout(r, 1500));
+      const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}`);
+      const pj = await ps.json().catch(() => ({}));
+      if (!ps.ok) throw new Error(pj.detail || ps.statusText);
+      if (pj.status === "cancelled") { toast("Export cancelled."); return; }
+      if (pj.status === "error") throw new Error(pj.error || "export failed");
+      if (pj.status === "complete") break;
+      // second click cancels; show phase, %, and ETA
+      if (pj.total) {
+        const pct = Math.round(pj.done / pj.total * 100);
+        const s = pj.eta_seconds;
+        const eta = s == null ? "" : (s >= 90 ? ` · ~${Math.ceil(s / 60)}m left` : ` · ~${s}s left`);
+        btnExport.textContent = `Cancel · ${pj.phase || "working"} ${pct}% (${pj.done}/${pj.total})${eta}`;
+      } else {
+        btnExport.textContent = `Cancel · ${pj.phase || "working"}…`;
+      }
+    }
+    const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/download`);
+    await downloadFromResponse(dl, "offer_analytics.xlsx");
+    toast("Offer Analytics export downloaded.");
+  } catch (err) {
+    toast("Export failed: " + err.message, false);
+  } finally {
+    exportJob = null; btnExport.disabled = false; btnExport.textContent = EXPORT_LABEL;
+  }
+}
+
+if (btnExport) {
+  btnExport.title = "Export the Offer Analytics workbook (filter to one vendor to scope it). Click again to cancel.";
+  btnExport.addEventListener("click", async () => {
+    if (exportJob) {                                        // second click → cancel
+      exportJob.cancelled = true;
+      btnExport.textContent = "Cancelling…";
+      try { await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/cancel`, { method: "POST" }); } catch (e) {}
+      return;
+    }
+    if (expModal) {                                         // ask scope first
+      expModal.classList.add("open"); expScrim.classList.add("open");
+      expModal.setAttribute("aria-hidden", "false");
+    } else {
+      startAnalyticsExport(false);
+    }
+  });
+  if (expModal) {
+    document.getElementById("expX").addEventListener("click", closeExportScope);
+    expScrim.addEventListener("click", closeExportScope);
+    document.getElementById("expAll").addEventListener("click", () => { closeExportScope(); startAnalyticsExport(false); });
+    document.getElementById("expAvail").addEventListener("click", () => { closeExportScope(); startAnalyticsExport(true); });
+  }
+}
+let deb;
+document.getElementById("q").addEventListener("input", e => {
+  clearTimeout(deb);
+  const v = e.target.value;
+  deb = setTimeout(() => { state.q = v; apply(); }, 130);
+});
+document.getElementById("sort").addEventListener("change", e => { state.sort = e.target.value; apply(); });
+
+/* -- import modal ------------------------------------------------------- */
+const impModal = document.getElementById("impModal");
+const impScrim = document.getElementById("impScrim");
+const $ = id => document.getElementById(id);
+
+function openImport() {
+  impModal.classList.add("open"); impScrim.classList.add("open");
+  impModal.setAttribute("aria-hidden", "false");
+  $("impX").focus();
+  // This page is always served by the FastAPI backend, so importing is always
+  // available. (The standalone build had a `hasServer` gate here that disabled
+  // the buttons when opened as a static file; that variable no longer exists,
+  // and referencing it threw a ReferenceError on every Import click.)
+}
+function closeImport() {
+  impModal.classList.remove("open"); impScrim.classList.remove("open");
+  impModal.setAttribute("aria-hidden", "true");
+}
+$("btnImport").addEventListener("click", openImport);
+$("impX").addEventListener("click", closeImport);
+impScrim.addEventListener("click", closeImport);
+addEventListener("keydown", e => {
+  if (e.key === "Escape" && impModal.classList.contains("open")) closeImport();
+});
+
+const IMPORT_TABS = [["tabPairs", "panePairs"], ["tabOffer", "paneOffer"], ["tabLookup", "paneLookup"]];
+for (const [tab] of IMPORT_TABS) {
+  $(tab).addEventListener("click", () => {
+    for (const [t, p] of IMPORT_TABS) {
+      const on = t === tab;
+      $(t).setAttribute("aria-selected", String(on));
+      $(p).hidden = !on;
+    }
+  });
+}
+
+// ---- UPC -> ASIN ------------------------------------------------------
+let pairsFileBuf = null;
+$("pairsFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  pairsFileBuf = { name: f.name, buf: await f.arrayBuffer() };
+  $("pairsFileName").textContent = f.name;
+  $("pairsText").value = "";
+  $("btnPairsImport").disabled = false;
+});
+$("pairsText").addEventListener("input", () => {
+  if ($("pairsText").value.trim()) { pairsFileBuf = null; $("pairsFileName").textContent = ""; }
+  $("btnPairsImport").disabled = !$("pairsText").value.trim() && !pairsFileBuf;
+});
+
+async function sendPairs(dry) {
+  // MVP: paste (or a csv/tsv read as text) is parsed server-side. For xlsx bulk
+  // pairs, use the Pair Library page.
+  let text = $("pairsText").value;
+  if (!text.trim() && pairsFileBuf) {
+    try { text = new TextDecoder().decode(pairsFileBuf.buf); } catch (e) { text = ""; }
+  }
+  return fetch("/api/vendor-offers/assign-bulk", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, dry: !!dry }),
+  });
+}
+
+function renderPairsResult(j, dry) {
+  const out = $("pairsOut");
+  out.hidden = false;
+  out.className = "m-out" + (j.parsed === 0 ? " bad" : "");
+  let html = dry
+    ? `Read <b>${j.parsed}</b> match${j.parsed === 1 ? "" : "es"}: `
+      + `<b>${j.new}</b> new, <b>${j.duplicates}</b> already stored.`
+    : `Imported <b>${j.new}</b> match${j.new === 1 ? "" : "es"}`
+      + (j.duplicates ? `, skipped <b>${j.duplicates}</b> already stored` : "") + ".";
+  if (j.rejectedTotal) {
+    html += ` <span style="color:var(--stamp)">Couldn't read ${j.rejectedTotal} line`
+          + `${j.rejectedTotal === 1 ? "" : "s"}:</span><ul>`
+          + j.rejected.map(r => `<li>${esc(r)}</li>`).join("") + "</ul>";
+  }
+  if (dry && j.sample && j.sample.length) {
+    html += `<ul>` + j.sample.map(p =>
+      `<li>${p.upc} &rarr; ${p.asin}${p.pack > 1 ? " (pack " + p.pack + ")" : ""}</li>`).join("")
+      + (j.new > j.sample.length ? `<li>&hellip; and ${j.new - j.sample.length} more</li>` : "")
+      + `</ul>`;
+  }
+  out.innerHTML = html;
+}
+
+async function runPairs(dry) {
+  const btn = dry ? $("btnPairsCheck") : $("btnPairsImport");
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = dry ? "Reading..." : "Importing...";
+  try {
+    const res = await sendPairs(dry);
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || res.statusText);
+    renderPairsResult(j, dry);
+    if (!dry) {
+      toast(`Imported ${j.new} UPC-to-ASIN match${j.new === 1 ? "" : "es"}.`);
+      $("pairsText").value = ""; pairsFileBuf = null; $("pairsFileName").textContent = "";
+    }
+  } catch (err) {
+    const out = $("pairsOut");
+    out.hidden = false; out.className = "m-out bad";
+    out.innerHTML = esc(err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+$("btnPairsCheck").addEventListener("click", () => runPairs(true));
+$("btnPairsImport").addEventListener("click", () => runPairs(false));
+
+// ---- shared: download an xlsx/csv from a fetch Response ---------------
+async function downloadFromResponse(res, fallbackName) {
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  let name = fallbackName;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename="?([^"]+)"?/);
+  if (m) name = m[1];
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// ---- price-check a want-list (UPCs / ASINs -> cheapest, or NOT FOUND) --
+let lookupFileText = "";
+$("lookupFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) { lookupFileText = ""; return; }
+  try { lookupFileText = new TextDecoder().decode(await f.arrayBuffer()); }
+  catch (err) { lookupFileText = ""; }
+  $("lookupFileName").textContent = f.name;
+  $("lookupText").value = "";
+  $("btnLookupExport").disabled = !lookupFileText.trim();
+});
+$("lookupText").addEventListener("input", () => {
+  if ($("lookupText").value.trim()) { lookupFileText = ""; $("lookupFileName").textContent = ""; }
+  $("btnLookupExport").disabled = !$("lookupText").value.trim() && !lookupFileText.trim();
+});
+$("btnLookupExport").addEventListener("click", async () => {
+  const text = $("lookupText").value.trim() || lookupFileText;
+  if (!text.trim()) return;
+  const btn = $("btnLookupExport"), out = $("lookupOut"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Checking…";
+  out.hidden = false; out.className = "m-out"; out.innerHTML = "Looking up prices…";
+  try {
+    const res = await fetch("/api/vendor-offers/lookup-export", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    await downloadFromResponse(res, "price_check.xlsx");
+    out.innerHTML = "Downloaded the price check. Each row shows the cheapest vendor, or NOT FOUND.";
+    toast("Price check downloaded.");
+  } catch (err) {
+    out.className = "m-out bad";
+    out.innerHTML = `<b>Couldn't build the price check.</b><pre>${esc(err.message)}</pre>`;
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+});
+
+// ---- pull matches from the Pair Library (by UPC) ----------------------
+$("btnSyncPL").addEventListener("click", async () => {
+  const btn = $("btnSyncPL"), out = $("syncOut"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Syncing…";
+  out.hidden = false; out.className = "m-out";
+  out.innerHTML = "Matching offer UPCs against the Pair Library…";
+  try {
+    const res = await fetch("/api/vendor-offers/sync-asins", { method: "POST" });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.detail || res.statusText);
+    out.className = "m-out";
+    out.innerHTML = `Attached <b>${(j.asins || 0).toLocaleString()}</b> ASIN link(s) from `
+      + `<b>${(j.offers_matched_by_upc || 0).toLocaleString()}</b> UPC match(es). `
+      + `<span style="color:var(--ink-faint)">Library holds ${(j.library_upcs || 0).toLocaleString()} UPCs.</span>`
+      + ((j.asins || 0) ? " Refresh to see them." :
+         " No offers matched &mdash; this Pair Library has no UPCs yet, so add UPCs to it (or paste UPC&rarr;ASIN pairs above).");
+    if (j.asins) toast("Pair Library sync done. Refresh to see attached ASINs.");
+  } catch (err) {
+    out.className = "m-out bad";
+    out.innerHTML = `<b>Sync failed.</b><pre>${esc(err.message)}</pre>`;
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+});
+
+// ---- vendor offer file ------------------------------------------------
+const KNOWN_FORMATS = {
+  "Quality King Distributors": "expects the fd*.xlsx layout (ITEM, UPC, PACK, QKD PRICE)",
+  "Cencora": "expects the Product Catalog export, sheet 'Results', header on row 2",
+  "Diamond Wholesale": "expects FORDMED.CSV -- uses the 12DGTUPC column",
+  "BILO": "expects the BILO UPCHARGE .xls layout (Item No, UPC Code, Item Price)",
+};
+(() => {
+  const sel = $("offerVendor");
+  const list = DATA.uploadVendors || Object.keys(KNOWN_FORMATS);
+  sel.innerHTML = list.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  const note = () => {
+    $("offerFormatNote").textContent = KNOWN_FORMATS[sel.value]
+      ? "Format: " + KNOWN_FORMATS[sel.value]
+      : "No parser for this vendor yet -- a sample file is needed first.";
+  };
+  sel.addEventListener("change", note); note();
+})();
+
+let offerBuf = null;
+$("offerFile").addEventListener("change", async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  offerBuf = { name: f.name, buf: await f.arrayBuffer() };
+  $("offerFileName").textContent = `${f.name} (${(f.size / 1e6).toFixed(2)} MB)`;
+  $("btnOfferUpload").disabled = false;
+});
+
+$("btnOfferUpload").addEventListener("click", async () => {
+  if (!offerBuf) return;
+  const btn = $("btnOfferUpload"), label = btn.textContent;
+  const out = $("offerOut");
+  btn.disabled = true; btn.textContent = "Ingesting...";
+  out.hidden = false; out.className = "m-out";
+  out.innerHTML = "Uploading and merging &hellip; this takes a moment for a large catalog.";
+  try {
+    const fd = new FormData();
+    fd.append("vendor", $("offerVendor").value);
+    fd.append("file", new Blob([offerBuf.buf]), offerBuf.name);
+    const res = await fetch("/api/vendor-offers/upload", { method: "POST", body: fd });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.detail || j.error || res.statusText);
+    out.className = "m-out";
+    out.innerHTML = `Merged <b>${esc(j.vendor)}</b>: <b>${(j.submitted||0).toLocaleString()}</b> lines parsed, `
+                  + `<b>${(j.added||0).toLocaleString()}</b> new, <b>${(j.total||0).toLocaleString()}</b> now stored`
+                  + (j.skipped ? `, ${(j.skipped).toLocaleString()} skipped` : "") + ".";
+    toast(`${j.vendor} merged. Refresh to see the new prices.`);
+    offerBuf = null; $("offerFileName").textContent = ""; btn.disabled = true;
+  } catch (err) {
+    out.className = "m-out bad";
+    out.innerHTML = `<b>Didn't merge.</b><pre>${esc(err.message)}</pre>`;
+    btn.disabled = false;
+  } finally {
+    btn.textContent = label;
+  }
+});
+
+$("btnRebuild").addEventListener("click", () => {
+  // Data is inlined fresh on each page load, so a reload IS the refresh.
+  $("btnRebuild").textContent = "Refreshing...";
+  location.reload();
+});
+
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme");
+  const dark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+});
+
+document.getElementById("foot").innerHTML = `
+  <p><b>Cheapest</b> is the lowest per-each cost across every vendor quoting that UPC. Where a vendor
+  lists an item at several pack tiers, their lowest is used. Ties name every tied vendor.</p>
+  <p><b>Carried over</b> means that quote isn't in that vendor's most recent catalog &mdash; it's the last price
+  they gave. It still competes, but the age is shown so you can confirm it. Staleness is measured against
+  each vendor's own latest file, not a single global date, because vendors send on different cadences.</p>
+  <p><b>Available</b> quantity isn't comparable between vendors: Quality King and Diamond report unit counts,
+  BILO's figure is fractional (likely cases), and Cencora's catalog carries no quantity at all.</p>
+  <p>Built from <code>ford_medical.db</code> &middot; ${ITEMS.length.toLocaleString()} items &middot;
+  ${RAW.reduce((s, r) => s + r[6].length, 0).toLocaleString()} vendor quotes &middot; catalogs current to ${DATA.asOf}</p>`;
+
+apply();
+}
+</script>

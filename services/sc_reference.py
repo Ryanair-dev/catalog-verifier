@@ -103,9 +103,10 @@ def _build_company(conn, company: str, rows: list[dict]) -> tuple[int, int]:
             m = mfr[_mkey(mn)]
             m["n"] += 1
             m["names"][mn] += 1
-            if r.get("_purchaser") and r["_purchaser"] != "0":
+            # Same "Other" exclusion as azure_sql.brand_map() -- see that comment.
+            if r.get("_purchaser") and r["_purchaser"] != "0" and r["_purchaser"].strip().lower() != "other":
                 m["pur"][r["_purchaser"]] += 1
-            if r.get("_sourcer") and r["_sourcer"] != "0":
+            if r.get("_sourcer") and r["_sourcer"] != "0" and r["_sourcer"].strip().lower() != "other":
                 m["src"][r["_sourcer"]] += 1
 
     def top(c: Counter) -> str:

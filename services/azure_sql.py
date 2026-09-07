@@ -155,9 +155,12 @@ def brand_map(company: str = "Ford Medical") -> dict[str, dict]:
             e["brand"] = b
         if r["ManufacturerName"]:
             e["mfr"][r["ManufacturerName"]] += 1
-        if r["_purchaser"] and r["_purchaser"] != "0":
+        # "Other" is a real SellerCloud placeholder (unassigned), not a person --
+        # exclude it from the vote like "0" so it can never outvote an actual
+        # purchaser/sourcer name just because more legacy rows were left unassigned.
+        if r["_purchaser"] and r["_purchaser"] != "0" and r["_purchaser"].strip().lower() != "other":
             e["pur"][r["_purchaser"]] += 1
-        if r["_sourcer"] and r["_sourcer"] != "0":
+        if r["_sourcer"] and r["_sourcer"] != "0" and r["_sourcer"].strip().lower() != "other":
             e["src"][r["_sourcer"]] += 1
 
     def top(c: Counter) -> str:

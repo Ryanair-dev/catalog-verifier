@@ -8,7 +8,11 @@ Rates (per cubic foot per month, Amazon US):
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta
 from typing import Any
+
+from services import database
 
 
 # --------------------------------------------------------------------------- #
@@ -213,3 +217,65 @@ def calc_storage_fee(
         return round(cubic_feet * 0.78, 4), round(cubic_feet * 2.40, 4)
     else:  # Small Bulky, Large Bulky
         return round(cubic_feet * 0.56, 4), round(cubic_feet * 1.40, 4)
+
+
+# --------------------------------------------------------------------------- #
+# Storage-result cache (bi-monthly / 60-day TTL)                              #
+#                                                                             #
+# Dimensions + storage fee are stable for weeks, so the ASIN-lookup Tool      #
+# caches the FULL per-ASIN result (fees, dims, tier, DOG) keyed by ASIN and   #
+# only re-fetches getCatalogItem when a row is missing or older than the TTL. #
+# Shares the `storage_fee_cache` table with the Offer-Analytics export (which #
+# reads the `storage_fee` column); the extra `data_json` column holds the     #
+# full result the Tool needs. Eligibility is NEVER cached here — it stays live.#
+# --------------------------------------------------------------------------- #
+
+_STORAGE_TTL_DAYS = 60
+# statuses safe to cache — a live dims/DOG answer; transient errors are NOT cached
+_CACHEABLE_STATUSES = {"ok", "no_dimensions", "dog"}
+
+
+def _ensure_cache_table(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS storage_fee_cache "
+                 "(asin TEXT PRIMARY KEY, storage_fee REAL, as_of TEXT)")
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(storage_fee_cache)")}
+    if "data_json" not in cols:
+        conn.execute("ALTER TABLE storage_fee_cache ADD COLUMN data_json TEXT")
+
+
+def storage_cache_get(asins) -> dict[str, dict]:
+    """{asin: full_result_dict} for entries cached (with data_json) within the TTL."""
+    cutoff = (datetime.now() - timedelta(days=_STORAGE_TTL_DAYS)).isoformat()
+    out: dict[str, dict] = {}
+    clean = sorted({a.strip().upper() for a in asins if a})
+    if not clean:
+        return out
+    with database._connect() as conn:
+        _ensure_cache_table(conn)
+        for i in range(0, len(clean), 400):
+            ch = clean[i:i + 400]
+            q = ",".join("?" * len(ch))
+            for asin, dj in conn.execute(
+                    f"SELECT asin, data_json FROM storage_fee_cache "
+                    f"WHERE data_json IS NOT NULL AND as_of >= ? AND asin IN ({q})",
+                    [cutoff, *ch]):
+                try:
+                    out[asin] = json.loads(dj)
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def storage_cache_put(results) -> None:
+    """Upsert the full result (+ off-peak fee for the export) for cacheable rows."""
+    rows = [r for r in results if r.get("status") in _CACHEABLE_STATUSES]
+    if not rows:
+        return
+    now = datetime.now().isoformat()
+    with database._LOCK, database._connect() as conn:
+        _ensure_cache_table(conn)
+        conn.executemany(
+            "INSERT INTO storage_fee_cache(asin, storage_fee, as_of, data_json) "
+            "VALUES(?,?,?,?) ON CONFLICT(asin) DO UPDATE SET "
+            "storage_fee=excluded.storage_fee, as_of=excluded.as_of, data_json=excluded.data_json",
+            [(r["asin"], r.get("fee_offpeak"), now, json.dumps(r)) for r in rows])

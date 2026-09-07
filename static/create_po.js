@@ -463,14 +463,19 @@
     return `<div style="padding:6px 20px 22px">
       <div style="font-size:12.5px;color:var(--ink-soft);margin-bottom:12px">This whole batch is one brand — we auto-fill everything from the catalog; edit if needed.</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div style="grid-column:1 / -1">${L("BRAND")}<input data-in="sbrand" value="${esc(S.singleBrand)}" placeholder="e.g. Zyrtec" style="width:100%;padding:11px 13px;border-radius:12px;border:2px solid var(--primary);background:var(--panel);color:var(--ink);font-weight:800;font-size:14px;font-family:'Bricolage Grotesque',sans-serif;outline:none"></div>
+        <div style="grid-column:1 / -1">${L("BRAND")}
+          <div style="display:flex;gap:10px;align-items:center">
+            <input data-in="sbrand" value="${esc(S.singleBrand)}" placeholder="e.g. Zyrtec" style="flex:1;min-width:0;padding:11px 13px;border-radius:12px;border:2px solid var(--primary);background:var(--panel);color:var(--ink);font-weight:800;font-size:14px;font-family:'Bricolage Grotesque',sans-serif;outline:none">
+            <button data-act="checksc" ${(S.singleBrand.trim() && !S.brandLoading) ? "" : "disabled"} style="flex:none;display:inline-flex;align-items:center;gap:7px;padding:11px 17px;border-radius:12px;border:none;font-weight:800;font-size:13px;white-space:nowrap;${(S.singleBrand.trim() && !S.brandLoading) ? "background:linear-gradient(135deg,var(--primary),#8a5cff);color:#fff;cursor:pointer;box-shadow:var(--shadow-lg)" : "background:var(--panel-inset);color:var(--ink-faint);cursor:not-allowed"}">${S.brandLoading ? "Checking…" : "🔍 Check on SellerCloud"}</button>
+          </div>
+        </div>
         <div>${L("MANUFACTURER")}${inp("smfr", S.singleMfr, "Manufacturer")}</div>
         <div>${L("PREFIX")}${inp("sprefix", S.singlePrefix, "PFX", "color:var(--primary-ink);font-weight:800;font-family:ui-monospace,monospace;text-transform:uppercase")}</div>
         <div>${L("PURCHASER")}${inp("sbpurch", S.singlePurchaser, "Purchaser")}</div>
         <div>${L("SOURCER")}${inp("sbsourcer", S.singleSourcer, "Sourcer")}</div>
       </div>
       ${S.brandLoading ? `<div style="margin-top:12px;font-size:12px;color:var(--ink-soft)">Looking up brand in the catalog…</div>` : ""}
-      <div style="margin-top:12px;display:flex;align-items:center;gap:9px;padding:10px 13px;border-radius:12px;background:var(--sky-soft);border:1px solid var(--sky);font-size:12px;color:var(--ink)"><span>ℹ️</span><span>Type the brand and press Tab — manufacturer, prefix, purchaser &amp; sourcer auto-fill from the catalog (new brands get a unique prefix).</span></div>
+      <div style="margin-top:12px;display:flex;align-items:center;gap:9px;padding:10px 13px;border-radius:12px;background:var(--sky-soft);border:1px solid var(--sky);font-size:12px;color:var(--ink)"><span>ℹ️</span><span>Type the brand, then click <b>Check on SellerCloud</b> (or press Tab) — manufacturer, prefix, purchaser &amp; sourcer auto-fill from the catalog (new brands get a unique prefix).</span></div>
     </div>`;
   }
 
@@ -745,6 +750,7 @@
       case "toggle": if (!(arg === "shadow" && !S.forAmazon)) { S.create[arg] = !S.create[arg]; } render(); break;
       case "foramz": { const on = arg === "yes"; if (on !== S.forAmazon) { S.forAmazon = on; S.create.shadow = on; } render(); break; }
       case "bmode": S.brandMode = arg; render(); if (arg === "column") loadBrands(); break;
+      case "checksc": if (S.singleBrand.trim() && !S.brandLoading) loadBrands(true); break;  // explicit SellerCloud lookup (overwrites auto-filled fields)
       case "bconfirm": S.brandConfirmed[arg] = !S.brandConfirmed[arg]; render(); break;
       case "confirm-all-new": (S.review.counts.new_brands || []).forEach(b => S.brandConfirmed[b] = true); render(); break;
       case "pmode": { const [who, mode] = arg.split(":"); S[who].mode = mode; render(); break; }
@@ -941,7 +947,10 @@
   }
 
   let _brandReq = 0;
-  async function loadBrands() {
+  async function loadBrands(force = false) {
+    // force=true (the "Check on SellerCloud" button) overwrites the four auto-filled
+    // fields with the fresh catalog result; the gentle Tab/blur path (force=false)
+    // only fills fields the user hasn't already populated.
     S.brandLoading = true; render();
     const my = ++_brandReq;
     try {
@@ -955,10 +964,10 @@
       S.brandTable = j.brands || [];
       if (S.brandMode === "single" && S.brandTable[0]) {
         const b0 = S.brandTable[0];
-        if (!S.singleMfr) S.singleMfr = b0.manufacturer || "";
-        if (!S.singlePrefix) S.singlePrefix = b0.prefix || "";
-        if (!S.singlePurchaser) S.singlePurchaser = b0.purchaser || "";
-        if (!S.singleSourcer) S.singleSourcer = b0.sourcer || "";
+        if (force || !S.singleMfr) S.singleMfr = b0.manufacturer || "";
+        if (force || !S.singlePrefix) S.singlePrefix = b0.prefix || "";
+        if (force || !S.singlePurchaser) S.singlePurchaser = b0.purchaser || "";
+        if (force || !S.singleSourcer) S.singleSourcer = b0.sourcer || "";
       }
     } catch (err) { S.error = "Brand lookup failed: " + err.message; }
     S.brandLoading = false; render();

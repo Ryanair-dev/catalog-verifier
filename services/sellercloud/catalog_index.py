@@ -53,16 +53,19 @@ def _digits(s) -> str:
     return "".join(ch for ch in str(s or "") if ch.isdigit())
 
 
-# Shadow / kit SKUs carry a channel or kit marker: '-FBA', '-FBM' (with optional
-# collision digits or a company code like '-FBATRB'), or a kit tag '_QY4'.  In the
-# Azure `sku_data_extended_view` many kit-shadow rows have an EMPTY ShadowOf (e.g.
-# 'J&J78331_QY4-FBA'), so relying on ShadowOf alone lets a kit shadow masquerade as
-# a main.  This pattern is the belt-and-suspenders check.
-_SHADOW_SKU_RE = re.compile(r"_QY\d+|-FB[AM]", re.IGNORECASE)
+# Shadow / kit / corporate SKUs are never a real main:
+#   - '-FBA' / '-FBM' channel shadows (with optional collision digits or a company
+#     code like '-FBATRB'), or a kit tag '_QY4';
+#   - '-C' CORPORATE SKUs (trailing '-C', e.g. 'GOJ7753-02-C' for the '7753-02' main)
+#     — these carry an EMPTY ShadowOf, so ShadowOf alone lets them masquerade as the
+#     main and get picked by main_by_upc/main_by_mpn instead of the real 'GOJ7753-02'.
+# A real main CAN contain dashes (MPNs/item IDs do, e.g. 'GOJ9026-1M', 'GOJ7753-02'),
+# so we exclude ONLY a trailing '-C', never dashes in general.
+_SHADOW_SKU_RE = re.compile(r"_QY\d+|-FB[AM]|-C$", re.IGNORECASE)
 
 
 def _is_shadow_sku(pid: str) -> bool:
-    """True when a ProductID looks like a shadow/kit SKU (never a real main)."""
+    """True when a ProductID looks like a shadow / kit / corporate SKU (never a real main)."""
     return bool(_SHADOW_SKU_RE.search(pid or ""))
 
 
@@ -96,8 +99,32 @@ def _brand_sig(brand_key: str) -> str:
     return "".join(out).upper()
 
 
-_ALIGN_MIN_SHARE = 0.15   # an aligned prefix must be ≥ this fraction of the mode
-                          # (keeps Colgate COL/Dove DOV, excludes Cardinal's rare CAR)
+_ALIGN_MIN_SHARE = 0.40   # a brand-aligned prefix only overrides the mode when it is
+                          # NEARLY CO-DOMINANT with it (≥ this fraction). Keeps Colgate
+                          # COL (70/144 = 49%, beats parent J&J) while NOT flipping the
+                          # real dominant code to a brand-lookalike minority: Clorox stays
+                          # CLX (CLO only 18%), Tresemme stays ULV (TRE only 24%), Cardinal
+                          # stays CAH (CAR 2%). Dove→DOV is a manual exception, not this.
+
+
+def _ensure_min3(prefix: str, counter: Counter, sig: str) -> str:
+    """Ford-Medical rule (hardcoded): a brand prefix is ALWAYS 3 characters, never 2.
+    If the natural pick is shorter — a SKU whose code is only two leading letters,
+    e.g. 'RH' from 'RH1234' (TRESemmé under Ford Medical) — upgrade it: prefer the
+    most-used >=3-char code the brand actually uses, else derive 3 from the brand
+    name ('TRESEMME'->'TRE'), else pad to 3 as a last resort. Never returns <3."""
+    p = (prefix or "").upper()
+    if len(p) >= 3:
+        return p
+    threes = [(v.upper(), n) for v, n in counter.items() if len(str(v)) >= 3]
+    if threes:
+        # prefer a 3-char code that ALIGNS with the brand name (TRE for TRESEMME)
+        # over a parent/umbrella code (ULV); else the most-used 3-char.
+        aligned = [(v, n) for v, n in threes if sig and (sig.startswith(v) or v.startswith(sig))]
+        return max(aligned or threes, key=lambda vn: vn[1])[0][:3]
+    if len(sig) >= 3:
+        return sig[:3]
+    return (p + sig + "XXX")[:3]
 
 
 def _choose_brand_prefix(brand_key: str, counter: Counter) -> tuple[str, float]:
@@ -118,6 +145,7 @@ def _choose_brand_prefix(brand_key: str, counter: Counter) -> tuple[str, float]:
     mode_aligned = bool(sig) and len(mode_val) >= 2 and (
         sig.startswith(mode_val) or mode_val.startswith(sig)
     )
+    chosen, share = mode_val, mode_cnt / total
     if sig and not mode_aligned:
         aligned = [(p, n) for p, n in counter.items()
                    if len(p) >= 2 and (sig.startswith(p) or p.startswith(sig))]
@@ -125,8 +153,8 @@ def _choose_brand_prefix(brand_key: str, counter: Counter) -> tuple[str, float]:
             # most-used aligned prefix; ties -> shortest (closest to the brand base)
             p, n = max(aligned, key=lambda pn: (pn[1], -len(pn[0])))
             if n >= _ALIGN_MIN_SHARE * mode_cnt:
-                return p, n / total
-    return mode_val, mode_cnt / total
+                chosen, share = p, n / total
+    return _ensure_min3(chosen, counter, sig), share   # prefix is ALWAYS >=3 chars
 
 
 def _slim(row: dict) -> dict:

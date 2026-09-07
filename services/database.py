@@ -510,6 +510,8 @@ def init_db() -> None:
             ("elig_check_status",  "TEXT"),      # eligibility/storage enrichment progress (reused)
             ("elig_check_done",    "INTEGER DEFAULT 0"),
             ("elig_check_total",   "INTEGER DEFAULT 0"),
+            ("min_sold",           "INTEGER DEFAULT 0"),  # min est. units sold/mo (Keepa monthlySold filter)
+            ("max_sold",           "INTEGER DEFAULT 0"),  # max est. units sold/mo
         ]:
             try:
                 conn.execute(f"ALTER TABLE brand_analytics_runs ADD COLUMN {col} {defn}")
@@ -544,10 +546,36 @@ def init_db() -> None:
         _seed_library(conn)
 
 
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _LOCK, _connect() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+
+
+def next_seq(scope: str) -> int:
+    """Atomically increment and return a per-scope counter (e.g. a per-vendor,
+    per-day export number). Stored in the settings kv table."""
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (scope,)).fetchone()
+        n = (int(row["value"]) if row and str(row["value"]).isdigit() else 0) + 1
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (scope, str(n)))
+    return n
+
+
 def _seed_settings(conn: sqlite3.Connection) -> None:
     defaults = {
         "threshold_verified": "85",
         "threshold_review":   "35",
+        "prep_out_fee":       "0.25",
     }
     for key, value in defaults.items():
         conn.execute(

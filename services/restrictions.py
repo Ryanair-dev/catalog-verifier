@@ -82,22 +82,38 @@ class RestrictionsAPI:
             if limiter:
                 limiter.acquire()
 
-            resp = requests.get(
-                f"{ENDPOINT}{path}",
-                headers=self._headers(),
-                params=params,
-                timeout=15,
-            )
+            try:
+                resp = requests.get(
+                    f"{ENDPOINT}{path}",
+                    headers=self._headers(),
+                    params=params,
+                    timeout=25,
+                )
+            except requests.RequestException as exc:
+                # Transient network error — retry with backoff rather than turning
+                # the ASIN into an ERROR row (common during large bulk runs).
+                wait = min(30, 2 ** attempt)
+                log.warning("[net] %s on %s (attempt %d): %s. Backing off %ss.",
+                            type(exc).__name__, operation, attempt + 1, str(exc)[:80], wait)
+                time.sleep(wait)
+                continue
 
             if resp.status_code == 200:
                 return resp
 
             if resp.status_code == 429:
-                wait = 2 ** attempt
+                wait = min(30, 2 ** attempt)
                 log.warning(
                     "[429] Throttled on %s (attempt %d). Backing off %ss.",
                     operation, attempt + 1, wait,
                 )
+                time.sleep(wait)
+                continue
+
+            if resp.status_code in (500, 502, 503, 504):
+                wait = min(30, 2 ** attempt)
+                log.warning("[%d] server error on %s (attempt %d). Backing off %ss.",
+                            resp.status_code, operation, attempt + 1, wait)
                 time.sleep(wait)
                 continue
 
@@ -161,6 +177,24 @@ def _detect_reason_type(message: str) -> str:
     return "RESTRICTION"
 
 
+# Amazon's own `reasonCode` on each reason (confirmed live, 2026-09-04: sampled
+# real restrictions responses) is the authoritative signal for whether a reason
+# is genuinely approvable -- e.g. "APPROVAL_REQUIRED" always came with a real
+# `links` entry (a working Seller Central request URL), while "NOT_ELIGIBLE"
+# always came with `links: []` and message text like "we are currently not
+# accepting applications" -- a hard block, not something the seller can act on.
+# Prefer this over guessing from free-text when Amazon gives us the code.
+_REASON_CODE_TYPE: dict[str, str] = {
+    "APPROVAL_REQUIRED": "APPROVAL_REQUIRED",
+    "NOT_ELIGIBLE":       "NOT_ELIGIBLE",
+    # Found via a 103-ASIN live sample (2026-09-04): "ASIN does not exist in
+    # this marketplace" -- a dead/delisted ASIN, not a brand/category gate.
+    # Still correctly resolves to RESTRICTED (can_request=False, no links) but
+    # deserves its own label so it doesn't read like a normal brand block.
+    "ASIN_NOT_FOUND":     "ASIN_NOT_FOUND",
+}
+
+
 def classify(asin: str, raw_response: dict) -> dict:
     """
     Convert a raw restrictions API response into a structured result dict.
@@ -172,6 +206,7 @@ def classify(asin: str, raw_response: dict) -> dict:
           "reasons": [
             {
               "type":         str,
+              "code":         str,   # Amazon's raw reasonCode, e.g. "NOT_ELIGIBLE"
               "message":      str,
               "hint":         str,
               "can_request":  bool,
@@ -191,22 +226,38 @@ def classify(asin: str, raw_response: dict) -> dict:
     for restriction in restrictions:
         for reason in restriction.get("reasons", []):
             message = reason.get("message", "")
+            code    = reason.get("reasonCode", "")
             links   = reason.get("links", [])
 
-            approval_url: str | None = None
-            can_request = False
-            for link in links:
-                if link.get("verb") == "REQUEST_APPROVAL":
-                    can_request  = True
-                    approval_url = link.get("resource")
-                    break
+            # BUG FIX (2026-09-04): this used to require `link.get("verb") ==
+            # "REQUEST_APPROVAL"`, but Amazon's real `verb` field is the HTTP
+            # method ("GET"), never that string -- so `can_request` was DEAD
+            # CODE, always False, for every ASIN ever checked. The real signal
+            # is simply whether Amazon returned a link at all: it only does so
+            # when a self-serve approval action genuinely exists right now.
+            approval_url: str | None = links[0].get("resource") if links else None
+            can_request = bool(links)
 
-            reason_type = _detect_reason_type(message)
+            # Prefer Amazon's own reasonCode (authoritative); fall back to the
+            # message-keyword heuristic only for codes we haven't catalogued.
+            reason_type = _REASON_CODE_TYPE.get(code) or _detect_reason_type(message)
 
-            if can_request or reason_type in APPROVABLE_TYPES:
+            # BUG FIX (2026-09-04): status used to be driven by
+            # `can_request OR reason_type in APPROVABLE_TYPES` -- since
+            # can_request was always False (above) and free-text like "brand
+            # restriction" was mis-typed as approvable even for a NOT_ELIGIBLE/
+            # "not accepting applications" hard block, this silently turned
+            # real RESTRICTED items into NEEDS_APPROVAL (reported by user:
+            # B002SV32VI shows RESTRICTED on RevSeller, we showed NEEDS_APPROVAL
+            # -- raw response was reasonCode=NOT_ELIGIBLE, links=[]). Now driven
+            # solely by the actual presence of a working request link.
+            if can_request:
                 any_approvable = True
 
-            # Fallback: construct SC approval URL if API didn't return one
+            # Fallback: construct SC approval URL only for reason TYPES that are
+            # approvable by nature (still useful if Amazon's API omits the link
+            # for an otherwise-legitimate approvable reason) -- never for a
+            # reason Amazon already told us has no request path.
             if not approval_url and reason_type in APPROVABLE_TYPES:
                 approval_url = (
                     f"https://sellercentral.amazon.com/hz/approvalrequest/"
@@ -215,6 +266,7 @@ def classify(asin: str, raw_response: dict) -> dict:
 
             parsed_reasons.append({
                 "type":         reason_type,
+                "code":         code,
                 "message":      message,
                 "hint":         APPROVAL_HINTS.get(reason_type, ""),
                 "can_request":  can_request,
@@ -222,7 +274,12 @@ def classify(asin: str, raw_response: dict) -> dict:
             })
 
     status = STATUS_NEEDS_APPROVAL if any_approvable else STATUS_RESTRICTED
-    return {"asin": asin, "status": status, "reasons": parsed_reasons}
+    # DOG (dead/delisted) -- confirmed live (2026-09-04): an ASIN_NOT_FOUND reason
+    # 404s on the catalog API too, the same signal storage_fees.py/generic_check.py
+    # already use for DOG. Surfaced as its own flag so a deactivated ASIN isn't
+    # lumped in with a real brand/category block under RESTRICTED.
+    dog = any(r["code"] == "ASIN_NOT_FOUND" for r in parsed_reasons)
+    return {"asin": asin, "status": status, "reasons": parsed_reasons, "dog": dog}
 
 
 # ── Cached singleton factory ──────────────────────────────────────────────────

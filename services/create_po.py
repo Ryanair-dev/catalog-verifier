@@ -248,9 +248,25 @@ def resolve_brands(
                 prefix = (index.prefix_for_brand(lookup) if index else None) or _auto_prefix(brand)
             else:
                 prefix = _auto_prefix(brand)
-        purchaser = _s(mp.get("purchaser"))
-        sourcer = _s(mp.get("sourcer"))
-        # apply overrides last
+        # Ford-Medical rule (hardcoded): a prefix is ALWAYS 3 chars, never 2. A stale
+        # 2-char value from the saved table (e.g. TRESemmé 'RH' from an 'RH1234' SKU)
+        # is upgraded to the 3-char brand-derived code here even before a table rebuild.
+        if len(_s(prefix)) < 3:
+            prefix = _auto_prefix(brand)
+        # "Other" is SellerCloud's unassigned placeholder, not a real purchaser/
+        # sourcer -- treat it as blank here too (mirrors the vote-exclusion in
+        # azure_sql.brand_map/sc_reference/brand_map.py) so a stale cached "Other"
+        # can never block the manufacturer-level fallback below. A literal "Other"
+        # is a normal string and is truthy, so `if not purchaser:` alone does NOT
+        # catch it -- that gap is exactly what let a stale mapping row lock in
+        # "Other" instead of falling through to the correct saved value.
+        def _real(v: str) -> str:
+            return "" if v.strip().lower() == "other" else v
+
+        purchaser = _real(_s(mp.get("purchaser")))
+        sourcer = _real(_s(mp.get("sourcer")))
+        # apply overrides last (an explicit user-picked "Other" IS respected here --
+        # only the auto-resolved mapping value gets normalised away above)
         manufacturer = _s(ov.get("manufacturer")) or manufacturer
         prefix = (_s(ov.get("prefix")) or prefix).upper()
         purchaser = _s(ov.get("purchaser")) or purchaser

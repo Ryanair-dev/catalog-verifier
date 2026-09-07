@@ -34,3 +34,20 @@ async def set_thresholds(body: Thresholds) -> dict:
         )
     database.set_thresholds(body.verified, body.review)
     return database.get_thresholds()
+
+
+class PrepFee(BaseModel):
+    prep_out_fee: float
+
+
+@router.get("/settings/prep-out-fee")
+async def get_prep_out_fee() -> dict:
+    return {"prep_out_fee": float(database.get_setting("prep_out_fee", "0.25"))}
+
+
+@router.post("/settings/prep-out-fee")
+async def set_prep_out_fee(body: PrepFee) -> dict:
+    if body.prep_out_fee < 0:
+        raise HTTPException(status_code=400, detail="Prep & Out fee must be ≥ 0.")
+    database.set_setting("prep_out_fee", str(body.prep_out_fee))
+    return {"prep_out_fee": float(database.get_setting("prep_out_fee", "0.25"))}
