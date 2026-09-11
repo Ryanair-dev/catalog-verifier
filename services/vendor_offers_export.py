@@ -230,11 +230,78 @@ def build_lookup_xlsx(identifiers: list[str]) -> bytes:
     return buf.getvalue()
 
 
+_ID_HEADER_NAMES = {"upc", "asin", "barcode", "sku", "gtin", "ean", "item#", "itemnumber", "itemno"}
+_UPC_RE  = re.compile(r"^\d{6,14}$")
+_ASIN_RE = re.compile(r"^B0[A-Z0-9]{8}$", re.IGNORECASE)
+
+
+def _looks_like_id(tok: str) -> bool:
+    return bool(_UPC_RE.match(tok) or _ASIN_RE.match(tok))
+
+
 def parse_identifiers(text: str) -> list[str]:
-    """Split pasted text (newlines / commas / tabs / whitespace) into identifiers,
-    dropping an obvious header token."""
-    toks = [t.strip() for t in re.split(r"[\s,;|]+", str(text or "")) if t.strip()]
-    return [t for t in toks if t.lower() not in ("upc", "asin", "barcode", "sku")]
+    """Extract UPCs/ASINs from pasted text OR an uploaded file, in either shape:
+
+      - A simple list: one identifier per line (optionally comma/tab/pipe/
+        semicolon separated too, e.g. a paste like "123456, 789012"). Every
+        non-header token is kept -- the original behaviour.
+      - A real multi-column CSV/TSV -- e.g. a vendor's FULL offer export with
+        description/cost/qty/vendor columns, uploaded as-is via "Choose a csv/
+        txt instead" (that upload sends the raw file text through unchanged,
+        with no column extraction). Splitting the whole blob on any whitespace/
+        comma here would turn every word of every product description into a
+        bogus "identifier" -- confirmed live 2026-09-07: a ~5k-UPC vendor offer
+        file blew past the 20,000-identifier cap this way. So: when a line
+        actually splits into more than one column, only the identifier column
+        is kept -- by header name if the file has one (UPC/ASIN/Barcode/SKU/
+        GTIN/EAN/Item#), else by whichever column's values are mostly
+        UPC/ASIN-shaped.
+    """
+    raw = str(text or "")
+    lines = [ln for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        return []
+
+    def _cols(line: str) -> list[str]:
+        if "\t" in line:
+            return [c.strip() for c in line.split("\t")]
+        if "," in line:
+            return [c.strip() for c in line.split(",")]
+        return [line.strip()]
+
+    rows = [_cols(ln) for ln in lines]
+    max_cols = max(len(r) for r in rows)
+
+    # Column-extraction only kicks in for genuinely tabular input: multiple
+    # rows sharing a consistent multi-column shape. A single line is always
+    # treated as a simple list, even if it happens to mix commas and spaces
+    # as casual separators (e.g. "123456, B000PR8WIA 789012") -- that shape
+    # is indistinguishable from a real 2-column CSV row on its own, and a
+    # real vendor file always has many rows, not one.
+    if len(lines) > 1 and max_cols > 1:
+        # Real tabular data (a CSV/TSV, not a simple pasted list).
+        header = rows[0]
+        id_col = next(
+            (i for i, h in enumerate(header)
+             if re.sub(r"[^a-z0-9]", "", h.lower()) in _ID_HEADER_NAMES),
+            None,
+        )
+        data_rows = rows[1:] if id_col is not None else rows
+        if id_col is None:
+            # No recognisable header -- pick the column with the most
+            # UPC/ASIN-shaped values across all rows (header row included; a
+            # real header token like "UPC" won't match the shape regex anyway).
+            id_col = max(
+                range(max_cols),
+                key=lambda i: sum(1 for r in rows if i < len(r) and _looks_like_id(r[i])),
+            )
+        toks = [r[id_col] for r in data_rows if id_col < len(r) and r[id_col]]
+    else:
+        # Simple list -- original whitespace/comma/tab/pipe tokenizer.
+        toks = [t.strip() for t in re.split(r"[\s,;|]+", raw) if t.strip()]
+
+    return [t for t in toks
+            if re.sub(r"[^a-z0-9]", "", t.lower()) not in _ID_HEADER_NAMES]
 
 
 def export_filename(prefix: str = "price_desk") -> str:

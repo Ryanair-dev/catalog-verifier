@@ -318,6 +318,14 @@ def _apply_ai_titles(items: list[dict]) -> None:
             "- KEEP the real product type, material, colour, size/dimension and key "
             "features, in natural order.\n"
             "- Do NOT add a unit or pack suffix like '(Each)'.\n"
+            "- CASE quantities are a WHOLESALE shipping unit, never the sellable unit -- "
+            "DROP them entirely. 'CS/6', '6/CS', '4/CASE', 'Case of 12', '1X12 CS' all mean "
+            "N units ship per case; they do NOT mean the product is sold as an N-pack, so "
+            "never turn a case quantity into a count/pack phrase (e.g. do NOT write "
+            "'CS/6' as '6 Count'). If the title ALSO states a genuine smaller retail "
+            "breakdown distinct from the case size (e.g. a box within the case), keep that "
+            "smaller unit instead. If no smaller unit is stated, just describe the base "
+            "product with no pack/count number at all.\n"
             "- The bracketed [brand] is context only — do not include it in the output.\n"
             'Return ONLY a JSON array, one object per input line IN ORDER:\n'
             '  {"name": "<clean description>", "abbr": [{"a":"<abbrev>","f":"<expansion>"}]}\n'
