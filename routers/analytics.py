@@ -52,6 +52,7 @@ from services.analytics.eligibility_check import (
     is_running as elig_check_running, approved_review_asins,
 )
 from services.spapi import sp_api_configured, get_catalog_api
+from services.storage_fees import extract_dimensions, calc_storage_fee
 
 router = APIRouter(prefix="/analytics")
 
@@ -1506,10 +1507,24 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
     raw_candidates: list[tuple[dict, str]] = []
 
     if upc:
-        tier1 = _tier1_upc(api, [row], run_id=0)
-        for items in tier1.values():
+        # _tier1_upc returns (matched, kw_unverified) -- barcode-confirmed hits
+        # vs. Pass-4 keyword-fallback hits whose barcode does NOT match the
+        # searched UPC (often the same product under a different Amazon
+        # UPC/ASIN). This caller was still unpacking it as a single dict (a
+        # pre-tuple calling convention -- confirmed live 2026-09-22: crashed
+        # with AttributeError on every UPC search), while the full Analytics
+        # run's caller (services/analytics/runner.py ~line 1691) already
+        # unpacks and tags both halves correctly. Matched here to that
+        # standard: "UPC" gets full UPC credit in scoring below, "UPC-KW"
+        # does not (still barcode/UPC-string-scoped search either way -- no
+        # title/brand tier is involved, matching "only the UPC was searched").
+        tier1_matched, tier1_kw = _tier1_upc(api, [row], run_id=0)
+        for items in tier1_matched.values():
             for it in items:
                 raw_candidates.append((it, "UPC"))
+        for items in tier1_kw.values():
+            for it in items:
+                raw_candidates.append((it, "UPC-KW"))
 
     if itemid:
         tier2 = _tier2_itemid(api, [row], run_id=0)
@@ -1583,6 +1598,25 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
         if min_rank > 0 and (sales_rank is None or int(sales_rank) < min_rank):
             verdict = "not_approved"
 
+        # Dimensions, storage fee, and list price all come from the SAME raw
+        # SP-API item this search already fetched (normalize_amazon_item keeps
+        # the full response as `_raw`) -- no extra API call, same approach
+        # services/analytics/eligibility_check.py already uses for a full
+        # Analytics run's storage-fee enrichment (its own docstring: "computed
+        # from the Amazon dimensions ALREADY stored ... no extra API call").
+        # Quick Search fetches the identical data but was discarding it.
+        raw_attrs = ((normalized.get("_raw") or {}).get("attributes") or {})
+        dims = extract_dimensions(raw_attrs)
+        storage_offpeak = storage_peak = None
+        if all(dims.get(k) is not None for k in ("length_cm", "width_cm", "height_cm", "weight_g")):
+            storage_offpeak, storage_peak = calc_storage_fee(
+                dims["length_cm"], dims["width_cm"], dims["height_cm"], dims["weight_g"],
+            )
+        list_price = None
+        lp_list = raw_attrs.get("list_price") or []
+        if isinstance(lp_list, list) and lp_list and isinstance(lp_list[0], dict):
+            list_price = lp_list[0].get("value")
+
         results.append({
             "asin":              asin,
             "title":             normalized.get("title") or "",
@@ -1598,6 +1632,13 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
             "verdict":           verdict,
             "sources":           sources,
             "scores":            scores,
+            "list_price":        list_price,
+            "length_in":         dims["length_in"],
+            "width_in":          dims["width_in"],
+            "height_in":         dims["height_in"],
+            "weight_lb":         dims["weight_lb"],
+            "storage_fee_offpeak": storage_offpeak,
+            "storage_fee_peak":    storage_peak,
         })
 
     # Context filter: when the user provides a brand or title, keep only

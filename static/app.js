@@ -7278,6 +7278,25 @@
     }).join("");
   }
 
+  // Price/dimensions/storage fee -- all come back on the SAME quick-search
+  // response, no extra lookup (2026-09-22: the search call already returns
+  // this in its attributes payload; it just wasn't being surfaced before).
+  function _qsPriceStorageCell(c) {
+    const lines = [];
+    if (c.list_price != null) {
+      lines.push(`<div style="font-weight:600;color:#1e293b;">$${Number(c.list_price).toFixed(2)}</div>`);
+    }
+    if (c.length_in != null && c.width_in != null && c.height_in != null) {
+      const w = c.weight_lb != null ? `, ${Number(c.weight_lb).toFixed(2)}lb` : "";
+      lines.push(`<div style="color:#64748b;">${c.length_in}×${c.width_in}×${c.height_in}in${w}</div>`);
+    }
+    if (c.storage_fee_offpeak != null) {
+      const peak = c.storage_fee_peak != null ? ` · peak $${Number(c.storage_fee_peak).toFixed(4)}` : "";
+      lines.push(`<div style="color:#94a3b8;" title="FBA monthly storage fee per unit">$${Number(c.storage_fee_offpeak).toFixed(4)}/mo${peak}</div>`);
+    }
+    return lines.length ? lines.join("") : `<span style="color:#cbd5e1;">—</span>`;
+  }
+
   function _qsScoreBadge(conf, verdict) {
     const color = verdict === "verified" ? "#166534"
                 : verdict === "review"   ? "#854d0e"
@@ -7321,7 +7340,7 @@
         : `${filtered.length} of ${_qs.results.length} candidates`;
     }
 
-    const colSpan = _qs.multiMode ? "10" : "9";
+    const colSpan = _qs.multiMode ? "11" : "10";
     if (filtered.length === 0) {
       tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center;color:#94a3b8;padding:24px;">No candidates match this filter.</td></tr>`;
       return;
@@ -7371,6 +7390,7 @@
         <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.upc) || "—"}</td>
         <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.mpn) || "—"}</td>
         <td>${_qsSourcesBadge(c.sources)}</td>
+        <td style="font-size:11px;line-height:1.5;">${_qsPriceStorageCell(c)}</td>
         ${queryCell}
       </tr>`;
     }).join("");
