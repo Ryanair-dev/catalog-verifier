@@ -8039,6 +8039,7 @@
     tr.style.borderBottom = "1px solid #f1f5f9";
     const cells = [
       row.upc,
+      row.item_id || "—",
       row.title || "—",
       _fmtWmMoney(row.walmart_price),
       _fmtWmMoney(row.vendor_cost),
@@ -8095,7 +8096,7 @@
     const rows = _wmOaState.results;
     if (!rows.length) return;
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = ["upc", "title", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const headers = ["upc", "item_id", "title", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
     const lines = [headers.map(_q).join(",")];
     for (const r of rows) {
       lines.push(headers.map(h => _q(r[h])).join(","));
