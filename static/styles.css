@@ -1180,6 +1180,32 @@ html, body {
 .toggle-pill input:checked + .slider { background: var(--teal-500); }
 .toggle-pill input:checked + .slider::before { transform: translateX(18px); }
 
+/* Segmented radio group -- a 2+ option exclusive choice styled as one merged
+   pill instead of separate circle radios + labels. */
+.seg-radio {
+  display: inline-flex;
+  border: 1px solid var(--grey-200, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.seg-radio label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--grey-500, #64748b);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms, color 120ms;
+}
+.seg-radio label:not(:last-child) { border-right: 1px solid var(--grey-200, #e2e8f0); }
+.seg-radio label:hover { background: var(--grey-50, #f8fafc); }
+.seg-radio input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
+.seg-radio label:has(input:checked) { background: #6366f1; color: #fff; font-weight: 600; }
+.seg-radio label:has(input:checked):hover { background: #6366f1; }
+
 .detail-status {
   margin-top: 24px;
   padding: 14px 16px;

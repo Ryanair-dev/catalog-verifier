@@ -1,5 +1,5 @@
 """
-Analytics tab (ROI & Cost) — FastAPI router.
+Analytics tab (Offer Analysis) — FastAPI router.
 
 Endpoints
 ---------

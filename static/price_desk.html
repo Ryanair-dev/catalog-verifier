@@ -489,6 +489,7 @@ select {
     <button class="chip plain" id="fNoAsin" type="button" aria-pressed="false">Needs ASIN</button>
   </div>
   <button class="chip act" id="btnImport" type="button">Import</button>
+  <button class="chip act" id="btnSyncDB" type="button" title="Pull the latest offers for Quality King, Cencora, Diamond, BILO and Victory straight from the database">Sync from Database</button>
   <button class="chip act" id="btnExport" type="button">Export to Excel</button>
   <select id="sort" aria-label="Sort by">
     <option value="save">Sort: biggest saving</option>
@@ -554,6 +555,15 @@ select {
 
   <!-- vendor offer file -->
   <div class="m-pane" id="paneOffer" hidden>
+    <div id="dbSync" style="margin-bottom:12px">
+      <div class="m-row" style="margin:0">
+        <button class="m-ghost" id="btnSyncDBModal" type="button">Sync now</button>
+        <span class="m-help" style="margin:0" id="dbSyncStatus">Quality King, Cencora, Diamond, BILO
+          and Victory pull straight from the database (hourly, automatic) &mdash; upload below is only
+          for other vendors.</span>
+      </div>
+      <div class="m-out" id="dbSyncOut" hidden></div>
+    </div>
     <p class="m-help">Upload the file a vendor just sent. It merges into what's already
       stored &mdash; prices it mentions are refreshed, new items added, and anything it
       doesn't mention is kept with its previous date.</p>
@@ -592,17 +602,47 @@ select {
   </div>
 </section>
 
-<!-- export scope chooser -->
+<!-- export options (one consolidated modal) -->
 <div class="scrim" id="expScrim"></div>
 <section class="modal" id="expModal" role="dialog" aria-modal="true" aria-labelledby="expTitle"
-         aria-hidden="true" style="max-width:400px">
+         aria-hidden="true" style="max-width:440px">
   <button class="drawer-x" id="expX" type="button" aria-label="Close">&#10005;</button>
   <p class="lbl" style="font-size:9.5px;color:var(--ink-faint);margin:0">Offer Analytics export</p>
-  <h2 class="m-title" id="expTitle">What should the export include?</h2>
-  <p class="m-help">Filter to one vendor first to scope the file to that vendor's cheapest items.</p>
-  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <button class="m-go" id="expAll" type="button">Everything</button>
-    <button class="m-go" id="expAvail" type="button">Only items with available qty</button>
+  <h2 class="m-title" id="expTitle">Export options</h2>
+
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:10px">
+    <span class="lbl" style="font-size:10px;color:var(--ink-faint)">Scope</span>
+    <div class="chips">
+      <button class="chip plain" id="optScopeAll" type="button" aria-pressed="true">Everything</button>
+      <button class="chip plain" id="optScopeAvail" type="button" aria-pressed="false">Only available qty</button>
+    </div>
+    <span class="m-help" style="margin:0">Filter to one vendor first to scope the file to that vendor's cheapest items.</span>
+  </div>
+
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:14px">
+    <span class="lbl" style="font-size:10px;color:var(--ink-faint)">Keepa data</span>
+    <div class="chips">
+      <button class="chip plain" id="optKeepaYes" type="button" aria-pressed="true">Populate Keepa data</button>
+      <button class="chip plain" id="optKeepaNo" type="button" aria-pressed="false">Skip Keepa</button>
+    </div>
+    <span class="m-help" style="margin:0">Buy Box price/history, ranks, estimated units sold, etc.
+      Skipping is faster but leaves those columns blank.</span>
+  </div>
+
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:14px" id="filtersGroup">
+    <span class="lbl" style="font-size:10px;color:var(--ink-faint)">Filters</span>
+    <div class="chips">
+      <button class="chip plain" id="optFilterYes" type="button" aria-pressed="false">Apply filters</button>
+      <button class="chip plain" id="optFilterNo" type="button" aria-pressed="true">Show as a whole</button>
+    </div>
+    <span class="m-help" style="margin:0" id="filtersHelp">Keeps only items estimated at
+      <b>&ge;50 units sold/mo</b>, where Amazon holds <b>&lt;90%</b> of the 30-day Buy Box, and
+      excludes <b>Restricted</b>, <b>Generic</b> and <b>DOG</b> ASINs (Generic adds one more
+      SP-API call per ASIN, so this takes a little longer).</span>
+  </div>
+
+  <div class="m-row" style="margin-top:18px">
+    <button class="m-go" id="expStart" type="button" style="width:100%;justify-content:center">Start export</button>
   </div>
 </section>
 <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Item detail" aria-hidden="true">
@@ -1059,20 +1099,56 @@ const expScrim = document.getElementById("expScrim");
 let exportJob = null;                       // {id, cancelled} while a job is running
 const EXPORT_LABEL = btnExport ? btnExport.textContent : "Export to Excel";
 
+// One consolidated export-options modal: scope / Keepa / filters, each a
+// mutually-exclusive chip pair, plus a single "Start export" button.
+function _expSetPressed(id, on) {
+  const el = document.getElementById(id);
+  if (el) el.setAttribute("aria-pressed", String(on));
+}
+function _expGroup(aId, bId, onA) {
+  const a = document.getElementById(aId), b = document.getElementById(bId);
+  if (!a || !b) return;
+  const pick = (aOn) => { _expSetPressed(aId, aOn); _expSetPressed(bId, !aOn); onA && onA(aOn); };
+  a.addEventListener("click", () => pick(true));
+  b.addEventListener("click", () => pick(false));
+}
+function _expResetOptions() {
+  _expSetPressed("optScopeAll", true); _expSetPressed("optScopeAvail", false);
+  _expSetPressed("optKeepaYes", true); _expSetPressed("optKeepaNo", false);
+  _expSetPressed("optFilterYes", false); _expSetPressed("optFilterNo", true);
+  _expSetFiltersEnabled(true);
+}
+function _expSetFiltersEnabled(on) {
+  const grp = document.getElementById("filtersGroup");
+  const yes = document.getElementById("optFilterYes"), no = document.getElementById("optFilterNo");
+  const help = document.getElementById("filtersHelp");
+  if (!grp) return;
+  grp.style.opacity = on ? "1" : ".45";
+  if (yes) yes.disabled = !on;
+  if (no) no.disabled = !on;
+  if (!on) { _expSetPressed("optFilterYes", false); _expSetPressed("optFilterNo", true); }
+  if (help) help.textContent = on
+    ? "Keeps only items estimated at ≥50 units sold/mo, where Amazon holds <90% of the 30-day Buy Box, "
+      + "and excludes Restricted, Generic and DOG ASINs (Generic adds one more SP-API call per ASIN, "
+      + "so this takes a little longer)."
+    : "Needs Keepa data (units sold, Buy Box share) — turn Keepa back on to filter.";
+}
 function closeExportScope() {
   if (!expModal) return;
   expModal.classList.remove("open"); expScrim.classList.remove("open");
   expModal.setAttribute("aria-hidden", "true");
 }
 
-// Start the export job with the chosen scope, then poll → download.
-async function startAnalyticsExport(onlyAvailable) {
+// Start the export job with the chosen options, then poll → download.
+async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) {
   btnExport.textContent = "Starting…";
   try {
     const start = await fetch("/api/vendor-offers/analytics-export/start", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
-                             has_asin: !!state.asin, only_available: !!onlyAvailable }),
+                             has_asin: !!state.asin, only_available: !!onlyAvailable,
+                             apply_filters: !!applyFilters,
+                             populate_keepa: populateKeepa !== false }),
     });
     const sj = await start.json().catch(() => ({}));
     if (!start.ok) throw new Error(sj.detail || start.statusText);
@@ -1114,18 +1190,28 @@ if (btnExport) {
       try { await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/cancel`, { method: "POST" }); } catch (e) {}
       return;
     }
-    if (expModal) {                                         // ask scope first
+    if (expModal) {                                         // ask options first
+      _expResetOptions();
       expModal.classList.add("open"); expScrim.classList.add("open");
       expModal.setAttribute("aria-hidden", "false");
     } else {
-      startAnalyticsExport(false);
+      startAnalyticsExport(false, false, true);
     }
   });
   if (expModal) {
     document.getElementById("expX").addEventListener("click", closeExportScope);
     expScrim.addEventListener("click", closeExportScope);
-    document.getElementById("expAll").addEventListener("click", () => { closeExportScope(); startAnalyticsExport(false); });
-    document.getElementById("expAvail").addEventListener("click", () => { closeExportScope(); startAnalyticsExport(true); });
+    _expGroup("optScopeAll", "optScopeAvail");
+    _expGroup("optKeepaYes", "optKeepaNo", (keepaOn) => _expSetFiltersEnabled(keepaOn));
+    _expGroup("optFilterYes", "optFilterNo");
+    document.getElementById("expStart").addEventListener("click", () => {
+      const onlyAvailable = document.getElementById("optScopeAvail").getAttribute("aria-pressed") === "true";
+      const populateKeepa = document.getElementById("optKeepaYes").getAttribute("aria-pressed") === "true";
+      const applyFilters = populateKeepa
+        && document.getElementById("optFilterYes").getAttribute("aria-pressed") === "true";
+      closeExportScope();
+      startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa);
+    });
   }
 }
 let deb;
@@ -1304,6 +1390,50 @@ $("btnLookupExport").addEventListener("click", async () => {
 });
 
 // ---- pull matches from the Pair Library (by UPC) ----------------------
+async function _runDbSync(btn, out) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Syncing\u2026 (~1 min)";
+  if (out) { out.hidden = false; out.textContent = "Pulling the latest offers from the database\u2026"; }
+  try {
+    const res = await fetch("/api/vendor-offers/db-sync/run", { method: "POST" });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.detail || ("HTTP " + res.status));
+    const lines = Object.entries(j.results || {}).map(([v, r]) =>
+      `${v}: ${r.total} offers (${r.added} new)`);
+    const errLines = Object.entries(j.errors || {}).map(([v, e]) => `${v}: FAILED \u2014 ${e}`);
+    const summary = [...lines, ...errLines].join("\n") || "Done.";
+    if (out) out.textContent = summary;
+    toast(errLines.length ? `Synced with ${errLines.length} error(s) \u2014 see Import for details.`
+                           : "Synced from database. Refresh to see the new offers.", !!errLines.length);
+    _refreshDbSyncStatus();
+  } catch (err) {
+    if (out) out.textContent = "Sync failed: " + err.message;
+    toast("Sync failed: " + err.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+async function _refreshDbSyncStatus() {
+  const el = $("dbSyncStatus");
+  if (!el) return;
+  try {
+    const j = await (await fetch("/api/vendor-offers/db-sync/status")).json();
+    const last = j.last;
+    if (last && last.finished_at) {
+      const when = new Date(last.finished_at + "Z").toLocaleString();
+      const errCount = Object.keys(last.errors || {}).length;
+      el.textContent = `Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour `
+        + `\u2014 last sync ${when}${errCount ? ` (${errCount} vendor(s) failed)` : ""}.`;
+    } else {
+      el.textContent = "Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour "
+        + "\u2014 no sync has run yet, click Sync now.";
+    }
+  } catch (err) { /* best-effort */ }
+}
+$("btnSyncDB").addEventListener("click", () => _runDbSync($("btnSyncDB"), null));
+$("btnSyncDBModal").addEventListener("click", () => _runDbSync($("btnSyncDBModal"), $("dbSyncOut")));
+_refreshDbSyncStatus();
+
 $("btnSyncPL").addEventListener("click", async () => {
   const btn = $("btnSyncPL"), out = $("syncOut"), label = btn.textContent;
   btn.disabled = true; btn.textContent = "Syncing…";
