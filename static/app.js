@@ -628,6 +628,7 @@
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
     if (view === "create-po") initCreatePo();
     if (view === "vendor-offers") initVendorOffers();
+    if (view === "walmart-catalog" && typeof _refreshWalmartStatus === "function") _refreshWalmartStatus();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
@@ -8007,6 +8008,120 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
+
+  // ==========================================================================
+  //  Walmart Catalog -- item search + first-cut Offer Analysis
+  // ==========================================================================
+  const _wmOaState = { results: [] };
+
+  function _parseWalmartOaRows(text) {
+    return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+      const parts = line.split(",").map(s => s.trim());
+      return {
+        upc: parts[0] || "",
+        vendor_cost: parseFloat(parts[1]) || 0,
+        category: parts[2] || "",
+      };
+    }).filter(r => r.upc);
+  }
+
+  function _fmtWmMoney(v) {
+    return (v === null || v === undefined) ? "—" : `$${Number(v).toFixed(2)}`;
+  }
+  function _fmtWmPct(v) {
+    return (v === null || v === undefined) ? "—" : `${(Number(v) * 100).toFixed(1)}%`;
+  }
+
+  function _renderWalmartOaRow(row) {
+    const tbody = $("#wm-oa-table-body");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    const cells = [
+      row.upc,
+      row.title || "—",
+      _fmtWmMoney(row.walmart_price),
+      _fmtWmMoney(row.vendor_cost),
+      _fmtWmMoney(row.referral_fee),
+      _fmtWmMoney(row.net_profit),
+      _fmtWmPct(row.roi),
+      row.error || row.note || "",
+    ];
+    tr.innerHTML = cells.map(c => `<td style="padding:5px 6px;">${
+      String(c ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    }</td>`).join("");
+    tbody.appendChild(tr);
+  }
+
+  async function _runWalmartOfferAnalysis() {
+    const input = $("#wm-oa-input");
+    const btn = $("#wm-oa-run");
+    const tableWrap = $("#wm-oa-table-wrap");
+    const tableBody = $("#wm-oa-table-body");
+    const progress = $("#wm-oa-progress");
+    const exportBtn = $("#wm-oa-export");
+    if (!input || !btn) return;
+
+    const items = _parseWalmartOaRows(input.value);
+    if (!items.length) { showToast("Paste at least one line: UPC, Vendor Cost", "warning"); return; }
+
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = `Searching Walmart for ${items.length} item${items.length === 1 ? "" : "s"}…`;
+
+    try {
+      const r = await api("/api/walmart/offer-analysis", { method: "POST", body: { items } });
+      _wmOaState.results = r.results || [];
+      tableWrap?.classList.remove("hidden");
+      _wmOaState.results.forEach(_renderWalmartOaRow);
+      const found = _wmOaState.results.filter(x => x.walmart_price != null).length;
+      if (progress) progress.textContent = `${found} / ${r.total} found a Walmart price.`;
+      if (_wmOaState.results.length) exportBtn?.classList.remove("hidden");
+    } catch (e) {
+      showToast("Walmart Offer Analysis failed: " + e.message, "error");
+      if (progress) progress.textContent = "Failed — " + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run Offer Analysis";
+    }
+  }
+  $("#wm-oa-run")?.addEventListener("click", _runWalmartOfferAnalysis);
+
+  $("#wm-oa-export")?.addEventListener("click", function() {
+    const rows = _wmOaState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["upc", "title", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push(headers.map(h => _q(r[h])).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "walmart_offer_analysis.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  async function _refreshWalmartStatus() {
+    const el = $("#wm-status");
+    if (!el) return;
+    try {
+      const j = await api("/api/walmart/status");
+      if (!j.configured) {
+        el.textContent = "Not connected — add WALMART_CLIENT_ID / WALMART_CLIENT_SECRET to .env and restart the backend.";
+      } else {
+        el.textContent = `Connected — ${j.production ? "production" : "sandbox"}.`;
+      }
+    } catch (e) {
+      el.textContent = "";
+    }
+  }
 
   async function _startToolsRun() {
     const input = $("#tools-asin-input");
