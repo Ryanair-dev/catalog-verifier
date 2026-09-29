@@ -63,6 +63,16 @@ _PACK_RE = re.compile(
     r'|\b(\d+)\s*[-\s]?pairs?\b'       # "6 pairs"  (gloves, socks)
     r'|\b(\d+)\s*[-\s]?vials?\b'       # "10 vials"  (medical)
     r'|\b(\d+)\s*[-\s]?sachets?\b'     # "30 sachets"
+    r'|\b(\d+)\s*[-\s]?ea(?:ch)?\b'    # "50 ea", "50 each" — CONFIRMED LIVE GAP
+                                        # (2026-09-29, Kotex 9.28.2026 run):
+                                        # "50 ea (Pack of 2)" was invisible to
+                                        # this whole regex, so after stripping
+                                        # "(Pack of 2)" the true per-unit count
+                                        # (50) was never found -- the count
+                                        # comparison silently bailed out
+                                        # (amz_n<=1 guard) instead of catching
+                                        # a real ~14% difference against a
+                                        # vendor's "58 Count".
     r'|\b(\d+)/(?=\d)',                 # "2/1200ML", "12/8OZ" — CPG slash-pack format
     re.IGNORECASE,
 )
