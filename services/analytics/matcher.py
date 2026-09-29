@@ -316,6 +316,36 @@ def _pack_count(text: str) -> int:
     return 1
 
 
+# "M Packs of K" — the combined multiplier+per-unit construct, e.g. "3 Packs
+# of 24". Distinct from _PACK_OF_RE's bare "pack of K" (no leading number,
+# where K is itself the multiplier over some per-unit value stated
+# elsewhere): here BOTH numbers are explicit, so K is unambiguously the true
+# per-unit count and M is unambiguously the bundle multiplier. Note the
+# plural "packs?" — _PACK_OF_RE/_MULTIPLIER_RE only match the SINGULAR
+# "pack of N", so they silently miss this construct entirely today.
+_MULTI_PACK_OF_RE = re.compile(r'\b(\d+)\s+packs?\s+of\s+(\d+)\b', re.IGNORECASE)
+
+
+def _true_unit_count(title: str) -> int:
+    """Like _pack_count, but resolves a real reported bug (2026-09-29, Kotex
+    9.28.2026): a title stating BOTH a bare total ("72 Count") and a "M Packs
+    of K" construct ("3 Packs of 24") is stating the SAME fact twice -- 72 is
+    just 3*24 restated as a marketing headline number, not an independent
+    per-unit count. Because "packs" (plural) isn't recognised by
+    _PACK_OF_RE/_MULTIPLIER_RE at all, _pack_count() was falling through to
+    whichever bare count appeared FIRST in the text ("72 Count"), silently
+    never seeing the "24" — so a vendor's single 72-count package was scoring
+    as a per-unit match against Amazon's true per-individual-pack size of 24,
+    a materially different product (3 separate 24-count packs bundled,
+    almost certainly a different UPC/price point/physical presentation).
+    When "M Packs of K" is present, K is always preferred over any other
+    bare count in the same title."""
+    m = _MULTI_PACK_OF_RE.search(title or "")
+    if m:
+        return int(m.group(2))
+    return _pack_count(title)
+
+
 def _extract_volume_ml(text: str) -> float | None:
     """
     Extract the primary volume/weight size from a product title and return it
@@ -752,8 +782,12 @@ def _unit_count_mismatch(src_title: str, amz_title: str) -> bool:
     # left to pack_mismatch (a soft cap), per the "only the pack differs →
     # approve" rule.  A genuine per-unit difference ("80 Count" vs "110 Count",
     # which carry no multiplier token) is untouched and still hard-rejects.
-    src_n = _pack_count(_MULTIPLIER_RE.sub(' ', src_title))
-    amz_n = _pack_count(_MULTIPLIER_RE.sub(' ', amz_title))
+    # _true_unit_count additionally prefers an explicit "M Packs of K" (both
+    # numbers stated) over any OTHER bare count elsewhere in the same title,
+    # which is often just the bundle total (M*K) restated — see its own
+    # docstring for the real reported case (Kotex "72 Count, 3 Packs of 24").
+    src_n = _true_unit_count(_MULTIPLIER_RE.sub(' ', src_title))
+    amz_n = _true_unit_count(_MULTIPLIER_RE.sub(' ', amz_title))
     if src_n <= 1 or amz_n <= 1:
         # One or both sides have no explicit per-unit count: leave pack_mismatch to handle it.
         return False
@@ -1207,8 +1241,8 @@ def _count_match(src_title: str, amz_title: str) -> bool:
     """Positive counterpart to _unit_count_mismatch: True when both sides state
     an explicit per-unit count (pack-multiplier tokens stripped first, same as
     the mismatch check) and the counts agree within 10%."""
-    src_n = _pack_count(_MULTIPLIER_RE.sub(' ', src_title))
-    amz_n = _pack_count(_MULTIPLIER_RE.sub(' ', amz_title))
+    src_n = _true_unit_count(_MULTIPLIER_RE.sub(' ', src_title))
+    amz_n = _true_unit_count(_MULTIPLIER_RE.sub(' ', amz_title))
     if src_n <= 1 or amz_n <= 1:
         return False
     return _within_10pct(float(src_n), float(amz_n))
