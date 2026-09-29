@@ -1694,7 +1694,26 @@ def calculate_confidence(
     _attrs_agreeing = sum(1 for f in _attr_flags if f)
     _any_attr_contradicts = apparel_size_mismatch or size_mismatch or color_mismatch or count_mismatch
     at_least_one_attr_confirmed = _attrs_agreeing >= 1
-    all_attributes_agree = _attrs_agreeing >= 1 and not _any_attr_contradicts
+    # CONFIRMED LIVE BUG (2026-09-29, "Kotex 9.28.2026" run): count_confirmed
+    # ALONE floored two genuinely different products to 100% -- "Kotex Bamboo
+    # Liners Extra Coverage, 54 Count" vs "Liv by Kotex Period & Pee Daily
+    # Panty Liners, Extra Coverage, 50 Count" (title similarity only ~76%,
+    # never checked by Rule 3/6). Brand matched because Amazon's structured
+    # brand field is just "Kotex" (the sub-brand "Liv by Kotex" only appears
+    # in the title text), and 54 vs 50 falls inside _count_match's 10%
+    # tolerance -- meant to forgive rounding/labeling artifacts, not to
+    # certify two differently-NAMED product lines as the same item. Unlike
+    # colour/apparel-size (a bounded, meaningful vocabulary, and both now
+    # require EXACT agreement per the earlier PediFix fix), a count match is
+    # comparatively easy to satisfy by coincidence across unrelated products.
+    # Fix: count_confirmed can no longer SOLELY satisfy "all attributes
+    # agree" for the strong floors (Rules 3/4/6) -- at least one of the
+    # stronger signals (apparel size or volume/weight/linear size or colour)
+    # must also confirm. Count-only agreement is still allowed to help
+    # confirm alongside a UPC match (Rule 2), where the UPC itself is
+    # already the primary, near-definitive signal.
+    _strong_attr_confirmed = apparel_confirmed or size_confirmed or colour_confirmed
+    all_attributes_agree = _strong_attr_confirmed and not _any_attr_contradicts
 
     if upc_match and at_least_one_attr_confirmed:
         # Rule 2: UPC/EAN + at least one attribute agreeing → 100.
