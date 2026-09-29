@@ -1172,6 +1172,51 @@ def _has_vol_or_weight(src_title: str, amz_title: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Positive "attribute confirmed" counterparts — used by the 2026-09-29
+# attribute-based confidence floors below (calculate_confidence). Each mirrors
+# an existing *_mismatch check's logic exactly, just returning True on
+# AGREEMENT instead of on contradiction, so "how many of size/colour/volume/
+# count actually confirm this is the same item" can be tallied.
+# --------------------------------------------------------------------------- #
+
+
+def _colour_match(src_title: str, amz_title: str, amz_color_attr: str, amz_full_text: str = "") -> bool:
+    """Positive counterpart to _color_mismatch: True when both sides name a
+    colour from the known word list and they share at least one (same colour
+    source precedence: structured attribute, else title)."""
+    src_colors = set(re.findall(r'[a-z]+', src_title.lower())) & _COLOR_WORDS
+    if not src_colors:
+        return False
+    amz_src_text = amz_color_attr if amz_color_attr.strip() else (amz_title or "")
+    amz_colors = set(re.findall(r'[a-z]+', amz_src_text.lower())) & _COLOR_WORDS
+    if not amz_colors:
+        return False
+    return not src_colors.isdisjoint(amz_colors)
+
+
+def _count_match(src_title: str, amz_title: str) -> bool:
+    """Positive counterpart to _unit_count_mismatch: True when both sides state
+    an explicit per-unit count (pack-multiplier tokens stripped first, same as
+    the mismatch check) and the counts agree within 10%."""
+    src_n = _pack_count(_MULTIPLIER_RE.sub(' ', src_title))
+    amz_n = _pack_count(_MULTIPLIER_RE.sub(' ', amz_title))
+    if src_n <= 1 or amz_n <= 1:
+        return False
+    return _within_10pct(float(src_n), float(amz_n))
+
+
+def _apparel_size_match(src_title: str, amz_title: str, amz_size_attr: str = "") -> bool:
+    """Positive counterpart to _apparel_size_mismatch: True when both sides
+    name an apparel/garment size (S/M/L/XL/…, from title or Amazon's size
+    attribute) and the size sets overlap."""
+    src_sizes = _garment_sizes(src_title)
+    amz_sizes = _garment_sizes(amz_title) | _garment_sizes(amz_size_attr or "")
+    if not src_sizes or not amz_sizes:
+        return False
+    return not src_sizes.isdisjoint(amz_sizes)
+
+
+# --------------------------------------------------------------------------- #
 # calculate_confidence — 1:1 port of the reference scorer
 # --------------------------------------------------------------------------- #
 
@@ -1522,6 +1567,43 @@ def calculate_confidence(
     size_confirmed = _size_match(
         _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
     )
+
+    # ----- The four "attribute" checks, computed here (moved up from their
+    # original position further below) so both the confirmation floors AND the
+    # later hard-reject caps can use the same values without recomputing them.
+    # size_confirmed above is the "volume" attribute (oz/ml/lb/linear-dims);
+    # these three are "colour", "count", and "size" (apparel S/M/L) per the
+    # user's 2026-09-29 attribute-based scoring spec. -----
+    size_mismatch = _size_mismatch(
+        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
+    )
+    # An exact model-number match means it's the same SKU, so a detected size
+    # difference is a linear-dimension parsing artifact (vendor states width
+    # only vs Amazon's W×L, unit typos) — suppress it UNLESS the mismatch rests
+    # on a reliable volume/weight signal, which model match should not override.
+    if size_mismatch and model_confirmed and not _has_vol_or_weight(
+        _s(source.get("title")), _s(amazon.get("title"))
+    ):
+        size_mismatch = False
+    color_mismatch = _color_mismatch(
+        _s(source.get("title")), _s(amazon.get("title")),
+        amz_color_attr, amz_full_text,
+    )
+    count_mismatch = (
+        _unit_count_mismatch(_s(source.get("title")), _s(amazon.get("title")))
+        and not size_confirmed
+    )
+    apparel_size_mismatch = _apparel_size_mismatch(
+        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
+    )
+    colour_confirmed = _colour_match(
+        _s(source.get("title")), _s(amazon.get("title")), amz_color_attr, amz_full_text,
+    )
+    count_confirmed = _count_match(_s(source.get("title")), _s(amazon.get("title")))
+    apparel_confirmed = _apparel_size_match(
+        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
+    )
+
     if upc_match and (brand_confirmed or size_confirmed):
         total = 100.0
     elif upc_match and best_title_ratio >= 60:
@@ -1542,6 +1624,58 @@ def calculate_confidence(
         # collision from auto-verifying an unrelated product.
         total = max(total, VERIFIED_FLOOR)
 
+    # ----- Attribute-based floors (per user spec, 2026-09-29) ---------------
+    # "Attribute" = one of {apparel size, volume/weight/linear size, colour,
+    # unit count}. "ALL attributes agree" is interpreted as "of the attributes
+    # that are actually stated on BOTH sides, none contradict, and at least one
+    # positively confirms" — a literal "all 4 present" would almost never fire
+    # (most products don't carry an apparel size AND a volume AND a colour AND
+    # a count simultaneously), making the rule dead in practice. Hard-reject
+    # caps further below still override every floor here, same as all the
+    # existing ones — a genuine contradiction elsewhere always wins.
+    _attr_flags = (apparel_confirmed, size_confirmed, colour_confirmed, count_confirmed)
+    _attrs_agreeing = sum(1 for f in _attr_flags if f)
+    _any_attr_contradicts = apparel_size_mismatch or size_mismatch or color_mismatch or count_mismatch
+    at_least_one_attr_confirmed = _attrs_agreeing >= 1
+    all_attributes_agree = _attrs_agreeing >= 1 and not _any_attr_contradicts
+
+    if upc_match and at_least_one_attr_confirmed:
+        # Rule 2: UPC/EAN + at least one attribute agreeing → 100.
+        total = 100.0
+    if brand_confirmed and all_attributes_agree:
+        # Rule 3: brand + every stated attribute agreeing → 100.
+        total = max(total, 100.0)
+    if all_attributes_agree and best_title_ratio >= 67:
+        # Rule 4: every stated attribute agreeing + fuzzy title >= ~67%
+        # (the user's requested 65-70% range) → 90.
+        # NOTE: as specified, this is a strict subset of Rule 6 immediately
+        # below (which floors at 90 on all_attributes_agree alone, with no
+        # fuzzy-title requirement) — so Rule 4 never fires on its own; Rule 6
+        # already covers every case Rule 4 would. Kept as its own branch
+        # (rather than deleted) so the code traces 1:1 to the spec's numbered
+        # rules; flag to the user if the intent was actually narrower.
+        total = max(total, VERIFIED_FLOOR)
+    if best_title_ratio >= 90:
+        # Rule 5: a very strong fuzzy title match alone → 90 (no brand/UPC/
+        # attribute requirement — the title similarity itself is the signal).
+        total = max(total, VERIFIED_FLOOR)
+    if all_attributes_agree:
+        # Rule 6: every stated attribute agreeing, even with no brand/fuzzy
+        # signal at all → 90.
+        total = max(total, VERIFIED_FLOOR)
+    if mode == "medical":
+        # Rule 7 (medical only): the vendor's MPN/part number found anywhere in
+        # the Amazon title, bullet points, or long description — not just
+        # Amazon's structured MPN field (that's mpn_field_exact, a separate,
+        # narrower signal) → 85, or 95 if at least one attribute also agrees.
+        _amz_full_an = re.sub(r"[^a-z0-9]", "", ((amz_title or "") + " " + amz_full_text).lower())
+        _mpn_found_in_text = (
+            len(_src_model_an) >= 4 and any(c.isdigit() for c in _src_model_an)
+            and _src_model_an in _amz_full_an
+        )
+        if _mpn_found_in_text:
+            total = max(total, 95.0 if at_least_one_attr_confirmed else 85.0)
+
     # Identifier contradiction overrides the brand+title/model floor: if the vendor
     # part number and Amazon's MPN are both specific and disagree — and there's no
     # UPC match to prove same-SKU — it's a different SKU (a same-brand line whose
@@ -1551,19 +1685,8 @@ def calculate_confidence(
         total = min(total, 80.0)
 
     # Detect per-unit size mismatches (e.g. 26.2 oz vs 12.1 oz, 2 lb vs 5 lb).
-    # Also checks the Amazon structured size attribute when the title has no size.
     # Different products → push below Review floor so they land in Not Approved.
-    size_mismatch = _size_mismatch(
-        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
-    )
-    # An exact model-number match means it's the same SKU, so a detected size
-    # difference is a linear-dimension parsing artifact (vendor states width
-    # only vs Amazon's W×L, unit typos) — suppress it UNLESS the mismatch rests
-    # on a reliable volume/weight signal, which model match should not override.
-    if size_mismatch and model_confirmed and not _has_vol_or_weight(
-        _s(source.get("title")), _s(amazon.get("title"))
-    ):
-        size_mismatch = False
+    # (size_mismatch was computed above, alongside the other attribute checks.)
     if size_mismatch:
         total = min(total, 29.0)
 
@@ -1586,29 +1709,11 @@ def calculate_confidence(
     if gender_mismatch:
         total = min(total, 29.0)
 
-    # Detect colour contradictions: both sides specify a colour and they
-    # disagree.  Amazon structured attribute preferred; falls through to title
-    # and then full description/bullets text.
-    color_mismatch = _color_mismatch(
-        _s(source.get("title")), _s(amazon.get("title")),
-        amz_color_attr, amz_full_text,
-    )
+    # Detect colour contradictions (color_mismatch was computed above).
     if color_mismatch:
         total = min(total, 29.0)
 
-    # Detect unit-count contradictions (CPG & medical): both sides state an
-    # explicit item count (e.g. "80 Count" vs "110 Count") and they differ
-    # by more than 10 %.  This is a hard reject ONLY when the per-unit size is
-    # NOT independently confirmed.  When brand + size confirm the same per-unit
-    # product (e.g. vendor "24/6oz" case vs Amazon "6 oz, Pack of 6"), a
-    # differing count is just a pack/case-size difference — not a different SKU
-    # — so per the user's "only the pack differs → approve" rule it must not
-    # reject.  Items with no per-unit size (wipes "80 Count" vs "110 Count")
-    # have size_confirmed=False, so the count difference still hard-rejects.
-    count_mismatch = (
-        _unit_count_mismatch(_s(source.get("title")), _s(amazon.get("title")))
-        and not size_confirmed
-    )
+    # Detect unit-count contradictions (count_mismatch was computed above).
     if count_mismatch:
         total = min(total, 29.0)
 
@@ -1633,13 +1738,9 @@ def calculate_confidence(
     if shade_mismatch:
         total = min(total, 29.0)
 
-    # Detect apparel/garment size contradictions (S/M/L/XL): both titles state
-    # a clothing size and they differ — vendor "X-Large" vs Amazon "Medium" is
-    # a different SKU and a hard reject.  Runs after the floors so it overrides
-    # even a UPC match (different sizes carry different UPCs anyway).
-    apparel_size_mismatch = _apparel_size_mismatch(
-        _s(source.get("title")), _s(amazon.get("title")), amz_size_attr
-    )
+    # Detect apparel/garment size contradictions (apparel_size_mismatch was
+    # computed above). Runs after the floors so it overrides even a UPC match
+    # (different sizes carry different UPCs anyway).
     if apparel_size_mismatch:
         total = min(total, 29.0)
 
@@ -1665,6 +1766,11 @@ def calculate_confidence(
         "scent_mismatch": scent_mismatch,
         "shade_mismatch": shade_mismatch,
         "apparel_size_mismatch": apparel_size_mismatch,
+        "colour_confirmed": colour_confirmed,
+        "count_confirmed": count_confirmed,
+        "apparel_confirmed": apparel_confirmed,
+        "attrs_agreeing": _attrs_agreeing,
+        "all_attributes_agree": all_attributes_agree,
     }
 
 
