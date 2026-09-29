@@ -8015,14 +8015,22 @@
   const _wmOaState = { results: [] };
 
   function _parseWalmartOaRows(text) {
+    // Same "UPC or Title" split the Amazon Offer Analysis wizard supports:
+    // a purely-numeric 6-14 digit token is a barcode search, anything else
+    // is a keyword/title search. Tab-separated (pasted from Excel) is tried
+    // first so a title containing commas isn't split apart; falls back to
+    // comma-separated for hand-typed rows.
     return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
-      const parts = line.split(",").map(s => s.trim());
+      const parts = (line.includes("\t") ? line.split("\t") : line.split(",")).map(s => s.trim());
+      const ident = parts[0] || "";
+      const isUpc = /^\d{6,14}$/.test(ident);
       return {
-        upc: parts[0] || "",
+        upc: isUpc ? ident : "",
+        query: isUpc ? "" : ident,
         vendor_cost: parseFloat(parts[1]) || 0,
         category: parts[2] || "",
       };
-    }).filter(r => r.upc);
+    }).filter(r => r.upc || r.query);
   }
 
   function _fmtWmMoney(v) {
@@ -8038,7 +8046,7 @@
     const tr = document.createElement("tr");
     tr.style.borderBottom = "1px solid #f1f5f9";
     const cells = [
-      row.upc,
+      row.upc || row.query || "—",
       row.item_id || "—",
       row.title || "—",
       _fmtWmMoney(row.walmart_price),
@@ -8096,7 +8104,7 @@
     const rows = _wmOaState.results;
     if (!rows.length) return;
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = ["upc", "item_id", "title", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const headers = ["upc", "query", "item_id", "title", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
     const lines = [headers.map(_q).join(",")];
     for (const r of rows) {
       lines.push(headers.map(h => _q(r[h])).join(","));

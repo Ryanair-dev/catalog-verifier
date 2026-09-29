@@ -130,12 +130,14 @@
           <div>
             <div class="abbr-section-title" style="margin-bottom:4px;">Offer Analysis</div>
             <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-              Paste one item per line: <code>UPC, Vendor Cost</code> (optionally <code>, Category</code>). We search Walmart for that UPC,
-              pull its live price, then estimate Net Profit / ROI using a static referral-fee-by-category table &mdash;
+              Paste one item per line: <code>UPC or Title, Vendor Cost</code> (optionally <code>, Category</code>) &mdash; same as the
+              Amazon Offer Analysis, a UPC searches by barcode and anything else searches Walmart by keyword/title. We pull the
+              live Walmart price, then estimate Net Profit / ROI using a static referral-fee-by-category table &mdash;
               Walmart has no live per-item fee API, so this mirrors how Amazon's referral fee is already approximated in this app.
+              Paste from Excel (tab-separated) or type comma-separated by hand.
             </div>
             <textarea id="wm-oa-input" rows="6"
-              placeholder="012345678905, 4.50&#10;036000291452, 2.10, Health&#10;… one per line: UPC, Vendor Cost[, Category]"
+              placeholder="012345678905, 4.50&#10;036000291452, 2.10, Health&#10;Tide Pods Original 42 ct, 8.20, Home&#10;… one per line: UPC or Title, Vendor Cost[, Category]"
               style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
 
             <div style="display:flex;gap:8px;margin-top:10px;">
@@ -149,7 +151,7 @@
               <table style="width:100%;border-collapse:collapse;font-size:12px;">
                 <thead>
                   <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
-                    <th style="padding:4px 6px;">UPC</th>
+                    <th style="padding:4px 6px;">UPC / Title</th>
                     <th style="padding:4px 6px;">Walmart ID</th>
                     <th style="padding:4px 6px;">Title</th>
                     <th style="padding:4px 6px;">Walmart Price</th>
