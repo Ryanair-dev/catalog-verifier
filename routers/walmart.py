@@ -99,8 +99,12 @@ async def walmart_search(body: dict = Body(...)) -> dict:
 async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
     """Body: {items: [{upc?, query?, vendor_cost, category?, other_fees?}]}.
 
-    For each row: search Walmart for the item (UPC preferred, else a
-    keyword query), pull its price, then compute
+    For each row: search Walmart for the item (an exact-identifier UPC
+    lookup when given, else a keyword/title query with a fuzzy relevance
+    check -- see services/walmart/catalog.py search_best()/best_match(),
+    added 2026-09-29 after a live title search for "L'Oreal Paris Eye
+    Makeup Remover" returned an unrelated NYX eyeliner as the top result),
+    pull its price, then compute
     net_profit = walmart_price - vendor_cost - referral_fee - other_fees
     using the static referral-rate table in services/walmart/offer_analysis.py
     (Walmart has no live per-item fee-estimate API -- confirmed via research,
@@ -125,10 +129,18 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
         if not upc and not query:
             return {"upc": upc, "query": query, "error": "No UPC or query supplied."}
 
+        match_score = None
         try:
-            found = await run_in_threadpool(
-                client.search_one, **({"upc": upc} if upc else {"query": query})
-            )
+            if upc:
+                # A barcode hit is an exact-identifier match, same trust
+                # level as Amazon's UPC search -- no relevance filter needed.
+                found = await run_in_threadpool(client.search_one, upc=upc)
+            else:
+                # A keyword/title search is NOT reliably ranked -- verified
+                # live 2026-09-29 that item[0] can be a completely unrelated
+                # product. search_best() only returns a hit that clears a
+                # fuzzy title-similarity floor; otherwise treat as not found.
+                found, match_score = await run_in_threadpool(client.search_best, query=query)
         except RuntimeError as exc:
             return {"upc": upc, "query": query, "error": str(exc)[:300]}
 
@@ -137,9 +149,16 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
                 walmart_price=None, vendor_cost=vendor_cost,
                 category=category_override, other_fees=other_fees,
             )
+            note = result.note
+            if query and match_score is not None:
+                note = (
+                    f"No Walmart result matched \"{query}\" closely enough "
+                    f"(best title similarity: {match_score:.0f}%)."
+                )
             return {
                 "upc": upc, "query": query, "title": None, "item_id": None,
-                **result.__dict__,
+                "match_score": match_score,
+                **{**result.__dict__, "note": note},
             }
 
         price = _extract_price(found)
@@ -153,6 +172,7 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
             "query": query,
             "title": found.get("title"),
             "item_id": found.get("itemId"),
+            "match_score": match_score,
             **result.__dict__,
         }
 

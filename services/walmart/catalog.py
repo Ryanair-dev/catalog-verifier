@@ -19,10 +19,21 @@ import logging
 import uuid
 
 import requests
+from rapidfuzz import fuzz
 
 from .auth import WalmartTokenManager, SVC_NAME
 
 log = logging.getLogger(__name__)
+
+# Below this token_set_ratio (0-100) against the query, a title/keyword
+# search result is treated as "no match" rather than trusted -- Walmart's
+# keyword search does NOT guarantee item[0] is actually the right product
+# (verified live 2026-09-29: querying "L'Oreal Paris Eye Makeup Remover"
+# returned an unrelated NYX eyeliner pencil as the first result). A UPC/
+# GTIN/EAN/ISBN search is a real barcode lookup, not a keyword match, so
+# it does NOT go through this relevance filter -- only query-based search
+# needs it.
+MIN_TITLE_MATCH_RATIO = 55.0
 
 PROD_ENDPOINT = "https://marketplace.walmartapis.com"
 SANDBOX_ENDPOINT = "https://sandbox.walmartapis.com"
@@ -95,7 +106,44 @@ class WalmartCatalogAPI:
         raise RuntimeError(f"Walmart item search: exhausted {max_retries} retries on 429")
 
     def search_one(self, **kwargs) -> dict | None:
-        """Convenience: return the first result item, or None if nothing found."""
+        """Convenience: return the first result item, or None if nothing found.
+        Only safe for barcode-identified searches (upc/gtin/ean/isbn), where
+        Amazon-style "exact identifier = same product" logic applies. For a
+        plain keyword `query`, use `search_best()` instead -- see its
+        docstring for why item[0] can't be trusted there."""
         data = self.search(**kwargs)
         items = data.get("items") or []
         return items[0] if items else None
+
+    def search_best(
+        self, *, query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO, max_retries: int = 4,
+    ) -> tuple[dict | None, float]:
+        """Title/keyword search WITH a relevance check. Returns
+        (best_item_or_None, best_score) -- best_item is None when no result
+        clears `min_ratio` (fuzzy token_set_ratio, 0-100, of the query
+        against each candidate's title), so a caller never silently accepts
+        an unrelated product just because it happened to rank first."""
+        data = self.search(query=query, max_retries=max_retries)
+        items = data.get("items") or []
+        return best_match(items, query, min_ratio)
+
+
+def best_match(items: list[dict], query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO) -> tuple[dict | None, float]:
+    """Pick the item whose title best fuzzy-matches `query`; only returns it
+    (non-None) when the score clears `min_ratio`. See MIN_TITLE_MATCH_RATIO
+    for why this exists -- Walmart's keyword search ranking isn't reliable
+    enough to trust item[0] blindly."""
+    if not items:
+        return None, 0.0
+    q = (query or "").strip().lower()
+    best_item, best_score = None, 0.0
+    for item in items:
+        title = (item.get("title") or "").strip().lower()
+        if not title:
+            continue
+        score = fuzz.token_set_ratio(q, title)
+        if score > best_score:
+            best_item, best_score = item, score
+    if best_item is not None and best_score >= min_ratio:
+        return best_item, best_score
+    return None, best_score

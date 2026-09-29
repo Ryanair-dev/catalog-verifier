@@ -131,8 +131,10 @@
             <div class="abbr-section-title" style="margin-bottom:4px;">Offer Analysis</div>
             <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
               Paste one item per line: <code>UPC or Title, Vendor Cost</code> (optionally <code>, Category</code>) &mdash; same as the
-              Amazon Offer Analysis, a UPC searches by barcode and anything else searches Walmart by keyword/title. We pull the
-              live Walmart price, then estimate Net Profit / ROI using a static referral-fee-by-category table &mdash;
+              Amazon Offer Analysis, a UPC searches by barcode and anything else searches Walmart by keyword/title (title matches
+              below a fuzzy-similarity floor are reported as no match, not guessed &mdash; Walmart's keyword search doesn't
+              reliably rank the right product first). We pull the live Walmart price, then estimate Net Profit / ROI using a
+              static referral-fee-by-category table &mdash;
               Walmart has no live per-item fee API, so this mirrors how Amazon's referral fee is already approximated in this app.
               Paste from Excel (tab-separated) or type comma-separated by hand.
             </div>
@@ -154,6 +156,7 @@
                     <th style="padding:4px 6px;">UPC / Title</th>
                     <th style="padding:4px 6px;">Walmart ID</th>
                     <th style="padding:4px 6px;">Title</th>
+                    <th style="padding:4px 6px;">Match</th>
                     <th style="padding:4px 6px;">Walmart Price</th>
                     <th style="padding:4px 6px;">Vendor Cost</th>
                     <th style="padding:4px 6px;">Referral Fee</th>
