@@ -1182,8 +1182,17 @@ def _has_vol_or_weight(src_title: str, amz_title: str) -> bool:
 
 def _colour_match(src_title: str, amz_title: str, amz_color_attr: str, amz_full_text: str = "") -> bool:
     """Positive counterpart to _color_mismatch: True when both sides name a
-    colour from the known word list and they share at least one (same colour
-    source precedence: structured attribute, else title)."""
+    colour from the known word list and the sets are IDENTICAL (same colour
+    source precedence: structured attribute, else title).
+
+    Deliberately stricter than _color_mismatch's "not disjoint" — that check
+    exists to avoid REJECTING an ambiguous overlap ("Black" vs "Black/Gray"),
+    which is the right lenient default for a negative/reject check. But the
+    same leniency is unsafe for a POSITIVE confirmation floor: "not disjoint"
+    would let a genuinely different colour variant (single "Black" item vs a
+    multi-colour "Black/White/Red" assortment listing) falsely confirm as the
+    same item. A confirmation floor needs the stronger signal — exact
+    agreement — not merely "not contradicted"."""
     src_colors = set(re.findall(r'[a-z]+', src_title.lower())) & _COLOR_WORDS
     if not src_colors:
         return False
@@ -1191,7 +1200,7 @@ def _colour_match(src_title: str, amz_title: str, amz_color_attr: str, amz_full_
     amz_colors = set(re.findall(r'[a-z]+', amz_src_text.lower())) & _COLOR_WORDS
     if not amz_colors:
         return False
-    return not src_colors.isdisjoint(amz_colors)
+    return src_colors == amz_colors
 
 
 def _count_match(src_title: str, amz_title: str) -> bool:
@@ -1208,12 +1217,26 @@ def _count_match(src_title: str, amz_title: str) -> bool:
 def _apparel_size_match(src_title: str, amz_title: str, amz_size_attr: str = "") -> bool:
     """Positive counterpart to _apparel_size_mismatch: True when both sides
     name an apparel/garment size (S/M/L/XL/…, from title or Amazon's size
-    attribute) and the size sets overlap."""
+    attribute) and the size sets are IDENTICAL.
+
+    CONFIRMED LIVE BUG (2026-09-29, Pedifix Sales 52 Week run): with the
+    lenient "not disjoint" version, a vendor's single-size item ("...Medium")
+    falsely confirmed against an Amazon SIZE-RANGE listing ("...S/M" — one
+    ASIN covering Small AND Medium), because {M} is not disjoint from {S,M}.
+    That ASIN then floored to 100 for that row via Rule 3/6 below — and
+    ALSO for a completely different vendor row asking for "Small" (since {S}
+    is equally not-disjoint from {S,M}) — producing the exact "one ASIN
+    verified 100% for many different MPNs" bug the user reported. Same
+    asymmetry as _colour_match above: "not disjoint" is correct for a
+    reject-check's leniency, wrong for a confirm-check's strength — requiring
+    exact set equality fixes it (a genuine "Small" vendor item now only
+    confirms against an Amazon listing whose size set is exactly {S}, not a
+    multi-size range that merely includes S)."""
     src_sizes = _garment_sizes(src_title)
     amz_sizes = _garment_sizes(amz_title) | _garment_sizes(amz_size_attr or "")
     if not src_sizes or not amz_sizes:
         return False
-    return not src_sizes.isdisjoint(amz_sizes)
+    return src_sizes == amz_sizes
 
 
 # --------------------------------------------------------------------------- #

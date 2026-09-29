@@ -1145,7 +1145,7 @@ def _rescore_pipeline(
                 (run_id,),
             ).fetchall()
             cand_rows = conn.execute(
-                "SELECT row_idx, asin, sources, data_json "
+                "SELECT row_idx, asin, sources, data_json, review_status "
                 "FROM analytics_candidates WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
@@ -1226,6 +1226,22 @@ def _rescore_pipeline(
                 return
 
             row_idx = int(c["row_idx"])
+
+            # A manual or AI decision on this exact candidate (Approve/Discard,
+            # Apply AI Decisions, Pair Manager, the new ASIN-exclusivity cap,
+            # etc.) is a deliberate human-facing verdict and must survive a
+            # rescore untouched -- confirmed live (2026-09-29, "Pedifix Sales
+            # 52 Week" run) that rescore was silently overwriting confidence
+            # AND verdict for every candidate with zero regard for
+            # review_status, so 128 of that run's 210 "verified" candidates
+            # had review_status='ai-rejected' (a real AI rejection) sitting
+            # right back in the Approved bucket after the run's most recent
+            # rescore. `get_run_detail`'s own promotion/demotion logic already
+            # treats a non-empty review_status as sacrosanct in three separate
+            # places -- rescore is the one path that never did.
+            if (c["review_status"] or "").strip():
+                continue
+
             cat = catalog_map.get(row_idx, {})
             new_title = title_by_row.get(row_idx, cat.get("title", ""))
 

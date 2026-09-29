@@ -3868,6 +3868,11 @@
     // ASIN conflict: same ASIN matched to multiple catalog rows — can't auto-verify
     if (c.conflict_capped) return "ASIN conflict";
 
+    // ASIN exclusivity: another catalog row has a 100%-confidence (definitive)
+    // match to this same ASIN, so this one — even if it also scored well —
+    // was soft-capped to Review rather than allowed to also claim it.
+    if (c.asin_exclusivity_capped) return "ASIN already claimed by a 100% match on another row";
+
     // Auto-promoted: was stored as not_approved but had no hard-reject flags
     // and confidence ≥ 35 — bumped to review at API response time.
     if (c.auto_promoted) return `Score ${Math.round(conf)}% — needs review`;
