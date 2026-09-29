@@ -8105,7 +8105,7 @@
     const rows = _wmOaState.results;
     if (!rows.length) return;
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = ["upc", "query", "item_id", "title", "match_score", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const headers = ["upc", "query", "item_id", "title", "match_score", "size_conflict", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
     const lines = [headers.map(_q).join(",")];
     for (const r of rows) {
       lines.push(headers.map(h => _q(r[h])).join(","));

@@ -22,6 +22,7 @@ import requests
 from rapidfuzz import fuzz
 
 from .auth import WalmartTokenManager, SVC_NAME
+from services.analytics.matcher import _size_mismatch  # reused, see best_match()
 
 log = logging.getLogger(__name__)
 
@@ -117,33 +118,61 @@ class WalmartCatalogAPI:
 
     def search_best(
         self, *, query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO, max_retries: int = 4,
-    ) -> tuple[dict | None, float]:
+    ) -> tuple[dict | None, float, bool]:
         """Title/keyword search WITH a relevance check. Returns
-        (best_item_or_None, best_score) -- best_item is None when no result
-        clears `min_ratio` (fuzzy token_set_ratio, 0-100, of the query
-        against each candidate's title), so a caller never silently accepts
-        an unrelated product just because it happened to rank first."""
+        (best_item_or_None, best_score, size_conflict) -- best_item is None
+        when no result clears `min_ratio` (fuzzy token_set_ratio, 0-100, of
+        the query against each candidate's title) AND has a matching size,
+        so a caller never silently accepts an unrelated product, or the
+        right product line at the wrong size, just because it ranked first
+        or scored well on text alone."""
         data = self.search(query=query, max_retries=max_retries)
         items = data.get("items") or []
         return best_match(items, query, min_ratio)
 
 
-def best_match(items: list[dict], query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO) -> tuple[dict | None, float]:
+def best_match(
+    items: list[dict], query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO,
+) -> tuple[dict | None, float, bool]:
     """Pick the item whose title best fuzzy-matches `query`; only returns it
-    (non-None) when the score clears `min_ratio`. See MIN_TITLE_MATCH_RATIO
-    for why this exists -- Walmart's keyword search ranking isn't reliable
-    enough to trust item[0] blindly."""
+    (non-None) when the score clears `min_ratio` AND its size doesn't
+    contradict the query's.
+
+    Two distinct failure modes verified live (2026-09-29), both needing a
+    guard: (1) a query for "L'Oreal Paris Eye Makeup Remover" returned an
+    unrelated NYX eyeliner as item[0] -- pure text mismatch, caught by
+    `min_ratio`. (2) a query for "L'Oreal Paris Eye Makeup Remover 0.4
+    fluid ounces" matched a REAL L'Oreal eye-makeup-remover listing that
+    was actually "4 fl oz" -- a 10x size difference the text-similarity
+    score barely penalises, since every other word overlaps. `_size_mismatch`
+    (reused verbatim from the Amazon matcher, `services/analytics/matcher.py`
+    -- it already parses volume/weight/linear-dimension tokens out of free
+    text and is Amazon-agnostic) catches this second case; a size-mismatched
+    candidate is excluded from being `best_item` even if it has the highest
+    text score.
+
+    Returns `size_conflict=True` when the single best TEXT match overall
+    would have cleared `min_ratio` but was excluded for a size conflict --
+    lets the caller report "found the right product line, wrong size"
+    instead of a generic "no match" (the two are actionable differently)."""
     if not items:
-        return None, 0.0
+        return None, 0.0, False
     q = (query or "").strip().lower()
     best_item, best_score = None, 0.0
+    best_overall_score = 0.0
     for item in items:
-        title = (item.get("title") or "").strip().lower()
+        raw_title = item.get("title") or ""
+        title = raw_title.strip().lower()
         if not title:
             continue
         score = fuzz.token_set_ratio(q, title)
+        if score > best_overall_score:
+            best_overall_score = score
+        if _size_mismatch(query, raw_title):
+            continue
         if score > best_score:
             best_item, best_score = item, score
     if best_item is not None and best_score >= min_ratio:
-        return best_item, best_score
-    return None, best_score
+        return best_item, best_score, False
+    size_conflict = best_overall_score >= min_ratio and best_overall_score > best_score
+    return None, best_overall_score, size_conflict

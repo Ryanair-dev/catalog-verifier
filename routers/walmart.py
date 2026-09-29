@@ -130,6 +130,7 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
             return {"upc": upc, "query": query, "error": "No UPC or query supplied."}
 
         match_score = None
+        size_conflict = False
         try:
             if upc:
                 # A barcode hit is an exact-identifier match, same trust
@@ -139,8 +140,11 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
                 # A keyword/title search is NOT reliably ranked -- verified
                 # live 2026-09-29 that item[0] can be a completely unrelated
                 # product. search_best() only returns a hit that clears a
-                # fuzzy title-similarity floor; otherwise treat as not found.
-                found, match_score = await run_in_threadpool(client.search_best, query=query)
+                # fuzzy title-similarity floor AND doesn't contradict the
+                # query's size (also verified live: a real L'Oreal eye-makeup-
+                # remover result matched "0.4 fl oz" text to a "4 fl oz"
+                # listing -- same product line, wrong size); otherwise not found.
+                found, match_score, size_conflict = await run_in_threadpool(client.search_best, query=query)
         except RuntimeError as exc:
             return {"upc": upc, "query": query, "error": str(exc)[:300]}
 
@@ -150,14 +154,19 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
                 category=category_override, other_fees=other_fees,
             )
             note = result.note
-            if query and match_score is not None:
+            if query and size_conflict:
+                note = (
+                    f"Found a similar Walmart listing for \"{query}\" but its size didn't match "
+                    f"(title similarity: {match_score:.0f}%) -- treated as a different product."
+                )
+            elif query and match_score is not None:
                 note = (
                     f"No Walmart result matched \"{query}\" closely enough "
                     f"(best title similarity: {match_score:.0f}%)."
                 )
             return {
                 "upc": upc, "query": query, "title": None, "item_id": None,
-                "match_score": match_score,
+                "match_score": match_score, "size_conflict": size_conflict,
                 **{**result.__dict__, "note": note},
             }
 
