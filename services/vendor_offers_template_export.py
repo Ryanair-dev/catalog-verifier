@@ -43,6 +43,11 @@ _TEMPLATE = Path(__file__).resolve().parent.parent / "assets" / "offer_analytics
 AMAZON_SELLER_ID = "ATVPDKIKX0DER"
 REFERRAL_RATE = 0.15                     # example: Referral = 0.15 × Buy Box
 _ACCT = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
+# Simpler ("plain") currency format — distinct from _ACCT's accounting style
+# (no star-padded $ / no "-" for zero). Confirmed against the user's own
+# reference file (`Victory HL Analytics 7.13.2026.xlsx`, 2026-09-30): BB
+# Price 30d/90d and FBA Fee use THIS format there, not the accounting one.
+_CUR = r'"$"#,##0.00_);\("$"#,##0.00\)'
 
 # Data-cell fills that match the manual analytics exactly (theme colors resolve
 # against the bundled template's palette, so they render identically).
@@ -69,18 +74,18 @@ TEMPLATE_COLS = [
     ("Last cost", _ACCT, None, False, True), ("Vendor", None, None, False, False),
     ("Product Cost", _ACCT, None, False, False), ("Product cost * amz pack", _ACCT, None, False, False),
     ("Buy Box Price current", _ACCT, "gmed", True, True),
-    ("BB Price 30d", _ACCT, "glt", False, True), ("BB Price 90d", _ACCT, "glt", False, True),
+    ("BB Price 30d", _CUR, "glt", False, True), ("BB Price 90d", _CUR, "glt", False, True),
     ("Net Profit", "0.00", None, False, False), ("Net Margin", "0%", None, False, False),
     ("ROI", "0%", None, False, False),
-    ("FBA Fee", _ACCT, None, False, True), ("Referral Fee", _ACCT, None, False, False),
-    ("Storage Fee", _ACCT, None, False, False), ("Prep & Out fee", _ACCT, None, False, False),
-    ("Rank (current)", None, None, False, True), ("Rank 30d", None, None, False, True),
-    ("BB seller", None, None, False, False), ("BB share 30d", "0%", None, False, True),
-    ("BB share 90d", "0%", None, False, True), ("Amazon 30d %", "0%", None, False, True),
-    ("Amazon 90d %", "0%", None, False, True),
+    ("FBA Fee", _CUR, None, False, False), ("Referral Fee", _ACCT, None, False, False),
+    ("Storage Fee", _ACCT, None, False, False), ("Prep & Out fee", None, None, False, False),
+    ("Rank (current)", None, None, False, False), ("Rank 30d", None, None, False, False),
+    ("BB seller", None, None, False, False), ("BB share 30d", "0%", None, False, False),
+    ("BB share 90d", "0%", None, False, False), ("Amazon 30d %", "0%", None, False, False),
+    ("Amazon 90d %", "0%", None, False, False),
     ("FBM sellers", None, None, False, True), ("FBA sellers", None, None, False, True),
     ("Brand", None, None, False, False), ("Category", None, None, False, False),
-    ("Total Ratings Count", None, None, False, True), ("Variation Parent", None, None, False, False),
+    ("Total Ratings Count", None, None, False, False), ("Variation Parent", None, None, False, False),
 ]
 # 1-based column index by header name → lets formulas reference cells by name.
 COL = {h: i + 1 for i, (h, *_ ) in enumerate(TEMPLATE_COLS)}
@@ -94,6 +99,11 @@ _NEW_HEADER_COLS = ("Offer Vendor", "SKU", "FBA SKU", "Available qty", "OR33", "
 _ROBOTO = Font(name="Roboto", size=12)                 # header font (matches template)
 _BOLD = Font(name="Calibri", size=11, bold=True)       # bold data (matches manual)
 _CENTER = Alignment(horizontal="center")
+# The Link column's =HYPERLINK() formula doesn't get Excel's automatic blue/
+# underlined "Hyperlink" style just from being a formula -- the reference
+# file has it applied explicitly (theme10 = the "Hyperlink" theme colour
+# slot, single underline). Confirmed against the real file, 2026-09-30.
+_HYPERLINK_FONT = Font(name="Calibri", size=11, color=Color(theme=10, tint=0.0), underline="single")
 _HDR_GREY = PatternFill("solid", fgColor="FFE9E9E9")
 _HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
@@ -682,6 +692,8 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
                 cell.fill = _FILLS[fill_key]
             if bold:
                 cell.font = _BOLD
+            elif header == "Link":
+                cell.font = _HYPERLINK_FONT
             if center:
                 cell.alignment = _CENTER
         r += 1
