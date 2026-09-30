@@ -5,6 +5,7 @@ GET  /api/vendor-offers/data        — the price-comparison ledger payload
 POST /api/vendor-offers/upload      — upload a vendor catalog file → merge (§5B)
 POST /api/vendor-offers/sync-asins  — pull UPC→ASIN from the existing Pair Library
 POST /api/vendor-offers/assign      — hand-assign one ASIN to a UPC
+POST /api/vendor-offers/unassign    — remove a wrong ASIN pairing (+ its Pair Library mirror)
 GET  /api/vendor-offers/status      — configured vendors + row counts
 """
 from __future__ import annotations
@@ -284,6 +285,16 @@ async def assign(body: dict = Body(...)) -> dict:
 async def assign_bulk(body: dict = Body(...)) -> dict:
     return await run_in_threadpool(
         vo.assign_bulk, body.get("text") or "", bool(body.get("dry")))
+
+
+@router.post("/vendor-offers/unassign")
+async def unassign(body: dict = Body(...)) -> dict:
+    """Remove a wrong ASIN pairing from the Price Desk (and its Pair Library
+    mirror). Body: {asin}."""
+    try:
+        return await run_in_threadpool(vo.unassign_asin, body.get("asin"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/vendor-offers/page", response_class=HTMLResponse)

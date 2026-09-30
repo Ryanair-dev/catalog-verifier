@@ -638,6 +638,24 @@ def assign_asin(upc: str, asin: str, amazon_pack_size=None) -> dict:
     return {"upc": upc, "asin": asin, "amazon_pack_size": pack, "library_upserts": mirrored}
 
 
+def unassign_asin(asin: str) -> dict:
+    """Remove a wrong UPC<->ASIN pair: drops the Price Desk assignment
+    (`vo_asin_listings`, keyed by ASIN) AND its Pair Library mirror (asin +
+    every identifier + any 'Pair Library Import' verified_items row it
+    seeded) via `database.delete_library_pair`. This is the delete path the
+    Price Desk itself has never had (only the Pair Manager's own entries
+    could be removed before). Does not touch other, independently-verified
+    pairs for the same ASIN (e.g. a real Offer-Analysis UPC match)."""
+    asin = (asin or "").strip().upper()
+    if not re.match(r"^B0[A-Z0-9]{8}$", asin):
+        raise ValueError("A valid ASIN (B0XXXXXXXX) is required.")
+    with database._LOCK, database._connect() as conn:
+        cur = conn.execute("DELETE FROM vo_asin_listings WHERE asin=?", (asin,))
+        removed_listing = cur.rowcount
+    library = database.delete_library_pair(asin)
+    return {"asin": asin, "removed_listing": bool(removed_listing), **library}
+
+
 def parse_pasted_pairs(text: str):
     """Parse pasted 'UPC,ASIN[,pack]' lines, order-independent. ASIN by shape;
     the UPC is the non-ASIN token with the MOST digits (any length — short internal
