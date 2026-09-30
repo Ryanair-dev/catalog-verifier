@@ -130,7 +130,7 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
             return {"upc": upc, "query": query, "error": "No UPC or query supplied."}
 
         match_score = None
-        size_conflict = False
+        exclude_reason = ""
         try:
             if upc:
                 # A barcode hit is an exact-identifier match, same trust
@@ -139,12 +139,13 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
             else:
                 # A keyword/title search is NOT reliably ranked -- verified
                 # live 2026-09-29 that item[0] can be a completely unrelated
-                # product. search_best() only returns a hit that clears a
-                # fuzzy title-similarity floor AND doesn't contradict the
-                # query's size (also verified live: a real L'Oreal eye-makeup-
-                # remover result matched "0.4 fl oz" text to a "4 fl oz"
-                # listing -- same product line, wrong size); otherwise not found.
-                found, match_score, size_conflict = await run_in_threadpool(client.search_best, query=query)
+                # product, AND (verified live 2026-09-30) that Walmart's
+                # keyword search often omits `price` on the top-scoring
+                # result entirely. search_best() only returns a hit that
+                # clears a fuzzy title-similarity floor, doesn't contradict
+                # the query's size, AND actually carries a price; otherwise
+                # not found, with `exclude_reason` saying which guard fired.
+                found, match_score, exclude_reason = await run_in_threadpool(client.search_best, query=query)
         except RuntimeError as exc:
             return {"upc": upc, "query": query, "error": str(exc)[:300]}
 
@@ -154,10 +155,15 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
                 category=category_override, other_fees=other_fees,
             )
             note = result.note
-            if query and size_conflict:
+            if query and exclude_reason == "size":
                 note = (
                     f"Found a similar Walmart listing for \"{query}\" but its size didn't match "
                     f"(title similarity: {match_score:.0f}%) -- treated as a different product."
+                )
+            elif query and exclude_reason == "no_price":
+                note = (
+                    f"Found a matching Walmart listing for \"{query}\" (title similarity: "
+                    f"{match_score:.0f}%) but Walmart's search didn't return a price for it."
                 )
             elif query and match_score is not None:
                 note = (
@@ -166,7 +172,8 @@ async def walmart_offer_analysis(body: dict = Body(...)) -> dict:
                 )
             return {
                 "upc": upc, "query": query, "title": None, "item_id": None,
-                "match_score": match_score, "size_conflict": size_conflict,
+                "match_score": match_score, "size_conflict": exclude_reason == "size",
+                "no_price": exclude_reason == "no_price",
                 **{**result.__dict__, "note": note},
             }
 
