@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from services import database
 from services import vendor_offers as vo
+from services import vendor_offers_db_sync as vo_sync
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 from services.spapi import reports as sp_reports
@@ -105,6 +106,8 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     focus = (body.get("focus_vendor") or "").strip() or None
     has_asin = bool(body.get("has_asin"))
     only_available = bool(body.get("only_available"))
+    apply_filters = bool(body.get("apply_filters"))
+    populate_keepa = bool(body.get("populate_keepa", True))
     prep = body.get("prep_fee")
     prep = float(prep) if prep is not None else None      # None → build reads the setting
     live = bool(body.get("live", True))
@@ -125,8 +128,9 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
         try:
             job["blob"] = vo_tpl.build_template_xlsx(
                 upcs=upcs, focus_vendor=focus, prep_fee=prep, has_asin=has_asin,
-                only_available=only_available, live=live, on_progress=_progress,
-                should_cancel=lambda: job["cancel"])
+                only_available=only_available, live=live, apply_filters=apply_filters,
+                populate_keepa=populate_keepa,
+                on_progress=_progress, should_cancel=lambda: job["cancel"])
             job["phase"], job["status"] = "done", "complete"
         except vo_tpl.ExportCancelled:
             job["status"], job["phase"] = "cancelled", "cancelled"
@@ -194,6 +198,36 @@ async def lookup_export(body: dict = Body(...)) -> StreamingResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Lookup export failed: {str(exc)[:200]}")
     return _xlsx_response(blob, vo_export.export_filename("price_check"))
+
+
+@router.get("/vendor-offers/db-sync/status")
+async def db_sync_status() -> dict:
+    """Hourly-sync state for the 5 DB-backed vendors (Quality King, Cencora,
+    Diamond, BILO, Victory) -- replaces manual file upload for them."""
+    return await run_in_threadpool(vo_sync.scheduler_status)
+
+
+@router.post("/vendor-offers/db-sync/run")
+async def db_sync_run(body: dict = Body(default=None)) -> dict:
+    """Manually sync now. Body optional: {vendor: "..."} for just one vendor,
+    else all 5."""
+    body = body or {}
+    vendor = (body.get("vendor") or "").strip() or None
+    try:
+        if vendor:
+            if vendor not in vo_sync.AZURE_VENDOR_ACCOUNT_ID:
+                raise HTTPException(status_code=400, detail=(
+                    f"No Azure mapping for {vendor!r}. Known: "
+                    f"{sorted(vo_sync.AZURE_VENDOR_ACCOUNT_ID)}"))
+            result = await run_in_threadpool(vo_sync.sync_vendor, vendor)
+            return {"ok": True, "vendor": vendor, "result": result}
+        result = await run_in_threadpool(vo_sync.sync_all)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[vendor_offers] db sync failed")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
 
 
 @router.post("/vendor-offers/upload")

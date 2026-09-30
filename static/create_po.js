@@ -32,6 +32,7 @@
     exported: false, exporting: false, aiTitles: true, exportId: "", error: "",
     theme: "light", bright: "airy",
     _focus: null,
+    mismatchModal: null,   // {rowId, field} of the row/channel whose reused shadow doesn't match Main
   };
 
   const esc = (s) => s == null ? "" : String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -137,7 +138,8 @@
           ${S.generating ? stepGenerating() : ""}
           ${S.stage === 4 && !S.generating ? stepReview() : ""}
         </div>
-      </div>`;
+      </div>
+      ${mismatchModal()}`;
     S.root.scrollTop = _scroll;
     afterRender();
   }
@@ -638,7 +640,42 @@
     const tag = (present && row.is_kit)
       ? `<div title="Kit shadow (multipack, from the amz pack qty)" style="align-self:flex-start;display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:7px;background:var(--primary-soft)"><span style="font-size:8px;font-weight:800;letter-spacing:.05em;color:var(--primary-ink)">KIT</span><span style="font-size:10px;font-weight:700;color:var(--primary-ink)">Pack of ${row.pack}</span></div>`
       : "";
-    return `<div style="padding:8px 10px;display:flex;flex-direction:column;gap:5px;justify-content:center">${inner}${tag}</div>`;
+    // The reused existing shadow's own SKU stem doesn't match this row's Main --
+    // flag it rather than let it pass silently (2026-09-10).
+    const mismatch = row[field + "_mismatch"];
+    const warn = mismatch
+      ? `<div data-act="mismatch" data-arg="${esc(row.id)}|${field}" title="Click to review" style="align-self:flex-start;display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:7px;cursor:pointer;background:var(--accent-soft);border:1px solid var(--accent)"><span style="font-size:10px;font-weight:800;color:var(--accent)">⚠ Doesn’t match Main</span></div>`
+      : "";
+    return `<div style="padding:8px 10px;display:flex;flex-direction:column;gap:5px;justify-content:center">${inner}${tag}${warn}</div>`;
+  }
+
+  // Modal explaining a reused FBA/FBM shadow whose own SKU stem doesn't match
+  // this row's generated Main SKU (e.g. Main=MDLMSC811226 but the ASIN's
+  // existing FBA shadow is BAY811226_QY2-FBA, an older brand/prefix) -- the
+  // shadow is still correctly reused (an ASIN can only have one live listing
+  // per channel), but it's worth a human glance before export.
+  function mismatchModal() {
+    const m = S.mismatchModal;
+    if (!m) return `<div class="modal-backdrop hidden"></div>`;
+    let row = null, gname = "";
+    for (const g of (S.review?.groups || [])) {
+      const r = (g.rows || []).find(r => r.id === m.rowId);
+      if (r) { row = r; gname = g.brand_name || g.brand; break; }
+    }
+    if (!row) return `<div class="modal-backdrop hidden"></div>`;
+    const msg = row[m.field + "_mismatch"] || "";
+    const label = m.field === "fba" ? "FBA" : "FBM";
+    return `<div class="modal-backdrop" style="align-items:center;justify-content:center;padding:0">
+      <div class="modal-shell" style="max-width:520px">
+        <div style="padding:20px 22px 0"><h2 class="cpo-hf" style="margin:0 0 4px;font-size:17px;font-weight:800">⚠ ${label} shadow doesn’t match Main</h2>
+        <div style="font-size:12.5px;color:var(--ink-soft)">${esc(gname)} · ASIN ${esc(row.asin)}</div></div>
+        <div style="padding:16px 22px;font-size:13.5px;line-height:1.6;color:var(--ink)">${esc(msg)}</div>
+        <div style="display:flex;gap:10px;padding:14px 22px 20px;justify-content:flex-end">
+          <button data-act="close-mismatch" class="cpo-lift" style="padding:9px 16px;border-radius:10px;border:1px solid var(--border);background:var(--panel);color:var(--ink-soft);font-weight:800;font-size:12.5px;cursor:pointer">Close</button>
+          <button data-act="edit-mismatch" data-arg="${esc(row.id)}|${m.field}" class="cpo-lift" style="padding:9px 16px;border-radius:10px;border:none;background:linear-gradient(135deg,var(--primary),#8a5cff);color:#fff;font-weight:800;font-size:12.5px;cursor:pointer">Edit ${label} SKU</button>
+        </div>
+      </div>
+    </div>`;
   }
   const noteBg = (row, g) => row.main_on_sc ? "var(--mint-soft)" : (g.status === "new" ? "var(--amber-soft)" : "var(--sky-soft)");
   const noteInk = (row, g) => row.main_on_sc ? "var(--mint)" : (g.status === "new" ? "var(--amber)" : "var(--sky)");
@@ -756,6 +793,9 @@
       case "pmode": { const [who, mode] = arg.split(":"); S[who].mode = mode; render(); break; }
       case "filter": S.filter = arg; render(); break;
       case "edit": S.editCell = arg; render(); break;
+      case "mismatch": { const [rowId, field] = arg.split("|"); S.mismatchModal = { rowId, field }; render(); break; }
+      case "close-mismatch": S.mismatchModal = null; render(); break;
+      case "edit-mismatch": { const [rowId, field] = arg.split("|"); S.mismatchModal = null; S.editCell = rowId + "." + field; render(); break; }
       case "generate": doGenerate(); break;
       case "export": doExport(); break;
     }

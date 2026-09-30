@@ -57,6 +57,7 @@ _FILLS = {"blue": _FILL_BLUE, "gmed": _FILL_GMED, "glt": _FILL_GLT}
 # Last cost/Vendor (after amz pack).
 TEMPLATE_COLS = [
     ("UPC/EAN", "0", "blue", False, False),
+    ("Offer Vendor", None, None, False, False),
     ("SKU", None, None, False, False), ("FBA SKU", None, None, False, False),
     ("ASIN", None, "blue", False, False), ("Link", None, "blue", False, False),
     ("Approved", None, None, False, False), ("Item ID", None, None, False, False),
@@ -87,7 +88,7 @@ def L(name):
     return get_column_letter(COL[name])
 
 # columns that are NEW (not in the loaded template) and need header styling
-_NEW_HEADER_COLS = ("SKU", "FBA SKU", "Available qty", "OR33", "On order", "FBA total",
+_NEW_HEADER_COLS = ("Offer Vendor", "SKU", "FBA SKU", "Available qty", "OR33", "On order", "FBA total",
                     "30d sales", "Last cost", "Vendor")
 
 _ROBOTO = Font(name="Roboto", size=12)                 # header font (matches template)
@@ -391,25 +392,33 @@ def _storage_cache_put(mapping: dict) -> None:
             [(a, fee, now) for a, fee in mapping.items()])
 
 
-def enrich_asins(asins, on_progress=None, should_cancel=None) -> tuple[dict, dict]:
-    """Live per-ASIN SP-API enrichment → ({asin: eligibility}, {asin: storage_fee}).
-    getListingsRestrictions (Approved) runs for every ASIN; getCatalogItem (dims →
-    storage fee, 404=DOG) is SKIPPED for ASINs whose storage is already cached
-    (bi-monthly TTL), which removes most of the getCatalogItem throttling on repeat
-    exports. 5 workers; failures skipped (that cell falls back / stays blank)."""
+def enrich_asins(asins, on_progress=None, should_cancel=None,
+                  check_generic: bool = False) -> tuple[dict, dict, dict]:
+    """Live per-ASIN SP-API enrichment → ({asin: eligibility}, {asin: storage_fee},
+    {asin: generic_status}). getListingsRestrictions (Approved) runs for every ASIN;
+    getCatalogItem (dims → storage fee, 404=DOG) is SKIPPED for ASINs whose storage
+    is already cached (bi-monthly TTL), which removes most of the getCatalogItem
+    throttling on repeat exports. When check_generic=True, an additional Generic-ASIN
+    classification (services.generic_check.classify_generic -- one more catalog call +
+    a non-persisting putListingsItem VALIDATION_PREVIEW per ASIN) runs alongside the
+    others in the same worker pool -- opt-in because it doubles the SP-API load per
+    ASIN; skipped for an ASIN already known DOG. 5 workers; failures skipped (that
+    cell falls back / stays blank)."""
     import requests
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from services.spapi.client import get_catalog_api
     from services.spapi.config import load_sp_api_credentials, sp_api_configured
     from services.restrictions import classify, get_restrictions_api
     from services.storage_fees import calc_storage_fee, extract_dimensions
+    from services.generic_check import classify_generic
 
     elig: dict = {}
+    generic: dict = {}
     uniq = sorted({a.strip().upper() for a in asins if a})
     if not uniq or not sp_api_configured():
         if on_progress:
             on_progress(0, 0)
-        return elig, {}
+        return elig, {}, generic
 
     cached = _storage_cache_get(uniq)                        # {asin: fee|None} within TTL
     storage: dict = {a: f for a, f in cached.items() if f is not None}
@@ -420,7 +429,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None) -> tuple[dict, dic
     capi = get_catalog_api()
 
     def one(asin: str):
-        e = s = None
+        e = s = g = None
         have = asin in cached
         if not have:                                         # only hit the catalog when not cached
             try:
@@ -438,7 +447,15 @@ def enrich_asins(asins, on_progress=None, should_cancel=None) -> tuple[dict, dic
                 e = classify(asin, rapi.get_restrictions(asin, seller))["status"]
             except Exception:  # noqa: BLE001
                 pass
-        return asin, e, s, have
+        if check_generic and e != "DOG":
+            try:
+                gj = classify_generic(asin)
+                g = gj["status"]
+                if g == "DOG":
+                    e = "DOG"
+            except Exception:  # noqa: BLE001
+                pass
+        return asin, e, s, have, g
 
     done = 0
     with ThreadPoolExecutor(max_workers=5) as ex:
@@ -448,9 +465,11 @@ def enrich_asins(asins, on_progress=None, should_cancel=None) -> tuple[dict, dic
                 for fut in futs:
                     fut.cancel()
                 raise ExportCancelled()
-            a, e, s, have = f.result()
+            a, e, s, have, g = f.result()
             if e is not None:
                 elig[a] = e
+            if g is not None:
+                generic[a] = g
             if not have:
                 to_cache[a] = s                              # cache even None (avoids refetch)
                 if s is not None:
@@ -459,15 +478,30 @@ def enrich_asins(asins, on_progress=None, should_cancel=None) -> tuple[dict, dic
             if on_progress:
                 on_progress(done, len(uniq))
     _storage_cache_put(to_cache)
-    return elig, storage
+    return elig, storage, generic
 
 
 # ── build ──────────────────────────────────────────────────────────────────
 
+# "Sellable & selling only" filter thresholds (services/vendor_offers_template_export
+# .build_template_xlsx, apply_filters=True) -- per user request 2026-09-23.
+MIN_MONTHLY_UNITS_SOLD = 50
+MAX_AMAZON_30D_BB_SHARE = 0.90     # exclude ASINs where Amazon itself holds >=90% of the Buy Box
+EXCLUDED_APPROVAL_STATUSES = {"RESTRICTED", "DOG"}
+
+
 def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None = None,
                         prep_fee: float | None = None, has_asin: bool = False,
                         only_available: bool = False, limit: int | None = None,
-                        live: bool = True, on_progress=None, should_cancel=None) -> bytes:
+                        live: bool = True, apply_filters: bool = False,
+                        populate_keepa: bool = True,
+                        on_progress=None, should_cancel=None) -> bytes:
+    # apply_filters needs Keepa's monthly-units/Amazon-30d-% fields -- without Keepa
+    # every item would read 0 units sold and fail the floor, filtering out everything.
+    # The UI already disables "Apply filters" when Keepa is skipped; this guards any
+    # other caller from the same silently-empty-export trap.
+    if not populate_keepa:
+        apply_filters = False
     if prep_fee is None:
         try:
             prep_fee = float(database.get_setting("prep_out_fee", "0.25"))
@@ -487,13 +521,14 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
         if focus:
             if focus not in winners:
                 continue
-            win = vmap[focus]
+            win_vendor = focus
         else:
-            win = vmap[sorted(winners)[0]]
+            win_vendor = sorted(winners)[0]
+        win = vmap[win_vendor]
         # "Only items with available qty" → skip offers with no/zero availability
         if only_available and not ((win.get("avail") or 0) > 0):
             continue
-        kept[upc] = (win, win["cost"])
+        kept[upc] = (win, win["cost"], win_vendor)
     upc_list = list(kept.keys())
     if limit:
         upc_list = upc_list[:limit]
@@ -514,7 +549,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     # LIVE Keepa /product for the chosen ASINs (NOT the stale Azure table).
     _kp = (lambda d, t: on_progress(d, t, "Keepa live prices")) if on_progress else None
     keepa = keepa_api.fetch_products(chosen_asins, on_progress=_kp,
-                                     should_cancel=should_cancel) if live else {}
+                                     should_cancel=should_cancel) if populate_keepa else {}
 
     amz_pack = _amz_pack_by_asin()
     elig_cache = _eligibility_by_asin()
@@ -527,10 +562,11 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     last_po = _last_po_by_sku(                                    # Last cost + Vendor (latest PO ≥ 2025)
         [v["main_sku"] for v in sku_by_asin.values() if v.get("main_sku")])
 
-    live_elig, live_storage = ({}, {})
+    live_elig, live_storage, live_generic = ({}, {}, {})
     if live:
         _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
-        live_elig, live_storage = enrich_asins(chosen_asins, _ep, should_cancel)
+        live_elig, live_storage, live_generic = enrich_asins(
+            chosen_asins, _ep, should_cancel, check_generic=apply_filters)
 
     def z(v):                                        # Keepa numeric: blank → 0
         f = _f(v)
@@ -541,7 +577,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     # Est Monthly Units desc.
     records: list[dict] = []
     for upc in upc_list:
-        win, prod_cost = kept[upc]
+        win, prod_cost, win_vendor = kept[upc]
         row_asins = chosen.get(upc) or []
         if not row_asins:
             if has_asin:                   # "Has ASIN" filter → skip items with no ASIN
@@ -562,11 +598,20 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             if storage is None:
                 storage = _storage_est(k.get("height"), k.get("length"), k.get("width"))
             storage = storage if storage else 0.1
+            approved = live_elig.get(asin) or elig_cache.get(asin)
+            monthly = z(k.get("monthly_sold_quantity"))
+            if apply_filters:
+                amz30 = z(k.get("amazon_bb_30d_percentage")) / 100
+                if (monthly < MIN_MONTHLY_UNITS_SOLD
+                        or amz30 >= MAX_AMAZON_30D_BB_SHARE
+                        or approved in EXCLUDED_APPROVAL_STATUSES
+                        or live_generic.get(asin) == "GENERIC"):
+                    continue
             records.append({
                 "upc": upc, "asin": asin, "k": k, "win": win, "prod_cost": prod_cost,
                 "pack": pack, "bb_cur": bb_cur, "storage": storage, "sku": sku,
-                "approved": live_elig.get(asin) or elig_cache.get(asin),
-                "monthly": z(k.get("monthly_sold_quantity")),
+                "approved": approved,
+                "monthly": monthly, "win_vendor": win_vendor,
             })
     records.sort(key=lambda d: d["monthly"], reverse=True)   # highest est. monthly sales first
 
@@ -574,9 +619,9 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     #    headers of the shifted columns; we only style the new blanks) ──
     wb = load_workbook(_TEMPLATE)
     ws = wb["Analytics"]
-    ws.insert_cols(2, 2)     # SKU, FBA SKU  (after UPC)
-    ws.insert_cols(11, 5)    # Available qty, OR33, On order, FBA total, 30d sales (after qty/case)
-    ws.insert_cols(18, 2)    # Last cost, Vendor  (after amz pack)
+    ws.insert_cols(2, 3)     # Offer Vendor, SKU, FBA SKU  (after UPC)
+    ws.insert_cols(12, 5)    # Available qty, OR33, On order, FBA total, 30d sales (after qty/case)
+    ws.insert_cols(19, 2)    # Last cost, Vendor  (after amz pack)
     ws.cell(row=1, column=COL["qty/case"]).value = "qty/case"
     for name in _NEW_HEADER_COLS:
         c = COL[name]
@@ -594,6 +639,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             "SKU": sku.get("main_sku"), "FBA SKU": sku.get("fba_sku"),
             "ASIN": asin,
             "Link": f'=HYPERLINK("https://www.amazon.com/dp/"&{L("ASIN")}{r})' if asin else None,
+            "Offer Vendor": d["win_vendor"],
             "Approved": d["approved"], "Item ID": win["item_id"], "Vendor Title": win["title"],
             "Amazon title": k.get("title"), "qty/case": win["qty"],
             "Available qty": win.get("avail"),

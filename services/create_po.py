@@ -318,6 +318,15 @@ class RowResult:
     purchaser: str = ""
     sourcer: str = ""
     brand_name: str = ""
+    # Set when a REUSED existing FBA/FBM shadow's own SKU stem doesn't match this
+    # row's Main SKU -- e.g. Main=MDLMSC811226 but the ASIN's existing FBA shadow
+    # is BAY811226_QY2-FBA (stem "BAY811226"). The shadow is still correctly
+    # reused as-is (an ASIN can only have one live FBA/FBM listing -- see
+    # _existing_shadow), but the mismatch usually means the product's brand
+    # prefix changed at some point and is worth a human glance before export.
+    # Per-channel so the UI can flag the exact cell rather than a vague row note.
+    fba_mismatch: str | None = None
+    fbm_mismatch: str | None = None
 
 
 def _main_exists(index: CatalogIndex, upc: str, mpn: str, create_by: str,
@@ -490,6 +499,8 @@ def derive_rows(
         is_kit = bool(main) and create.get("kit", True) and pack > 1
         fba = fbm = kit_value = kit_shadows = None
         fba_on_sc = fbm_on_sc = False
+        ex_fba = ex_fbm = None   # always defined -- read below regardless of whether
+                                 # shadow creation is even enabled for this batch
         if main and create.get("shadow", True):
             # An ASIN has ONE FBA and ONE FBM listing — so REUSE the ASIN's existing
             # shadow if the catalog already has one, instead of climbing to -FBA2.
@@ -512,6 +523,27 @@ def derive_rows(
             fba_on_sc = bool(ex_fba) or (bool(fba) and index is not None and index.sku_exists(fba))
             fbm_on_sc = bool(ex_fbm) or (bool(fbm) and index is not None and index.sku_exists(fbm))
 
+        # Flag a REUSED shadow whose own SKU stem doesn't match this row's Main --
+        # confirmed live 2026-09-10: Main=MDLMSC811226 but the ASIN's existing FBA
+        # shadow was BAY811226_QY2-FBA (stem "BAY811226"). Still correctly reused
+        # (never mint a second FBA/FBM for the same ASIN), but worth a human glance:
+        # usually means the product's brand/prefix changed since that shadow was
+        # created, and it's worth confirming it's still the right listing.
+        def _mismatch_note(channel: str, existing_sku: str | None) -> str | None:
+            if not (main and existing_sku):
+                return None
+            if _strip_to_main(existing_sku).upper() == main.strip().upper():
+                return None
+            return (
+                f"Existing {channel} shadow '{existing_sku}' (stem "
+                f"'{_strip_to_main(existing_sku)}') doesn't match the generated "
+                f"Main SKU '{main}'. It's reused as-is (an ASIN can only have one "
+                f"live listing per channel) -- verify on SellerCloud this is still "
+                f"the correct listing before exporting."
+            )
+        fba_mismatch = _mismatch_note("FBA", ex_fba)
+        fbm_mismatch = _mismatch_note("FBM", ex_fbm)
+
         # note
         note = ""
         if main_on_sc:
@@ -527,6 +559,7 @@ def derive_rows(
             main=main, main_on_sc=main_on_sc,
             fba=fba, fba_on_sc=fba_on_sc, fbm=fbm, fbm_on_sc=fbm_on_sc,
             kit_value=kit_value, kit_shadows=kit_shadows, note=note,
+            fba_mismatch=fba_mismatch, fbm_mismatch=fbm_mismatch,
             is_kit=is_kit, pack=pack,
             manufacturer=bi.manufacturer, prefix=bi.prefix,
             purchaser=bi.purchaser, sourcer=bi.sourcer,
@@ -564,6 +597,7 @@ def build_groups(results: list[RowResult]) -> list[dict]:
                 "kit_value": r.kit_value, "kit_shadows": r.kit_shadows,
                 "is_kit": r.is_kit, "pack": r.pack,
                 "note": r.note,
+                "fba_mismatch": r.fba_mismatch, "fbm_mismatch": r.fbm_mismatch,
             } for r in rows],
         })
     return groups
@@ -629,6 +663,18 @@ def _num(v):
 
 _TITLE_PACK_OF_RE = re.compile(r"pack\s+of\s+(\d+)", re.I)
 _TITLE_COUNT_RE = re.compile(r"(\d+)\s*(?:-\s*)?(counts?|ct|cnt|packs?|pk)\b", re.I)
+_CASE_WORD_RE = re.compile(r"\bcase\b|\bcs\b", re.I)
+
+
+def _near_case_word(text: str, span: tuple[int, int], window: int = 10) -> bool:
+    """True if 'case'/'CS' appears within `window` chars of a matched count/pack
+    phrase -- signals a WHOLESALE case quantity (e.g. '6/CS', '4/CASE', '1X12
+    CS'), not the retail sellable unit. Used to keep this regex fallback (only
+    hit when clean_name isn't set, e.g. no ANTHROPIC_API_KEY) consistent with
+    the AI title-cleaner's rule -- see _apply_ai_titles in routers/create_po.py."""
+    a, b = span
+    nearby = text[max(0, a - window): b + window]
+    return bool(_CASE_WORD_RE.search(nearby))
 
 
 def _title_pack(title: str) -> tuple[int, str, tuple[int, int]] | None:
@@ -636,15 +682,37 @@ def _title_pack(title: str) -> tuple[int, str, tuple[int, int]] | None:
     None. '…3 Count' → (3,'count',span); '…3-pack'/'pack of 3' → (3,'pack',span).
     Only n≥2 (a real multi-unit; a bare '1 count' is just 'Each'). Used for the MAIN
     SKU's UOM suffix; the span lets the caller strip the phrase so it isn't duplicated
-    ('Bandages 10 count' → 'Bandages (10 count)', not '… 10 count (10 count)')."""
+    ('Bandages 10 count' → 'Bandages (10 count)', not '… 10 count (10 count)').
+
+    A count/pack number sitting next to 'case'/'CS' is a WHOLESALE shipping
+    quantity, never the sellable unit (per the user's rule, 2026-09-10) --
+    skipped here, and the scan keeps looking for a genuine lower-UOM count
+    elsewhere in the title; if none exists, the caller's default of Each
+    applies. Verified against real vendor titles: 'SEA BREEZE ... CS/6',
+    '... 8/CS', '... CS/288', '... 4/CASE ...', '... CASE ... 6CT ...' all
+    correctly yield no match (Each) rather than the case size. This mirrors
+    the AI title-cleaner's own case-quantity rule and only matters when
+    clean_name isn't set (no ANTHROPIC_API_KEY) and this runs on the raw
+    vendor title instead -- which tends to use terse shorthand ("375'S") that
+    this regex doesn't parse as a count anyway, so the real "keep the genuine
+    lower-UOM count, drop only the case size" behaviour (e.g. Q-TIPS 375'S
+    CS/12 -> "375 Count") is primarily the AI layer's job; this regex fallback
+    is a coarser, safe-by-default (never leaks a wrong case number) net for
+    when that layer isn't available."""
     t = title or ""
     m = _TITLE_PACK_OF_RE.search(t)
     if m:
         n = int(m.group(1))
-        return (n, "pack", m.span()) if n >= 2 else None
+        # proximity is checked against the NUMBER's own span (group 1), not the
+        # whole match -- "pack of " sits several chars before the number, which
+        # let an unrelated EARLIER case notation wrongly veto a genuine separate
+        # pack phrase ("4/CASE pack of 6" -- confirmed live 2026-09-10).
+        if n >= 2 and not _near_case_word(t, m.span(1)):
+            return (n, "pack", m.span())
+        return None
     for m in _TITLE_COUNT_RE.finditer(t):
         n = int(m.group(1))
-        if n < 2:
+        if n < 2 or _near_case_word(t, m.span(1)):
             continue
         w = m.group(2).lower()
         return n, ("count" if w.startswith(("count", "ct", "cnt")) else "pack"), m.span()

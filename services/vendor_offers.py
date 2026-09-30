@@ -146,6 +146,29 @@ def norm_upc(value):
     return digits.zfill(12) if len(digits) <= 12 else digits
 
 
+def _upc_a_check_digit(d11: str) -> str:
+    odd = sum(int(d11[i]) for i in range(0, 11, 2))    # positions 1,3,5,7,9,11 (1-indexed)
+    even = sum(int(d11[i]) for i in range(1, 11, 2))   # positions 2,4,6,8,10
+    total = odd * 3 + even
+    return str((10 - (total % 10)) % 10)
+
+
+def is_valid_upc_a(value) -> bool:
+    """True iff norm_upc(value) is a genuine checksum-valid 12-digit UPC-A --
+    catches a vendor's internal/warehouse code that merely happens to be
+    all-digits (this is the exact check services/vendor_offers_db_sync.py
+    already applies to every DB-synced vendor; file-upload loaders use it too
+    so a vendor's garbage 'UPC' column can't silently create a phantom
+    disconnected product -- confirmed live 2026-09-24: Diamond's 12DGTUPC for
+    one item was the internal code '30521511', not the real UPC
+    '305215070009', which orphaned that item's Diamond pricing from every
+    other vendor's identical listing until this was caught by hand)."""
+    digits = norm_upc(value)
+    if not digits or len(digits) != 12:
+        return False
+    return _upc_a_check_digit(digits[:11]) == digits[11]
+
+
 def as_int(value):
     n = pd.to_numeric(value, errors="coerce")
     if pd.isna(n):
@@ -194,10 +217,16 @@ def _block_dates(path: Path, n: int) -> list:
 # --------------------------------------------------------------------------
 
 def load_quality_king(path: Path, block: int | None = None):
-    """fd51126.xlsx — a STACK of catalog snapshots, replayed oldest-first."""
+    """fd51126.xlsx — a STACK of catalog snapshots, replayed oldest-first.
+
+    Qty/case = INNER x PACK, not PACK alone — confirmed live 2026-09-24
+    against a real file column-by-column: INNER is the inner-pack count, PACK
+    is how many inner packs make up a case (e.g. INNER=3, PACK=4 -> 12 units
+    ship per case). Using PACK alone silently under-counted every Quality King
+    case size by a factor of INNER."""
     df = pick_columns(pd.read_excel(path, sheet_name=0), {
         "ITEM": "item", "DESCRIPTION": "desc", "UPC": "upc", "UM": "uom",
-        "PACK": "pack", "ONHAND": "onhand", "QKD PRICE": "cost",
+        "INNER": "inner", "PACK": "pack", "ONHAND": "onhand", "QKD PRICE": "cost",
     }, "Quality King fd51126.xlsx").reset_index(drop=True)
 
     uom_col = df["uom"].astype(str).str.strip()
@@ -221,6 +250,8 @@ def load_quality_king(path: Path, block: int | None = None):
                 reason = f"UoM={uom!r} not EA (repeated header row or non-each pricing)"
             elif upc is None:
                 reason = "missing/unparseable UPC"
+            elif not is_valid_upc_a(upc):
+                reason = "UPC isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
             elif pd.isna(cost) or cost <= 0:
                 reason = "missing or non-positive QKD PRICE"
             if reason:
@@ -229,7 +260,7 @@ def load_quality_king(path: Path, block: int | None = None):
                 continue
             rows.append({
                 "vendor_item_id": item, "upc": upc, "cost": float(cost),
-                "qty_per_case": as_int(r["pack"]),
+                "qty_per_case": (as_int(r.get("inner")) or 1) * (as_int(r["pack"]) or 1),
                 "avail_qty": pd.to_numeric(r.get("onhand"), errors="coerce"),
                 "description": _clean(r["desc"]), "seen": stamp,
             })
@@ -254,6 +285,8 @@ def load_cencora(path: Path):
             reason = f"UoM={uom!r} -- cost is per case/pack, no reliable per-each divisor"
         elif upc is None:
             reason = "missing/unparseable UPC Barcode"
+        elif not is_valid_upc_a(upc):
+            reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
         elif pd.isna(cost) or cost <= 0:
             reason = "missing or non-positive Current Acq Cost"
         if reason:
@@ -284,6 +317,8 @@ def load_diamond(path: Path):
         reason = None
         if upc is None:
             reason = "missing/unparseable 12DGTUPC"
+        elif not is_valid_upc_a(upc):
+            reason = "12DGTUPC isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
         elif pd.isna(cost) or cost <= 0:
             reason = "missing or non-positive PRICE"
         if reason:
@@ -315,6 +350,8 @@ def load_bilo(path: Path):
         reason = None
         if upc is None:
             reason = "missing/unparseable UPC Code"
+        elif not is_valid_upc_a(upc):
+            reason = "UPC Code isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
         elif pd.isna(price) or price <= 0:
             reason = "missing or non-positive Item Price"
         elif pd.isna(per_uom) or per_uom <= 0:
@@ -414,17 +451,12 @@ def _upsert_offers(conn, vname: str, rows: list) -> dict:
     return {"added": after - before, "total": after, "submitted": len(rows)}
 
 
-def ingest_vendor_file(vname: str, path: Path) -> dict:
-    """Merge one uploaded vendor catalog into vo_vendor_offers (§5B semantics).
-
-    Returns {submitted, added, total, skipped, arrivals}. Raises ValueError on an
-    unknown vendor or a column/format mismatch."""
-    if vname not in VENDOR_LOADERS:
-        raise ValueError(f"No loader for {vname!r}. Known: {sorted(VENDOR_LOADERS)}")
-    loader = VENDOR_LOADERS[vname]
-    kwargs = {"block": None} if vname == "Quality King Distributors" else {}
-    batches, skipped = loader(path, **kwargs)
-
+def merge_batches(vname: str, batches: list, skipped: list | None = None) -> dict:
+    """Merge pre-parsed (stamp, rows) batches into vo_vendor_offers (§5B semantics)
+    -- the shared core of ingest_vendor_file (file upload) and the DB sync path
+    (services/vendor_offers_db_sync.py). Returns {submitted, added, total, skipped,
+    arrivals}."""
+    skipped = list(skipped or [])
     cleaned = []
     for stamp, rows in batches:
         rows, dupes = dedupe_offers(rows, vname)
@@ -448,11 +480,22 @@ def ingest_vendor_file(vname: str, path: Path) -> dict:
             added += st["added"]
             total = st["total"]
     return {"vendor": vname, "submitted": submitted, "added": added,
-            "total": total, "skipped": len(skipped),
-            "arrivals": len(cleaned)}
+            "total": total, "skipped": len(skipped), "arrivals": len(cleaned)}
 
 
-# --------------------------------------------------------------------------
+def ingest_vendor_file(vname: str, path: Path) -> dict:
+    """Merge one uploaded vendor catalog into vo_vendor_offers (§5B semantics).
+
+    Returns {submitted, added, total, skipped, arrivals}. Raises ValueError on an
+    unknown vendor or a column/format mismatch."""
+    if vname not in VENDOR_LOADERS:
+        raise ValueError(f"No loader for {vname!r}. Known: {sorted(VENDOR_LOADERS)}")
+    loader = VENDOR_LOADERS[vname]
+    kwargs = {"block": None} if vname == "Quality King Distributors" else {}
+    batches, skipped = loader(path, **kwargs)
+    return merge_batches(vname, batches, skipped)
+
+
 # ASINs — reused from catalog-verifier's Pair Library (the integration win)
 # --------------------------------------------------------------------------
 
@@ -684,6 +727,33 @@ def assign_bulk(text: str, dry: bool = False) -> dict:
         "rejectedTotal": len(rejected),
         "sample": [{"upc": p["upc"], "asin": p["asin"], "pack": p["pack"]} for p in new_pairs[:12]],
     }
+
+
+# --------------------------------------------------------------------------
+# Staleness maintenance -- an offer's avail_qty is only as trustworthy as its
+# last_seen date; once an offer hasn't been refreshed (by either a file
+# upload or the hourly DB sync) in a while, its quantity is stale, not just
+# its price -- so it's cleared to NULL (treated as "unknown", not "0",
+# consistent with how only_available/(win.get("avail") or 0) already treat
+# a missing value elsewhere in this module) rather than displayed as if
+# still current. Per user 2026-09-25: "if the sku hasnt been updated for 6
+# days, then lets clear the available qty."
+# --------------------------------------------------------------------------
+
+STALE_AVAIL_QTY_DAYS = 6
+
+
+def clear_stale_available_qty(days: int = STALE_AVAIL_QTY_DAYS) -> dict:
+    """Null out avail_qty for every offer whose last_seen is older than
+    `days`. Returns {cleared, cutoff}. Safe to call repeatedly (idempotent --
+    only rows that still have a non-NULL avail_qty are touched)."""
+    with database._LOCK, database._connect() as conn:
+        cutoff = conn.execute("SELECT date('now', ?)", (f"-{int(days)} days",)).fetchone()[0]
+        cur = conn.execute(
+            "UPDATE vo_vendor_offers SET avail_qty = NULL "
+            "WHERE last_seen < ? AND avail_qty IS NOT NULL", (cutoff,))
+        cleared = cur.rowcount
+    return {"cleared": cleared, "cutoff": cutoff}
 
 
 # --------------------------------------------------------------------------

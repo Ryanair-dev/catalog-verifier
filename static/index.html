@@ -50,7 +50,7 @@
       <div class="section-label">Analytics</div>
       <div class="nav-item" data-view="analytics">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
-        ROI &amp; Cost
+        Offer Analysis
       </div>
       <div class="nav-item" data-view="vendor-offers">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg>
@@ -63,6 +63,12 @@
       <div class="nav-item" data-view="quick-search">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
         Quick Search
+      </div>
+
+      <div class="section-label">Marketplaces</div>
+      <div class="nav-item" data-view="walmart-catalog">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
+        Walmart Catalog
       </div>
 
       <div class="section-label">Tools</div>
@@ -107,6 +113,63 @@
       <div id="view-vendor-offers" class="hidden" style="height:100%;">
         <iframe id="vendor-offers-frame" title="Vendor Offers — Price Desk"
                 style="width:100%;height:100%;min-height:80vh;border:0;display:block;"></iframe>
+      </div>
+
+      <!-- ===== View: Walmart Catalog — features added incrementally as the Walmart API is wired up ===== -->
+      <div id="view-walmart-catalog" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Walmart Catalog</h1>
+            <p class="view-subtitle">Walmart Marketplace item search + a first-cut Offer Analysis, the Walmart equivalent of Amazon's Offer Analysis.</p>
+          </div>
+        </header>
+
+        <div style="max-width:920px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;">
+          <div id="wm-status" style="font-size:12px;color:#94a3b8;"></div>
+
+          <div>
+            <div class="abbr-section-title" style="margin-bottom:4px;">Offer Analysis</div>
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+              Paste one item per line: <code>UPC or Title, Vendor Cost</code> (optionally <code>, Category</code>) &mdash; same as the
+              Amazon Offer Analysis, a UPC searches by barcode and anything else searches Walmart by keyword/title (title matches
+              below a fuzzy-similarity floor are reported as no match, not guessed &mdash; Walmart's keyword search doesn't
+              reliably rank the right product first). We pull the live Walmart price, then estimate Net Profit / ROI using a
+              static referral-fee-by-category table &mdash;
+              Walmart has no live per-item fee API, so this mirrors how Amazon's referral fee is already approximated in this app.
+              Paste from Excel (tab-separated) or type comma-separated by hand.
+            </div>
+            <textarea id="wm-oa-input" rows="6"
+              placeholder="012345678905, 4.50&#10;036000291452, 2.10, Health&#10;Tide Pods Original 42 ct, 8.20, Home&#10;… one per line: UPC or Title, Vendor Cost[, Category]"
+              style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
+
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button id="wm-oa-run" class="btn btn-primary" style="flex:1;justify-content:center;">Run Offer Analysis</button>
+              <button id="wm-oa-export" class="btn btn-secondary text-xs hidden" style="white-space:nowrap;">Download CSV</button>
+            </div>
+
+            <div id="wm-oa-progress" class="hidden" style="font-size:11px;color:#94a3b8;margin-top:8px;"></div>
+
+            <div id="wm-oa-table-wrap" class="hidden" style="margin-top:12px;overflow-x:auto;">
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead>
+                  <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
+                    <th style="padding:4px 6px;">UPC / Title</th>
+                    <th style="padding:4px 6px;">Walmart ID</th>
+                    <th style="padding:4px 6px;">Title</th>
+                    <th style="padding:4px 6px;">Match</th>
+                    <th style="padding:4px 6px;">Walmart Price</th>
+                    <th style="padding:4px 6px;">Vendor Cost</th>
+                    <th style="padding:4px 6px;">Referral Fee</th>
+                    <th style="padding:4px 6px;">Net Profit</th>
+                    <th style="padding:4px 6px;">ROI</th>
+                    <th style="padding:4px 6px;">Note</th>
+                  </tr>
+                </thead>
+                <tbody id="wm-oa-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ===== View: CPG Verification (default) ===== -->
@@ -635,11 +698,11 @@
         </div>
       </div>
 
-      <!-- ===== View: Analytics (ROI & Cost) ===== -->
+      <!-- ===== View: Analytics (Offer Analysis) ===== -->
       <div id="view-analytics" class="hidden">
         <header class="view-header">
           <div>
-            <h1 class="view-title">Analytics — ROI &amp; Cost</h1>
+            <h1 class="view-title">Analytics — Offer Analysis</h1>
             <p class="view-subtitle">Find &amp; vet Amazon candidates for a catalog, or vet an existing list of pre-matched ASINs.</p>
           </div>
           <div class="flex items-center gap-2">
@@ -1278,6 +1341,7 @@
                       <th style="width: 120px;">UPC</th>
                       <th style="width: 110px;">MPN</th>
                       <th style="width: 90px;">Source</th>
+                      <th style="width: 130px;">Price &amp; Storage</th>
                       <th id="qs-th-query" style="width: 110px;" class="hidden">Query</th>
                     </tr>
                   </thead>
@@ -1555,7 +1619,14 @@
       </button>
     </div>
 
-    <div style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+    <!-- Tools sub-tabs -->
+    <div class="lib-type-tabs" role="tablist">
+      <button class="lib-type-tab active" data-tools-tab="asin" type="button">ASIN Check</button>
+      <button class="lib-type-tab" data-tools-tab="brand" type="button">Brand Check</button>
+      <button class="lib-type-tab" data-tools-tab="mpn" type="button">MPN Check</button>
+    </div>
+
+    <div id="tools-tab-asin" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
 
       <!-- ASIN input -->
       <div>
@@ -1569,26 +1640,26 @@
       <!-- Options checkboxes -->
       <div style="display:flex;flex-direction:column;gap:10px;">
         <div class="abbr-section-title" style="margin-bottom:2px;">What to run</div>
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-elig-wrap">
-          <input type="checkbox" id="tools-opt-elig" checked style="accent-color:#6366f1;width:15px;height:15px;" />
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-elig-wrap">
           <div>
             <div style="font-size:13px;font-weight:600;color:#1e293b;">Eligibility Check</div>
             <div style="font-size:11px;color:#94a3b8;">Can your seller account list each ASIN in new condition?</div>
           </div>
+          <label class="toggle-pill"><input type="checkbox" id="tools-opt-elig" checked /><span class="slider"></span></label>
         </label>
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-sf-wrap">
-          <input type="checkbox" id="tools-opt-sf" checked style="accent-color:#f59e0b;width:15px;height:15px;" />
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-sf-wrap">
           <div>
             <div style="font-size:13px;font-weight:600;color:#1e293b;">Storage Fees</div>
             <div style="font-size:11px;color:#94a3b8;">FBA monthly fee per unit — non-peak &amp; Q4 peak columns.</div>
           </div>
+          <label class="toggle-pill"><input type="checkbox" id="tools-opt-sf" checked /><span class="slider"></span></label>
         </label>
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-generic-wrap">
-          <input type="checkbox" id="tools-opt-generic" style="accent-color:#8b5cf6;width:15px;height:15px;" />
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;transition:background 120ms;" id="tools-opt-generic-wrap">
           <div>
             <div style="font-size:13px;font-weight:600;color:#1e293b;">Generic Check</div>
             <div style="font-size:11px;color:#94a3b8;">Is each ASIN Generic (SB85) or a DOG (delisted) ASIN? Validation-only — no listing is created.</div>
           </div>
+          <label class="toggle-pill"><input type="checkbox" id="tools-opt-generic" /><span class="slider"></span></label>
         </label>
       </div>
 
@@ -1656,8 +1727,17 @@
 
       </div><!-- /tools-progress-section -->
 
-      <!-- Check Brand (brand-wide gating) -->
-      <div style="border-top:1px solid #e2e8f0;padding-top:16px;">
+      <!-- Export button (shown when done) -->
+      <button id="tools-export-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
+        Download CSV
+      </button>
+
+    </div><!-- /tools-tab-asin -->
+
+    <!-- Check Brand (brand-wide gating) -->
+    <div id="tools-tab-brand" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;">
+      <div>
         <div class="abbr-section-title" style="margin-bottom:4px;">Check Brand (gating)</div>
         <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
           Are we gated on a brand across the board? Samples a few of each brand's
@@ -1681,16 +1761,18 @@
         <!-- Sample-size settings -->
         <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
           <span style="font-size:11px;color:#94a3b8;">Check:</span>
-          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#1e293b;cursor:pointer;">
-            <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked style="accent-color:#6366f1;" />
-            a fixed number
-          </label>
+          <div class="seg-radio" role="radiogroup" aria-label="Sample size mode">
+            <label>
+              <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked />
+              a fixed number
+            </label>
+            <label>
+              <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" />
+              a %
+            </label>
+          </div>
           <input id="brand-check-count-val" type="number" min="1" max="300" value="8"
             style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#1e293b;cursor:pointer;">
-            <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" style="accent-color:#6366f1;" />
-            a %
-          </label>
           <input id="brand-check-pct-val" type="number" min="1" max="100" value="10" disabled
             style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;background:#f8fafc;" />
           <span style="font-size:11px;color:#94a3b8;">of each brand's live ASINs (capped at 300).</span>
@@ -1720,14 +1802,95 @@
           </table>
         </div>
       </div>
+    </div><!-- /tools-tab-brand -->
 
-      <!-- Export button (shown when done) -->
-      <button id="tools-export-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M20 21H4"/></svg>
-        Download CSV
-      </button>
+    <!-- MPN Check -->
+    <div id="tools-tab-mpn" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+      <div>
+        <div class="abbr-section-title" style="margin-bottom:4px;">MPN Check</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+          Look up part numbers straight from the database. An MPN alone isn't unique
+          across manufacturers, so each one needs its manufacturer/brand to match correctly.
+        </div>
 
-    </div><!-- /scrollable body -->
+        <!-- Manufacturer mode -->
+        <div style="margin-bottom:8px;">
+          <div class="seg-radio" role="radiogroup" aria-label="Manufacturer input mode">
+            <label>
+              <input type="radio" name="mpn-check-mode" id="mpn-check-mode-col" value="col" checked />
+              per line (2nd column)
+            </label>
+            <label>
+              <input type="radio" name="mpn-check-mode" id="mpn-check-mode-one" value="one" />
+              one manufacturer for all
+            </label>
+          </div>
+        </div>
+
+        <div id="mpn-check-one-wrap" class="hidden" style="margin-bottom:8px;">
+          <input id="mpn-check-one-mfr" type="text" placeholder="Manufacturer / brand for every MPN below"
+            style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+        </div>
+
+        <textarea id="mpn-check-input" rows="6"
+          placeholder="1-0425N&#9;Medline&#10;1271&#9;Teleflex&#10;… one per line, MPN then manufacturer (tab, comma, or spaces apart)"
+          style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+          <label for="mpn-check-file" class="btn btn-secondary text-xs" style="cursor:pointer;">
+            Upload list…
+          </label>
+          <input id="mpn-check-file" type="file" accept=".txt,.csv" class="hidden" />
+          <span id="mpn-check-count" style="font-size:11px;color:#94a3b8;"></span>
+        </div>
+
+        <!-- What to find -->
+        <div style="margin-top:14px;">
+          <div class="abbr-section-title" style="margin-bottom:6px;">Find</div>
+          <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;">
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#1e293b;">Qty / Case</div>
+              <div style="font-size:11px;color:#94a3b8;">How many units ship per case, from the mirrored database.</div>
+            </div>
+            <label class="toggle-pill"><input type="checkbox" id="mpn-check-opt-qty" checked /><span class="slider"></span></label>
+          </label>
+        </div>
+
+        <!-- AI web-search fallback (separate option, opt-in) -->
+        <div style="margin-top:8px;">
+          <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;">
+            <div>
+              <div style="font-size:13px;font-weight:600;color:#1e293b;">Search the web with AI</div>
+              <div style="font-size:11px;color:#94a3b8;">For anything the database can't answer, ask an LLM to verify the answer from the web. Slower &mdash; runs as a second pass.</div>
+            </div>
+            <label class="toggle-pill"><input type="checkbox" id="mpn-check-opt-ai" /><span class="slider"></span></label>
+          </label>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button id="mpn-check-btn" class="btn btn-primary" style="flex:1;justify-content:center;">Check</button>
+          <button id="mpn-check-export-btn" class="btn btn-secondary text-xs hidden" style="white-space:nowrap;">Download CSV</button>
+        </div>
+
+        <div id="mpn-check-progress" class="hidden" style="font-size:11px;color:#94a3b8;margin-top:8px;"></div>
+        <div id="mpn-check-sync-status" style="font-size:10px;color:#cbd5e1;margin-top:4px;"></div>
+
+        <div id="mpn-check-table-wrap" class="hidden" style="margin-top:10px;overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
+                <th style="padding:4px 6px;">MPN</th>
+                <th style="padding:4px 6px;">Manufacturer</th>
+                <th style="padding:4px 6px;">Qty / Case</th>
+                <th style="padding:4px 6px;">Note</th>
+              </tr>
+            </thead>
+            <tbody id="mpn-check-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /tools-tab-mpn -->
+
   </div><!-- /#tools-panel -->
 
   <!-- ==================== Universal Library side panel ==================== -->
@@ -2691,7 +2854,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=48"></script>
+  <script src="/static/app.js?v=51"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

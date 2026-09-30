@@ -16,6 +16,8 @@ import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from rapidfuzz import fuzz
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -36,6 +38,11 @@ WORKERS = 5
 MAX_ASINS = 5_000
 BRAND_CHECK_MAX = 300   # hard safety cap regardless of sample_size/sample_pct
 _BRAND_AI_CACHE: dict[str, str] = {}   # brand (lowered) -> resolved Amazon brand name
+# A resolved candidate must have at least this many REAL Amazon results under its own
+# name before it is trusted -- confirmed live 2026-09-09: without this floor, a wrong
+# candidate with a thin/coincidental presence (e.g. "OUTFIT7" -> "Drag Racing Outfit7",
+# verified total=1) could still slip through.
+_MIN_VERIFIED_TOTAL = 5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -93,28 +100,88 @@ async def eligibility_status() -> dict:
     return {"sp_api_configured": configured, "seller_id_configured": seller_ok}
 
 
-def _resolve_brand_mechanical(catalog_api, brand: str) -> str:
-    """Mechanically discover a brand's real Amazon catalog `brand` attribute by
-    running a plain keyword search (no brandNames filter -- so it matches on
-    TITLE too) and tallying the actual `brand` attribute values Amazon returns
-    on the matching items. Confirmed live 2026-09-04: "ColorStay" (a Revlon
-    product line, not Amazon's own brand field for those ASINs) resolves to
-    "REVLON" with 17/20 votes. Free (uses data Amazon already returns on the
-    same call), deterministic, no AI involved. Returns "" if nothing usable
-    comes back (e.g. zero keyword matches, or none carry a brand attribute)."""
+def _related(query: str, candidate: str) -> bool:
+    """True if `candidate` is textually close enough to `query` to trust even
+    with weak vote/sample support -- e.g. a generic suffix stripped ("Buzz Bee
+    Toys" -> "Buzz Bee"). Confirmed live 2026-09-09 this needs BOTH conditions:
+    `partial_ratio` alone (near-full substring containment) is NOT enough --
+    "OUTFIT7" is fully contained in the unrelated "Drag Racing Outfit7" too
+    (partial_ratio 100, same as the genuinely good cases), so a length-ratio
+    floor is required alongside it (0.37 for that pair vs 0.42-0.62 for the
+    real "generic suffix stripped" cases like Buzz Bee Toys/Educa Borras)."""
+    q, c = query.strip().lower(), candidate.strip().lower()
+    if not q or not c:
+        return False
+    if fuzz.partial_ratio(q, c) < 90:
+        return False
+    shorter, longer = sorted((len(q), len(c)))
+    return longer > 0 and shorter / longer >= 0.4
+
+
+def _resolve_brand_spapi_votes(catalog_api, brand: str) -> tuple[str, float]:
+    """Tally the real Amazon `brand` attribute among a plain SP-API keyword
+    search's results (no brandNames filter -- matches on TITLE too). Returns
+    (top_candidate, vote_fraction) or ("", 0.0) if nothing usable comes back.
+
+    The vote fraction ALONE is not a reliable accept/reject signal -- confirmed
+    live 2026-09-09: "Buzz Bee Toys" -> "Buzz Bee" (CORRECT) and "Alpha Toys" ->
+    "Siiziitoo" (WRONG, pure keyword-noise: "Alpha" matched 4,133 unrelated
+    alphabet-toy/RC-helicopter/action-figure listings) have the IDENTICAL
+    signature (2/20 votes, 10% fraction). The caller must also apply `_related`
+    (Buzz Bee is a clean textual prefix of the query; Siiziitoo bears zero
+    resemblance to Alpha Toys) before trusting a low-fraction result."""
     try:
         data = catalog_api.search_by_keywords(brand, page_size=20)
     except Exception:
-        return ""
+        return "", 0.0
+    items = data.get("items", [])
+    if not items:
+        return "", 0.0
     votes: Counter = Counter()
-    for item in data.get("items", []):
+    for item in items:
         for v in (item.get("attributes") or {}).get("brand") or []:
             name = (v.get("value") or "").strip()
             if name:
                 votes[name] += 1
     if not votes:
-        return ""
-    return votes.most_common(1)[0][0]
+        return "", 0.0
+    top, count = votes.most_common(1)[0]
+    return top, count / len(items)
+
+
+def _resolve_brand_keepa(brand: str) -> tuple[str, float]:
+    """Discover a brand's real Amazon `brand`/`manufacturer` value via Keepa's
+    Product Finder -- an EXACT match against Keepa's own STRUCTURED brand/
+    manufacturer fields (services.keepa.discover_entities), not free-text
+    search, so it can't be fooled by an unrelated product merely mentioning the
+    search term in its title. Returns (top_candidate, sample_fraction) or
+    ("", 0.0) if Keepa isn't configured, errors, or finds nothing.
+
+    Still needs the SAME gate as the SP-API vote resolver, just via a
+    different failure mode -- confirmed live 2026-09-09: for "Alpha Toys",
+    Keepa's exact match found real, populous, but UNRELATED brands (top:
+    "Siku", 894 real Amazon products, 44% of the sample) -- a real company,
+    just not the one being asked about. Structured-field exactness prevents
+    keyword-noise false positives, but does NOT by itself guarantee semantic
+    relevance, so this is gated by `_related`/fraction exactly like the other
+    resolver. Trade-off vs the SP-API resolver: Keepa needs an EXACT existing
+    seed value, so it cannot fix a genuine spelling typo on its own (confirmed:
+    "Bodumm" finds nothing here) -- that's the AI resolver's job."""
+    try:
+        from services import keepa
+        if not keepa.is_configured():
+            return "", 0.0
+        result = keepa.discover_entities(brand, sample_size=50, max_values=5)
+    except Exception:
+        return "", 0.0
+    entities = result.get("entities") or []
+    if not entities:
+        return "", 0.0
+    top = entities[0]   # already sorted by total desc
+    sample_count = top.get("sample_count", 0)
+    if sample_count <= 0:
+        return "", 0.0
+    return top["value"], sample_count / 50.0
 
 
 def _resolve_brand_ai(brand: str) -> str:
@@ -214,25 +281,53 @@ async def check_brand(body: CheckBrandBody) -> dict:
         # The queried name may be a sub-brand/product-line name that does not
         # match Amazon's own canonical `brand` catalog attribute (confirmed live
         # 2026-09-04: "ColorStay" is a Revlon product line -- Amazon's actual
-        # brand field for those ASINs is "REVLON", not "ColorStay"). Try to
-        # resolve the real Amazon brand name before giving up: mechanical first
-        # (free, uses data Amazon already returns), Claude only as a last resort.
-        candidate = _resolve_brand_mechanical(catalog_api, brand) or _resolve_brand_ai(brand)
-        if candidate and candidate.strip().lower() != brand.strip().lower():
+        # brand field for those ASINs is "REVLON", not "ColorStay"). Try a
+        # ranked list of candidate sources -- SP-API keyword-vote first (free,
+        # same call already in play), then Keepa's structured field match
+        # (free of keyword noise but needs an exact existing seed), then Claude
+        # as a last resort for genuine spelling typos neither of the above can
+        # fix. Each candidate must pass BOTH a relevance gate (strong vote/
+        # sample consensus, OR close textual relation via `_related`) and a
+        # final floor (a real, non-trivial Amazon presence under its own name)
+        # before being trusted -- confirmed live 2026-09-09 that skipping
+        # either check lets a wrong-but-real-looking candidate through (see
+        # `_related`'s docstring for the exact cases that motivated this).
+        candidates: list[str] = []
+
+        spapi_cand, spapi_frac = _resolve_brand_spapi_votes(catalog_api, brand)
+        if spapi_cand and (spapi_frac >= 0.5 or _related(brand, spapi_cand)):
+            candidates.append(spapi_cand)
+
+        keepa_cand, keepa_frac = _resolve_brand_keepa(brand)
+        if (keepa_cand and keepa_cand not in candidates
+                and (keepa_frac >= 0.5 or _related(brand, keepa_cand))):
+            candidates.append(keepa_cand)
+
+        ai_cand = _resolve_brand_ai(brand)
+        if ai_cand and ai_cand not in candidates:
+            candidates.append(ai_cand)   # AI isn't vote-based -- no fraction/relatedness gate,
+                                          # but still subject to the final verification below
+
+        for cand in candidates:
+            if cand.strip().lower() == brand.strip().lower():
+                continue
             try:
-                data = _search_page(candidate, None)
+                cand_data = _search_page(cand, None)
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"Amazon catalog search failed: {exc}")
-            total_amazon_results = data.get("numberOfResults", 0)
-            if total_amazon_results:
-                search_brand = candidate
-                resolved_as = candidate
+            n = cand_data.get("numberOfResults", 0)
+            if n >= _MIN_VERIFIED_TOTAL:
+                data = cand_data
+                total_amazon_results = n
+                search_brand = cand
+                resolved_as = cand
+                break
 
     if not total_amazon_results:
         raise HTTPException(
             status_code=404,
             detail=(f"No Amazon ASINs found for brand '{brand}' (0 catalog results, "
-                    f"brand-name resolution did not find a match either)."),
+                    f"brand-name resolution did not find a confident match either)."),
         )
 
     if body.sample_pct is not None and body.sample_pct > 0:

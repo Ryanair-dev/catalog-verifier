@@ -131,8 +131,12 @@ _PRODUCT_BATCH = 100
 def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> dict:
     params = {"domain": _DOMAIN, "asin": ",".join(asins), "history": 0, "stats": stats_days,
               "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1}
-    for attempt in range(6):
-        _wait_tokens(sess, 20)
+    # A 100-ASIN buybox batch costs well more than the old flat 20-token check
+    # verified -- wait for a realistic amount up front so we don't walk straight
+    # into a "not enough tokens" response from Keepa's own server.
+    need = max(20, len(asins) * 2)
+    for attempt in range(12):
+        _wait_tokens(sess, need)
         try:
             r = sess.get(f"{_ENDPOINT}/product", params=params, timeout=120)
             if r.status_code in (400, 401, 402, 403):
@@ -142,12 +146,23 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
                 continue
             j = r.json()
             if j.get("error"):
-                raise RuntimeError(f"Keepa error: {j['error']}")
+                err = str(j["error"])
+                if "token" in err.lower():
+                    # RECOVERABLE: the account is temporarily out of tokens. This
+                    # used to raise immediately and kill the whole (potentially
+                    # hours-long) export the moment the bucket ran dry near the
+                    # end -- wait for the refill and retry instead, same pattern
+                    # _query() already uses for Product Finder token errors.
+                    log.warning("[keepa] token exhaustion on /product (attempt %d): %s",
+                                attempt + 1, err[:150])
+                    time.sleep(min(60, 6 * (attempt + 1)))
+                    continue
+                raise RuntimeError(f"Keepa error: {err}")
             return j
         except requests.RequestException as exc:      # incl. ChunkedEncodingError (broken read)
             log.warning("[keepa] /product read failed (attempt %d): %s", attempt + 1, str(exc)[:100])
             time.sleep(min(30, 3 * 2 ** attempt))
-    raise RuntimeError("Keepa /product failed after retries")
+    raise RuntimeError("Keepa /product failed after retries (token exhaustion or repeated errors)")
 
 
 def _call_sellers(sess: requests.Session, seller_ids) -> dict:
@@ -218,8 +233,17 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
         if should_cancel and should_cancel():
             break
         batch = uniq[i:i + _PRODUCT_BATCH]
-        j30 = _call_product(sess, batch, 30)
-        j90 = _call_product(sess, batch, 90)
+        try:
+            j30 = _call_product(sess, batch, 30)
+            j90 = _call_product(sess, batch, 90)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[keepa] batch %d–%d permanently failed, skipping "
+                        "(%d ASINs will have no Keepa data): %s",
+                        i, i + len(batch), len(batch), str(exc)[:200])
+            done += len(batch)
+            if on_progress:
+                on_progress(done, total)
+            continue
         p30 = {p["asin"]: p for p in (j30.get("products") or []) if p.get("asin")}
         for p in (j90.get("products") or []):
             asin = p.get("asin")

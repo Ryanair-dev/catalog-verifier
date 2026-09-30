@@ -16,7 +16,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, generic_check, health_check, library, pairs, scans, settings, storage_fees, vendor_offers, verify
+from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, generic_check, health_check, library, mpn_check, pairs, scans, settings, storage_fees, vendor_offers, verify, walmart
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -61,10 +61,36 @@ async def _lifespan(app: FastAPI):
         health_check.start_scheduler()
     except Exception:
         pass
+    # Vendor Offer Analytics: hourly sync of the 5 DB-backed vendors straight
+    # from Azure (replaces manual file upload for them).
+    try:
+        from services import vendor_offers_db_sync as vo_sync
+        if azure_sql.is_configured():
+            vo_sync.start_scheduler()
+    except Exception:
+        pass
+    # MPN Check: local mirror of fbidb products/manufacturers (hourly,
+    # incremental after the first full pull) so a check never hits Azure live.
+    try:
+        from services import mpn_check_sync
+        if azure_sql.is_configured():
+            mpn_check_sync.start_scheduler()
+    except Exception:
+        pass
     yield
     try:
         from services import health_check
         health_check.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import vendor_offers_db_sync as vo_sync
+        vo_sync.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import mpn_check_sync
+        mpn_check_sync.stop_scheduler()
     except Exception:
         pass
 
@@ -127,6 +153,8 @@ app.include_router(vendor_offers.router,  prefix="/api", tags=["vendor-offers"])
 app.include_router(storage_fees.router,   prefix="/api", tags=["storage-fees"])
 app.include_router(create_po.router,      prefix="/api", tags=["create-po"])
 app.include_router(health_check.router,   prefix="/api", tags=["health-check"])
+app.include_router(mpn_check.router,      prefix="/api", tags=["mpn-check"])
+app.include_router(walmart.router,        prefix="/api", tags=["walmart"])
 
 
 @app.get("/api/health")
@@ -154,4 +182,6 @@ def root() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    # 0.0.0.0 (not 127.0.0.1) so other devices on the same LAN/wifi can
+    # reach this server at http://<this machine's IP>:8000.
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

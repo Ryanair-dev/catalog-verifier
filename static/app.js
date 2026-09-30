@@ -598,6 +598,7 @@
       "quick-search":   $("#view-quick-search"),
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
+      "walmart-catalog": $("#view-walmart-catalog"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -627,6 +628,7 @@
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
     if (view === "create-po") initCreatePo();
     if (view === "vendor-offers") initVendorOffers();
+    if (view === "walmart-catalog" && typeof _refreshWalmartStatus === "function") _refreshWalmartStatus();
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
@@ -3420,7 +3422,7 @@
   })();
 
   // ==========================================================================
-  //  Analytics tab (ROI & Cost)
+  //  Analytics tab (Offer Analysis)
   // ==========================================================================
   // Two entry points:
   //   1. "Vet Existing Listings"   — catalog has ASINs → straight to vetting.
@@ -3865,6 +3867,11 @@
 
     // ASIN conflict: same ASIN matched to multiple catalog rows — can't auto-verify
     if (c.conflict_capped) return "ASIN conflict";
+
+    // ASIN exclusivity: another catalog row has a 100%-confidence (definitive)
+    // match to this same ASIN, so this one — even if it also scored well —
+    // was soft-capped to Review rather than allowed to also claim it.
+    if (c.asin_exclusivity_capped) return "ASIN already claimed by a 100% match on another row";
 
     // Auto-promoted: was stored as not_approved but had no hard-reject flags
     // and confidence ≥ 35 — bumped to review at API response time.
@@ -7278,6 +7285,25 @@
     }).join("");
   }
 
+  // Price/dimensions/storage fee -- all come back on the SAME quick-search
+  // response, no extra lookup (2026-09-22: the search call already returns
+  // this in its attributes payload; it just wasn't being surfaced before).
+  function _qsPriceStorageCell(c) {
+    const lines = [];
+    if (c.list_price != null) {
+      lines.push(`<div style="font-weight:600;color:#1e293b;">$${Number(c.list_price).toFixed(2)}</div>`);
+    }
+    if (c.length_in != null && c.width_in != null && c.height_in != null) {
+      const w = c.weight_lb != null ? `, ${Number(c.weight_lb).toFixed(2)}lb` : "";
+      lines.push(`<div style="color:#64748b;">${c.length_in}×${c.width_in}×${c.height_in}in${w}</div>`);
+    }
+    if (c.storage_fee_offpeak != null) {
+      const peak = c.storage_fee_peak != null ? ` · peak $${Number(c.storage_fee_peak).toFixed(4)}` : "";
+      lines.push(`<div style="color:#94a3b8;" title="FBA monthly storage fee per unit">$${Number(c.storage_fee_offpeak).toFixed(4)}/mo${peak}</div>`);
+    }
+    return lines.length ? lines.join("") : `<span style="color:#cbd5e1;">—</span>`;
+  }
+
   function _qsScoreBadge(conf, verdict) {
     const color = verdict === "verified" ? "#166534"
                 : verdict === "review"   ? "#854d0e"
@@ -7321,7 +7347,7 @@
         : `${filtered.length} of ${_qs.results.length} candidates`;
     }
 
-    const colSpan = _qs.multiMode ? "10" : "9";
+    const colSpan = _qs.multiMode ? "11" : "10";
     if (filtered.length === 0) {
       tbody.innerHTML = `<tr><td colspan="${colSpan}" style="text-align:center;color:#94a3b8;padding:24px;">No candidates match this filter.</td></tr>`;
       return;
@@ -7371,6 +7397,7 @@
         <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.upc) || "—"}</td>
         <td style="font-family:monospace;font-size:12px;">${escapeHtml(c.mpn) || "—"}</td>
         <td>${_qsSourcesBadge(c.sources)}</td>
+        <td style="font-size:11px;line-height:1.5;">${_qsPriceStorageCell(c)}</td>
         ${queryCell}
       </tr>`;
     }).join("");
@@ -7548,6 +7575,18 @@
   // ── Open / close ──────────────────────────────────────────────────────────
   $("#open-tools-btn")?.addEventListener("click", () => _openPanel("tools-panel"));
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
+
+  // Tools sub-tabs: ASIN Check / Brand Check / MPN Check
+  function _switchToolsTab(tab) {
+    $$("#tools-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.toolsTab === tab));
+    $("#tools-tab-asin")?.classList.toggle("hidden", tab !== "asin");
+    $("#tools-tab-brand")?.classList.toggle("hidden", tab !== "brand");
+    $("#tools-tab-mpn")?.classList.toggle("hidden", tab !== "mpn");
+    if (tab === "mpn") _refreshMpnSyncStatus();
+  }
+  $$("#tools-panel .lib-type-tab").forEach(tab => {
+    tab.addEventListener("click", () => _switchToolsTab(tab.dataset.toolsTab));
+  });
 
   // Checkbox label hover highlight
   ["#tools-opt-elig-wrap","#tools-opt-sf-wrap","#tools-opt-generic-wrap"].forEach(sel => {
@@ -7777,6 +7816,327 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
+
+  // ------------------------------------------------------------------------
+  //  MPN Check
+  // ------------------------------------------------------------------------
+  function _syncMpnCheckMode() {
+    const oneMode = $("#mpn-check-mode-one")?.checked;
+    $("#mpn-check-one-wrap")?.classList.toggle("hidden", !oneMode);
+    const ta = $("#mpn-check-input");
+    if (ta) ta.placeholder = oneMode
+      ? "1-0425N\n1271\n\u2026 one MPN per line"
+      : "1-0425N\tMedline\n1271\tTeleflex\n\u2026 one per line, MPN then manufacturer (tab, comma, or spaces apart)";
+  }
+  $("#mpn-check-mode-col")?.addEventListener("change", _syncMpnCheckMode);
+  $("#mpn-check-mode-one")?.addEventListener("change", _syncMpnCheckMode);
+
+  // Parses the textarea into [{mpn, manufacturer}], preserving order and
+  // duplicates (the backend matches each row independently, so a repeated
+  // MPN under a different manufacturer is meaningful, not noise to dedupe).
+  function _parseMpnPairs(raw, oneManufacturer) {
+    const out = [];
+    for (const rawLine of String(raw || "").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (oneManufacturer != null) {
+        out.push({ mpn: line, manufacturer: oneManufacturer });
+        continue;
+      }
+      const toks = line.split(/\t|,|;|\s{2,}/).map(t => t.trim()).filter(Boolean);
+      if (toks.length < 2) { out.push({ mpn: toks[0] || line, manufacturer: "" }); continue; }
+      out.push({ mpn: toks[0], manufacturer: toks.slice(1).join(" ") });
+    }
+    return out;
+  }
+
+  $("#mpn-check-file")?.addEventListener("change", async function() {
+    const file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const input = $("#mpn-check-input");
+      if (input) {
+        const existing = input.value.trim();
+        input.value = existing ? existing + "\n" + text : text;
+      }
+    } catch (e) {
+      showToast("Could not read file: " + e.message, "error");
+    }
+  });
+
+  const _mpnCheckState = { results: [] };
+
+  function _mpnRowHtml(r) {
+    const qtyCell = r.matched && r.qty_case != null
+      ? `<span style="color:#16a34a;font-weight:600;">${r.qty_case}</span>`
+      : `<span style="color:#94a3b8;">\u2014</span>`;
+    return `<td style="padding:5px 6px;font-family:monospace;color:#1e293b;white-space:nowrap;">${_escHtml(r.mpn)}</td>` +
+      `<td style="padding:5px 6px;color:#475569;white-space:nowrap;">${_escHtml(r.manufacturer)}</td>` +
+      `<td style="padding:5px 6px;">${qtyCell}</td>` +
+      `<td style="padding:5px 6px;color:#94a3b8;">${_escHtml(r.note || "")}</td>`;
+  }
+
+  function _renderMpnRow(r, idx) {
+    const tbody = $("#mpn-check-table-body");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    tr.dataset.idx = idx;
+    tr.innerHTML = _mpnRowHtml(r);
+    tbody.appendChild(tr);
+  }
+
+  function _updateMpnRow(idx) {
+    const tbody = $("#mpn-check-table-body");
+    const tr = tbody?.querySelector(`tr[data-idx="${idx}"]`);
+    const r = _mpnCheckState.results[idx];
+    if (tr && r) tr.innerHTML = _mpnRowHtml(r);
+  }
+
+  async function _refreshMpnSyncStatus() {
+    const el = $("#mpn-check-sync-status");
+    if (!el) return;
+    try {
+      const j = await api("/api/mpn-check/sync-status");
+      if (!j.mirror_populated) {
+        el.textContent = "Database mirror is still building for the first time \u2014 try again shortly.";
+      } else if (j.last?.finished_at) {
+        const when = new Date(j.last.finished_at + "Z").toLocaleString();
+        el.textContent = `Mirrored from the database \u2014 last synced ${when}.`;
+      } else {
+        el.textContent = "";
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Runs the AI web-search fallback over just the rows the local check
+  // couldn't fully answer, updating those specific rows in place. Separate,
+  // opt-in step -- per user: "The LLM should be a separate option."
+  async function _runMpnAiFallback(progress) {
+    const needsAi = [];
+    _mpnCheckState.results.forEach((r, idx) => {
+      if (!r.matched || r.qty_case == null) needsAi.push(idx);
+    });
+    if (!needsAi.length) return;
+
+    if (progress) progress.textContent += ` Searching the web for ${needsAi.length} unresolved\u2026`;
+    const pairs = needsAi.map(idx => {
+      const r = _mpnCheckState.results[idx];
+      return { mpn: r.mpn, manufacturer: r.manufacturer };
+    });
+    try {
+      const resp = await api("/api/mpn-check/ai-fallback", { method: "POST", body: { pairs } });
+      let found = 0;
+      (resp.results || []).forEach((ar, i) => {
+        const idx = needsAi[i];
+        const r = _mpnCheckState.results[idx];
+        if (!r) return;
+        if (ar.qty_case != null) {
+          r.qty_case = ar.qty_case;
+          r.matched = true;
+          found++;
+        }
+        r.note = ar.note || r.note;
+        _updateMpnRow(idx);
+      });
+      if (progress) {
+        const matched = _mpnCheckState.results.filter(r => r.matched).length;
+        progress.textContent = `${matched} / ${_mpnCheckState.results.length} matched (${found} via AI web search).`;
+      }
+    } catch (e) {
+      showToast("AI web search failed: " + e.message, "error");
+    }
+  }
+
+  async function _checkMpns() {
+    const input = $("#mpn-check-input");
+    const btn = $("#mpn-check-btn");
+    const tableWrap = $("#mpn-check-table-wrap");
+    const tableBody = $("#mpn-check-table-body");
+    const progress = $("#mpn-check-progress");
+    const exportBtn = $("#mpn-check-export-btn");
+    if (!input || !btn) return;
+
+    const oneMode = $("#mpn-check-mode-one")?.checked;
+    const oneMfr = oneMode ? ($("#mpn-check-one-mfr")?.value || "").trim() : null;
+    if (oneMode && !oneMfr) { showToast("Enter the manufacturer/brand to apply to every MPN.", "warning"); return; }
+
+    const pairs = _parseMpnPairs(input.value, oneMfr);
+    if (!pairs.length) { showToast("Paste at least one MPN.", "warning"); return; }
+
+    const fields = [];
+    if ($("#mpn-check-opt-qty")?.checked) fields.push("qty_case");
+    if (!fields.length) { showToast("Pick at least one thing to find.", "warning"); return; }
+    const useAi = !!$("#mpn-check-opt-ai")?.checked;
+
+    btn.disabled = true;
+    btn.textContent = "Checking\u2026";
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = `Checking ${pairs.length} MPN${pairs.length === 1 ? "" : "s"}\u2026`;
+
+    try {
+      const r = await api("/api/mpn-check", { method: "POST", body: { pairs, fields } });
+      _mpnCheckState.results = r.results || [];
+      tableWrap?.classList.remove("hidden");
+      _mpnCheckState.results.forEach((row, idx) => _renderMpnRow(row, idx));
+      if (progress) progress.textContent = `${r.matched} / ${r.total} matched.`;
+      if (_mpnCheckState.results.length) exportBtn?.classList.remove("hidden");
+      if (useAi) await _runMpnAiFallback(progress);
+    } catch (e) {
+      showToast("MPN check failed: " + e.message, "error");
+      if (progress) progress.textContent = "Failed \u2014 " + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Check";
+    }
+  }
+  $("#mpn-check-btn")?.addEventListener("click", _checkMpns);
+
+  $("#mpn-check-export-btn")?.addEventListener("click", function() {
+    const rows = _mpnCheckState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["mpn", "manufacturer", "matched", "qty_case", "note"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push([r.mpn, r.manufacturer, r.matched, r.qty_case ?? "", r.note || ""].map(_q).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "mpn_check.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  // ==========================================================================
+  //  Walmart Catalog -- item search + first-cut Offer Analysis
+  // ==========================================================================
+  const _wmOaState = { results: [] };
+
+  function _parseWalmartOaRows(text) {
+    // Same "UPC or Title" split the Amazon Offer Analysis wizard supports:
+    // a purely-numeric 6-14 digit token is a barcode search, anything else
+    // is a keyword/title search. Tab-separated (pasted from Excel) is tried
+    // first so a title containing commas isn't split apart; falls back to
+    // comma-separated for hand-typed rows.
+    return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+      const parts = (line.includes("\t") ? line.split("\t") : line.split(",")).map(s => s.trim());
+      const ident = parts[0] || "";
+      const isUpc = /^\d{6,14}$/.test(ident);
+      return {
+        upc: isUpc ? ident : "",
+        query: isUpc ? "" : ident,
+        vendor_cost: parseFloat(parts[1]) || 0,
+        category: parts[2] || "",
+      };
+    }).filter(r => r.upc || r.query);
+  }
+
+  function _fmtWmMoney(v) {
+    return (v === null || v === undefined) ? "—" : `$${Number(v).toFixed(2)}`;
+  }
+  function _fmtWmPct(v) {
+    return (v === null || v === undefined) ? "—" : `${(Number(v) * 100).toFixed(1)}%`;
+  }
+
+  function _renderWalmartOaRow(row) {
+    const tbody = $("#wm-oa-table-body");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    const cells = [
+      row.upc || row.query || "—",
+      row.item_id || "—",
+      row.title || "—",
+      row.upc ? "exact (UPC)" : (row.match_score == null ? "—" : `${Math.round(row.match_score)}%`),
+      _fmtWmMoney(row.walmart_price),
+      _fmtWmMoney(row.vendor_cost),
+      _fmtWmMoney(row.referral_fee),
+      _fmtWmMoney(row.net_profit),
+      _fmtWmPct(row.roi),
+      row.error || row.note || "",
+    ];
+    tr.innerHTML = cells.map(c => `<td style="padding:5px 6px;">${
+      String(c ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    }</td>`).join("");
+    tbody.appendChild(tr);
+  }
+
+  async function _runWalmartOfferAnalysis() {
+    const input = $("#wm-oa-input");
+    const btn = $("#wm-oa-run");
+    const tableWrap = $("#wm-oa-table-wrap");
+    const tableBody = $("#wm-oa-table-body");
+    const progress = $("#wm-oa-progress");
+    const exportBtn = $("#wm-oa-export");
+    if (!input || !btn) return;
+
+    const items = _parseWalmartOaRows(input.value);
+    if (!items.length) { showToast("Paste at least one line: UPC, Vendor Cost", "warning"); return; }
+
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = `Searching Walmart for ${items.length} item${items.length === 1 ? "" : "s"}…`;
+
+    try {
+      const r = await api("/api/walmart/offer-analysis", { method: "POST", body: { items } });
+      _wmOaState.results = r.results || [];
+      tableWrap?.classList.remove("hidden");
+      _wmOaState.results.forEach(_renderWalmartOaRow);
+      const found = _wmOaState.results.filter(x => x.walmart_price != null).length;
+      if (progress) progress.textContent = `${found} / ${r.total} found a Walmart price.`;
+      if (_wmOaState.results.length) exportBtn?.classList.remove("hidden");
+    } catch (e) {
+      showToast("Walmart Offer Analysis failed: " + e.message, "error");
+      if (progress) progress.textContent = "Failed — " + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run Offer Analysis";
+    }
+  }
+  $("#wm-oa-run")?.addEventListener("click", _runWalmartOfferAnalysis);
+
+  $("#wm-oa-export")?.addEventListener("click", function() {
+    const rows = _wmOaState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["upc", "query", "item_id", "title", "match_score", "size_conflict", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push(headers.map(h => _q(r[h])).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "walmart_offer_analysis.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  async function _refreshWalmartStatus() {
+    const el = $("#wm-status");
+    if (!el) return;
+    try {
+      const j = await api("/api/walmart/status");
+      if (!j.configured) {
+        el.textContent = "Not connected — add WALMART_CLIENT_ID / WALMART_CLIENT_SECRET to .env and restart the backend.";
+      } else {
+        el.textContent = `Connected — ${j.production ? "production" : "sandbox"}.`;
+      }
+    } catch (e) {
+      el.textContent = "";
+    }
+  }
 
   async function _startToolsRun() {
     const input = $("#tools-asin-input");

@@ -187,7 +187,7 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_scan_amazon_rows_scan  ON scan_amazon_rows(scan_id);
         CREATE INDEX IF NOT EXISTS idx_scan_results_upc_asin  ON scan_results(upc, asin);
 
-        -- Analytics tab (ROI & Cost) ---------------------------------------
+        -- Analytics tab (Offer Analysis) ------------------------------------
         -- One row per run. search_methods is a JSON array like
         -- ["UPC","ItemID","Title"]. status is 'Searching' / 'Vetting' /
         -- 'Complete' / 'Error'.
