@@ -52,10 +52,11 @@
   --blue-100:  #dbeafe;
   --blue-500:  #2563eb;
   --blue-600:  #1d4ed8;
-  /* Shadows removed */
-  --shadow-card: none;
-  --shadow-lg:   none;
-  --shadow-xl:   none;
+  /* Soft "floating card" shadows (Ringku/Octom-style dashboard reference,
+     2026-09-30) — three tiers by how far off the page an element sits. */
+  --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 2px 8px rgba(17, 24, 39, 0.06);
+  --shadow-lg:   0 4px 16px rgba(17, 24, 39, 0.08), 0 2px 6px rgba(17, 24, 39, 0.05);
+  --shadow-xl:   0 12px 32px rgba(17, 24, 39, 0.12), 0 4px 12px rgba(17, 24, 39, 0.06);
 }
 
 * { box-sizing: border-box; }
@@ -72,40 +73,42 @@ html, body {
 /* ---------- Sidebar ------------------------------------------------------ */
 
 .sidebar {
-  background: var(--purple-900);
-  color: #e3dcfb;
+  background: #fff;
+  color: var(--grey-700);
+  border-right: 1px solid var(--grey-100);
   width: 240px;
   min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
 .brand-mark {
-  width: 32px; height: 32px;
-  border-radius: 8px;
+  width: 34px; height: 34px;
+  border-radius: 10px;
   background: linear-gradient(135deg, var(--purple-500), var(--purple-400));
+  box-shadow: var(--shadow-card);
   display: flex; align-items: center; justify-content: center;
 }
 .sidebar .nav-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px; border-radius: 8px;
-  font-size: 14px; color: #c7bff0;
+  padding: 10px 14px; border-radius: 10px;
+  font-size: 14px; color: var(--grey-500); font-weight: 500;
   cursor: pointer; transition: background 120ms, color 120ms;
   margin-bottom: 2px;
   user-select: none;
 }
-.sidebar .nav-item:hover { background: var(--purple-800); color: #fff; }
+.sidebar .nav-item:hover { background: var(--purple-50); color: var(--purple-700); }
 .sidebar .nav-item.active {
-  background: var(--purple-700); color: #fff;
-  box-shadow: inset 3px 0 0 var(--purple-400);
+  background: var(--purple-500); color: #fff;
+  box-shadow: var(--shadow-card);
 }
 .sidebar .nav-item.disabled {
   opacity: 0.45; cursor: not-allowed;
 }
-.sidebar .nav-item.disabled:hover { background: transparent; }
+.sidebar .nav-item.disabled:hover { background: transparent; color: var(--grey-500); }
 .sidebar .section-label {
-  font-size: 11px; letter-spacing: 0.08em; color: #8f85bf;
+  font-size: 11px; letter-spacing: 0.08em; color: var(--grey-500);
   text-transform: uppercase; margin: 18px 14px 6px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* ---------- View header -------------------------------------------------- */
@@ -130,8 +133,9 @@ html, body {
 
 .card {
   background: #fff;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid var(--grey-100);
+  box-shadow: var(--shadow-card);
 }
 .card-header {
   padding: 16px 20px;
@@ -145,11 +149,16 @@ html, body {
 .stat-card {
   background: #fff;
   border: 1px solid var(--grey-100);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 18px 20px;
-  transition: transform 150ms, border-color 150ms;
+  box-shadow: var(--shadow-card);
+  transition: transform 150ms, border-color 150ms, box-shadow 150ms;
 }
-.stat-card:hover { transform: translateY(-1px); border-color: var(--purple-100); }
+.stat-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--purple-100);
+  box-shadow: var(--shadow-lg);
+}
 .stat-label {
   font-size: 11px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--grey-500);
@@ -165,7 +174,7 @@ html, body {
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 16px; border-radius: 8px;
+  padding: 8px 16px; border-radius: 10px;
   font-weight: 500; font-size: 14px;
   transition: all 120ms ease-in-out;
   cursor: pointer; border: 1px solid transparent;
@@ -177,7 +186,7 @@ html, body {
   outline-offset: 2px;
 }
 .btn-sm {
-  padding: 5px 11px; font-size: 12.5px; border-radius: 7px; gap: 6px;
+  padding: 5px 11px; font-size: 12.5px; border-radius: 9px; gap: 6px;
 }
 .btn:active { transform: scale(0.97); }
 .btn-warning:focus-visible { outline-color: rgba(217, 119, 6, 0.45); }
@@ -185,10 +194,13 @@ html, body {
 .btn-success:focus-visible { outline-color: rgba(31, 157, 85, 0.45); }
 .btn-primary {
   background: var(--purple-500); color: #fff;
+  border-radius: 999px;
+  box-shadow: var(--shadow-card);
 }
-.btn-primary:hover { background: var(--purple-800); }
+.btn-primary:hover { background: var(--purple-800); box-shadow: var(--shadow-lg); }
 .btn-primary:disabled {
   background: var(--grey-200); color: var(--grey-500); cursor: not-allowed;
+  box-shadow: none;
 }
 .btn-secondary {
   background: #fff; color: var(--grey-700);
@@ -219,7 +231,7 @@ html, body {
 
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 8px;
+  width: 32px; height: 32px; border-radius: 10px;
   background: transparent; color: var(--grey-500);
   border: 1px solid transparent; cursor: pointer;
   transition: all 120ms;
@@ -230,23 +242,24 @@ html, body {
 
 .toggle {
   display: inline-flex; background: var(--grey-100);
-  padding: 4px; border-radius: 8px;
+  padding: 4px; border-radius: 10px;
   font-size: 13px; font-weight: 500;
 }
 .toggle button {
-  padding: 6px 14px; border-radius: 6px;
+  padding: 6px 14px; border-radius: 8px;
   color: var(--grey-500); transition: all 120ms;
   cursor: pointer;
 }
 .toggle button.active {
   background: #fff; color: var(--navy-800);
+  box-shadow: var(--shadow-card);
 }
 
 /* ---------- Upload drop zones ------------------------------------------- */
 
 .drop-zone {
   border: 2px dashed var(--grey-200);
-  border-radius: 10px;
+  border-radius: 14px;
   padding: 32px 20px;
   text-align: center;
   transition: all 150ms;
@@ -266,7 +279,7 @@ html, body {
 
 .drop-zone-lg {
   border: 2px dashed var(--grey-300);
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 48px 24px;
   text-align: center;
   transition: all 180ms ease-out;
@@ -405,7 +418,7 @@ html, body {
 .history-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
 .history-actions button {
   padding: 5px 10px; font-size: 12px; font-weight: 500;
-  border-radius: 6px; cursor: pointer;
+  border-radius: 8px; cursor: pointer;
   border: 1px solid transparent;
   transition: all 120ms;
   background: transparent; color: var(--grey-700);
@@ -512,6 +525,7 @@ html, body {
   position: fixed; right: 0; top: 0; bottom: 0;
   width: 420px; background: #fff;
   border-left: 1px solid var(--grey-100);
+  box-shadow: var(--shadow-xl);
   transform: translateX(100%);
   transition: transform 250ms ease-in-out;
   z-index: 40; display: flex; flex-direction: column;
@@ -746,7 +760,8 @@ html, body {
   to   { opacity: 1; }
 }
 .modal-shell {
-  background: #fff; border-radius: 14px; flex: 1;
+  background: #fff; border-radius: 18px; flex: 1;
+  box-shadow: var(--shadow-xl);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .modal-tabs {
@@ -767,7 +782,8 @@ html, body {
 
 .wizard-shell {
   background: #fff;
-  border-radius: 16px;
+  border-radius: 20px;
+  box-shadow: var(--shadow-xl);
   width: min(880px, 100%);
   max-height: calc(100vh - 48px);
   margin: auto;
@@ -1429,6 +1445,7 @@ html, body {
   background: #fff;
   border: 1px solid rgba(200, 195, 230, 0.6);
   border-radius: 12px;
+  box-shadow: var(--shadow-lg);
   padding: 6px;
   z-index: 40;
   max-height: 280px;
