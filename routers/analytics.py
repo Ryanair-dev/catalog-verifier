@@ -345,91 +345,15 @@ def get_run_detail(
     }
 
     # ASIN conflicts are surfaced to the user as an informational "⚠ Conflict"
-    # badge (via `asin_conflicts` in the response). A blanket "any conflict
-    # downgrades the verdict" rule was tried and explicitly reverted on
-    # 2026-06-08 (it stranded solid 90%+ matches in Review whenever the same
-    # ASIN legitimately matched >1 catalog row — common when the vendor
-    # catalog has duplicate SKUs for one product).
-    #
-    # ASIN EXCLUSIVITY for a 100%-confidence ("definitive") match — narrower
-    # rule added 2026-09-29 per the user: "if there is a 100% correct asin for
-    # an mpn it cant be assigned for another mpn." A confidence of exactly 100
-    # only ever comes from the matcher's "definitive" floors (UPC+brand,
-    # UPC+attribute, brand+all-attributes — see calculate_confidence), so it's
-    # a much stronger claim than the generic >=90 auto-approve threshold the
-    # 2026-06-08 rule protects. When one catalog row hits that definitive 100
-    # for an ASIN, it is that ASIN's sole rightful owner; every OTHER row
-    # matched to the SAME ASIN (at any confidence, verified or not) is
-    # soft-capped to Review — not silently deleted, not hard-rejected — so a
-    # human reassigns it rather than two different products both claiming to
-    # be "the" match. Confirmed live on a real run ("Pedifix Sales 52 Week")
-    # where one ASIN was verified at 100% for up to 9 genuinely different
-    # products before this rule + a matcher bug fix (see _apparel_size_match /
-    # _colour_match) that was independently found and fixed the same day.
-    _to_conflict_cap: list[tuple[int, str]] = []
-    with database._connect() as conn:
-        conn.row_factory = sqlite3.Row
-        _hundred_rows = conn.execute(
-            "SELECT row_idx, asin, "
-            "json_extract(data_json,'$.scores.product_type_similarity') AS title_sim "
-            "FROM analytics_candidates WHERE run_id=? AND confidence=100",
-            (run_id,),
-        ).fetchall()
-    _asin_100_owners: dict[str, list[tuple[int, float]]] = {}
-    for r in _hundred_rows:
-        _asin_100_owners.setdefault(r["asin"], []).append((r["row_idx"], float(r["title_sim"] or 0)))
-    # Deterministic winner per ASIN even among several genuine 100% ties:
-    # highest title similarity first, then lowest row_idx for full stability.
-    _asin_owner: dict[str, int] = {
-        asin: sorted(pairs, key=lambda p: (-p[1], p[0]))[0][0]
-        for asin, pairs in _asin_100_owners.items()
-    }
-    if _asin_owner:
-        with database._connect() as conn:
-            conn.row_factory = sqlite3.Row
-            _placeholders = ",".join("?" * len(_asin_owner))
-            _owned_asin_rows = conn.execute(
-                f"SELECT row_idx, asin, verdict, review_status FROM analytics_candidates "
-                f"WHERE run_id=? AND asin IN ({_placeholders})",
-                (run_id, *_asin_owner.keys()),
-            ).fetchall()
-        for r in _owned_asin_rows:
-            if r["row_idx"] == _asin_owner[r["asin"]]:
-                continue  # the winner keeps its verdict untouched
-            if (r["review_status"] or "").strip():
-                continue  # a manual/AI decision on this candidate is respected
-            if r["verdict"] == "verified":
-                _to_conflict_cap.append((r["row_idx"], r["asin"]))
-
-        if _to_conflict_cap:
-            # review_status is set (not left blank) so the high-confidence
-            # auto-promotion block further below — "any Review candidate with
-            # confidence >= 90 gets auto-verified" — does NOT immediately
-            # reverse this decision. A capped row's confidence is still 100,
-            # so without this it would bounce straight back to 'verified' a
-            # few lines later in this SAME request (caught by an idempotency
-            # test: a second call kept finding more to cap, because the first
-            # call's caps were being silently undone before the response even
-            # went out). Same guard pattern already used for ai-accepted /
-            # Manually Rejected / Pair Blacklisted elsewhere in this file.
-            with database._LOCK, database._connect() as conn:
-                conn.executemany(
-                    "UPDATE analytics_candidates SET verdict='review', review_status='ASIN Exclusivity' "
-                    "WHERE run_id=? AND row_idx=? AND asin=? AND verdict='verified' "
-                    "AND (review_status IS NULL OR review_status='')",
-                    [(run_id, row_idx, asin) for row_idx, asin in _to_conflict_cap],
-                )
-            _capped_keys = set(_to_conflict_cap)
-            for c in candidates:
-                if (c.get("row_idx"), c.get("asin")) in _capped_keys \
-                   and c.get("verdict") == "verified" \
-                   and not (c.get("review_status") or "").strip():
-                    c["verdict"] = "review"
-                    c["review_status"] = "ASIN Exclusivity"
-                    c["asin_exclusivity_capped"] = True
-            with database._LOCK, database._connect() as conn:
-                updated = _recompute_run_counts(conn, run_id)
-            run_d.update(updated)
+    # badge (via `asin_conflicts` in the response) but no longer downgrade the
+    # verdict.  Per the user's rule, a candidate scoring >= the auto-approve
+    # threshold is a confirmed match and belongs in Approved even when the same
+    # ASIN was matched to more than one catalog row — which in this catalog is
+    # almost always a vendor-side duplicate (same product, two SKUs/UPCs).  The
+    # badge still lets the user spot and manually discard a genuine ambiguous
+    # match.  (Previously this loop capped conflicted verified items to Review
+    # and persisted that downgrade, stranding 90%+ matches on the Review tab.)
+    _to_conflict_cap: list[tuple[int, str]] = []  # retained for the refresh guard; cap disabled
 
     # Defensive promotion: a candidate stored as "not_approved" with confidence
     # >= REVIEW_FLOOR but no hard-reject flag and no valid BSR cap is in an
