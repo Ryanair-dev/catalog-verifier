@@ -462,12 +462,12 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
     spent = [0]
     left = [None]
 
-    def _sample_brands(selection: dict) -> tuple[collections.Counter, set[str]]:
+    def _sample_brands(selection: dict) -> tuple[collections.Counter, set[str], int]:
         al, _tot, tok, lf = _query(sess, selection, min(_MAX_PER_QUERY, _DISCOVER_POOL))
         spent[0] += tok
         left[0] = lf
         if not al:
-            return collections.Counter(), set()
+            return collections.Counter(), set(), 0
         step = max(1, len(al) // sample_size)
         samp = al[::step][:sample_size]
         bc: collections.Counter = collections.Counter()
@@ -486,7 +486,7 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
                 m = (p.get("manufacturer") or "").strip()
                 if m:
                     mfrs.add(m)
-        return bc, mfrs
+        return bc, mfrs, len(samp)
 
     tok_seed = re.sub(r"[^a-z0-9]", "", str(seed).lower())
 
@@ -504,24 +504,46 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
     terms = sorted(terms)[:40]
 
     brand_counts: collections.Counter = collections.Counter()
+    total_sampled = 0
     # (1) products under the manufacturer terms → collect their brand values
-    b_mfr, seen_mfrs = _sample_brands({"manufacturer": terms})
+    b_mfr, seen_mfrs, n1 = _sample_brands({"manufacturer": terms})
     brand_counts.update(b_mfr)
+    total_sampled += n1
     # (2) products branded as the seed itself (so the parent brand is always offered)
-    b_brand, seen_mfrs2 = _sample_brands({"brand": sorted(_term_variants(seed))})
+    b_brand, seen_mfrs2, n2 = _sample_brands({"brand": sorted(_term_variants(seed))})
     brand_counts.update(b_brand)
+    total_sampled += n2
     # (3) expand: any SEEN manufacturer string that mentions the seed but wasn't searched
     # yet (e.g. 'ACON Laboratories' discovered via Flowflex products) → search it too so
     # we catch the rest of the family. The seed-token guard keeps it from drifting.
     more = sorted({m.lower() for m in (seen_mfrs | seen_mfrs2)
                    if _has_seed(m) and m.lower() not in terms})[:20]
     if more:
-        b_more, _ = _sample_brands({"manufacturer": more})
+        b_more, _, n3 = _sample_brands({"manufacturer": more})
         brand_counts.update(b_more)
+        total_sampled += n3
+
+    # Confidence floor BEFORE spending tokens on the exact-count lookup, not after.
+    # Verified live (2026-10-02, "Safetec" manufacturer run): a handful of
+    # products with an unrelated/incidental brand value (a shared kit listing,
+    # a data-entry quirk, etc.) show up only 1-3 times out of 500+ samples —
+    # true noise, not a real house sub-brand ("Safetec" itself was 507/526 =
+    # 96%; every noise brand was <=3/526 = <=0.6%). The OLD code took every
+    # such one-off hit and looked up its GLOBAL Amazon-wide popularity, which
+    # rewards exactly the wrong thing: a brand that happens to be big
+    # EVERYWHERE ELSE on Amazon (e.g. "BND" 696 products, "PrimeMed" 490,
+    # unrelated office/safety suppliers) outranked the genuine seed brand in
+    # the final sorted-by-count output, even though its connection to the
+    # seed was a single coincidental sample. A real house sub-brand (e.g.
+    # Acon's "Flowflex", 212/~400 samples) clears this easily; a one-off
+    # mislabeled/bundled listing does not.
+    min_hits = max(3, round(0.02 * total_sampled)) if total_sampled else 3
+    candidates = [(val, cnt) for val, cnt in brand_counts.most_common(max_brands * 2)
+                  if cnt >= min_hits]
 
     # exact finder count per distinct brand (cheap: perPage=50 ≈ 11 tokens each)
     out = []
-    for val, _sc in brand_counts.most_common(max_brands):
+    for val, _sc in candidates[:max_brands]:
         if val.strip().lower() in _JUNK_BRANDS:
             continue
         _al, total, tok, lf = _query(sess, {"brand": [val.lower()]}, 50)
