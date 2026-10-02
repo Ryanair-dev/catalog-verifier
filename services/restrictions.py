@@ -64,9 +64,14 @@ class RestrictionsAPI:
         self,
         token_manager: LWATokenManager,
         marketplace_id: str = MARKETPLACE_ID,
+        limiters: dict | None = None,
     ):
         self.tokens = token_manager
         self.marketplace_id = marketplace_id
+        # A second store's client gets its OWN independent rate-limit buckets
+        # (see services/spapi/rate_limiter.new_limiters) so it isn't throttled
+        # together with the default store.
+        self.limiters = limiters if limiters is not None else LIMITERS
 
     def _headers(self) -> dict:
         return {
@@ -76,7 +81,7 @@ class RestrictionsAPI:
 
     def _get(self, path: str, params: dict, max_retries: int = 5) -> requests.Response:
         operation = "getListingsRestrictions"
-        limiter = LIMITERS.get(operation)
+        limiter = self.limiters.get(operation)
 
         for attempt in range(max_retries):
             if limiter:
@@ -284,16 +289,21 @@ def classify(asin: str, raw_response: dict) -> dict:
 
 # ── Cached singleton factory ──────────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
-def get_restrictions_api() -> RestrictionsAPI:
+@lru_cache(maxsize=4)
+def get_restrictions_api(store: str = "default") -> RestrictionsAPI:
     """
-    Build (or return a cached) RestrictionsAPI using the environment credentials.
-    Raises RuntimeError if SP-API credentials are not configured.
+    Build (or return a cached) RestrictionsAPI for the given store (seller
+    account — see services/spapi/config._STORES). Raises RuntimeError if
+    that store's SP-API credentials are not configured.
     """
-    creds = load_sp_api_credentials()
+    from .spapi.rate_limiter import new_limiters
+    creds = load_sp_api_credentials(store)
     token_mgr = LWATokenManager(
         client_id=creds.client_id,
         client_secret=creds.client_secret,
         refresh_token=creds.refresh_token,
     )
-    return RestrictionsAPI(token_mgr, creds.marketplace_id)
+    return RestrictionsAPI(
+        token_mgr, creds.marketplace_id,
+        limiters=None if store == "default" else new_limiters(),
+    )

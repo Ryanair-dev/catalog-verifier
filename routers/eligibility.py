@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from services.spapi import get_catalog_api
 from services.restrictions import classify, get_restrictions_api
-from services.spapi.config import load_sp_api_credentials, sp_api_configured
+from services.spapi.config import load_sp_api_credentials, sp_api_configured, list_stores
 from services.safety import safe_spreadsheet_value
 
 router = APIRouter()
@@ -74,6 +74,9 @@ def _eta(job: dict) -> int | None:
 
 class CheckBody(BaseModel):
     asins: list[str]
+    store: str = "default"   # which seller account's restrictions to check — see
+                              # services/spapi/config._STORES ("default" = Priority
+                              # Pharmacy, "turba" = Turba)
 
 
 class CheckBrandBody(BaseModel):
@@ -98,6 +101,13 @@ async def eligibility_status() -> dict:
         except RuntimeError:
             pass
     return {"sp_api_configured": configured, "seller_id_configured": seller_ok}
+
+
+@router.get("/eligibility/stores")
+async def eligibility_stores() -> dict:
+    """Every known store (seller account) + whether it's usable right now,
+    for the Eligibility Check store-switch button."""
+    return {"stores": list_stores()}
 
 
 def _related(query: str, candidate: str) -> bool:
@@ -420,9 +430,11 @@ async def start_check(body: CheckBody) -> dict:
             detail=f"Max {MAX_ASINS} ASINs per request (received {len(asins)}).",
         )
 
+    store = (body.store or "default").strip().lower()
+
     # Validate credentials early for a clean error message
     try:
-        creds = load_sp_api_credentials()
+        creds = load_sp_api_credentials(store)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
@@ -430,7 +442,7 @@ async def start_check(body: CheckBody) -> dict:
         raise HTTPException(
             status_code=503,
             detail=(
-                "AMZ_SELLER_ID is not set. "
+                f"No seller ID is configured for the {store!r} store. "
                 "Add it to your .env file and restart — "
                 "the Listings Restrictions API requires a seller ID."
             ),
@@ -444,13 +456,14 @@ async def start_check(body: CheckBody) -> dict:
         "status":     "running",
         "results":    [],
         "started_at": time.time(),
+        "store":      store,
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
 
     # ── Background worker ──────────────────────────────────────────────────
     def run() -> None:
-        api       = get_restrictions_api()
+        api       = get_restrictions_api(store)
         seller_id = creds.seller_id
         lock      = threading.Lock()
 
@@ -486,7 +499,7 @@ async def start_check(body: CheckBody) -> dict:
 
     threading.Thread(target=run, daemon=True).start()
 
-    return {"job_id": job_id, "total": len(asins)}
+    return {"job_id": job_id, "total": len(asins), "store": store}
 
 
 @router.get("/eligibility/jobs/{job_id}")
@@ -499,6 +512,7 @@ async def get_job(job_id: str) -> dict:
         "status":      job["status"],
         "eta_seconds": _eta(job),
         "results":     job["results"],
+        "store":       job.get("store", "default"),
     }
 
 

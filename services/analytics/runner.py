@@ -36,7 +36,7 @@ from services.analytics.matcher import calculate_confidence
 from services.analytics.parser import SourceRow
 from services.analytics.product_categorizer import categorize, category_distance, UNKNOWN, MEDICAL
 from services.analytics.brand_extractor import extract_brands
-from services.spapi import get_catalog_api, sp_api_configured
+from services.spapi import get_multi_store_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
 
 log = logging.getLogger(__name__)
@@ -1631,7 +1631,13 @@ def _run_pipeline(
             source_rows = [r for r in source_rows if r.row_idx not in done_idxs]
             log.info("Resume run %s: %d rows remaining", run_id, len(source_rows))
 
-        api = get_catalog_api(marketplace)
+        # Round-robins UPC/ItemID/Title search across every configured SP-API
+        # store (Priority Pharmacy + Turba, when both are set up) — same
+        # public catalog data either way, just drawing from two independent
+        # per-store rate-limit buckets instead of one, so a long search run
+        # gets roughly double the sustained throughput. Falls back to a
+        # single store automatically when only one is configured.
+        api = get_multi_store_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)

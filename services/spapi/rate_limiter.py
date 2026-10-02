@@ -47,8 +47,24 @@ class TokenBucketLimiter:
         self.acquire()  # retry after sleep
 
 
-LIMITERS: dict[str, TokenBucketLimiter] = {
-    "searchCatalogItems":      TokenBucketLimiter(rate=2, burst=2),
-    "getCatalogItem":          TokenBucketLimiter(rate=2, burst=2),
-    "getListingsRestrictions": TokenBucketLimiter(rate=5, burst=10),
+_RATE_SPECS: dict[str, tuple[float, int]] = {
+    "searchCatalogItems":      (2, 2),
+    "getCatalogItem":          (2, 2),
+    "getListingsRestrictions": (5, 10),
 }
+
+
+def new_limiters() -> dict[str, TokenBucketLimiter]:
+    """A fresh, independent set of token buckets.
+
+    Added 2026-10-02 for multi-store SP-API support: each seller account
+    (store) has its OWN rate limit from Amazon, so a second store's client
+    needs its own buckets rather than sharing `LIMITERS` — reusing the same
+    dict would throttle both stores combined to the single-store rate,
+    defeating the point of adding a second credential set."""
+    return {op: TokenBucketLimiter(rate=r, burst=b) for op, (r, b) in _RATE_SPECS.items()}
+
+
+# The default/shared instance — every existing caller that doesn't pass its
+# own `limiters` dict keeps using this one, unchanged from before.
+LIMITERS: dict[str, TokenBucketLimiter] = new_limiters()

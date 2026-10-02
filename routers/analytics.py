@@ -51,7 +51,7 @@ from services.analytics.eligibility_check import (
     start_eligibility_check, stop_eligibility_check,
     is_running as elig_check_running, approved_review_asins,
 )
-from services.spapi import sp_api_configured, get_catalog_api
+from services.spapi import sp_api_configured, get_multi_store_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
 
 router = APIRouter(prefix="/analytics")
@@ -1501,7 +1501,11 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
 
     row = _SourceRow(row_idx=0, upc=upc, itemid=itemid, title=title, brand=brand)
     source_dict = row.as_source_dict()
-    api = get_catalog_api()
+    # Round-robins UPC/ItemID/Title search across every configured SP-API store
+    # (same public catalog data either way — just doubles sustained throughput
+    # via two independent per-store rate-limit buckets); see runner.py's
+    # _run_pipeline for the same change on the full Offer Analysis pipeline.
+    api = get_multi_store_catalog_api()
 
     # Collect (normalized_item, source_label) from all tiers.
     raw_candidates: list[tuple[dict, str]] = []

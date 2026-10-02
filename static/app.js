@@ -7579,8 +7579,34 @@
   const _TOOLS_POLL_MAX_FAILS = 5;
 
   // ── Open / close ──────────────────────────────────────────────────────────
-  $("#open-tools-btn")?.addEventListener("click", () => _openPanel("tools-panel"));
+  $("#open-tools-btn")?.addEventListener("click", () => {
+    _openPanel("tools-panel");
+    _refreshEligStoreStatus();
+  });
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
+
+  // Eligibility store switch — shows which stores are actually usable, since
+  // a store can have working SP-API credentials (catalog search would work)
+  // but still be missing its own seller ID (eligibility specifically needs
+  // one per store — see services/spapi/config.list_stores).
+  async function _refreshEligStoreStatus() {
+    const note = $("#tools-elig-store-note");
+    try {
+      const j = await api("/api/eligibility/stores");
+      const byKey = {};
+      (j.stores || []).forEach(s => { byKey[s.key] = s; });
+      const turba = byKey.turba;
+      if (note) {
+        if (!turba || !turba.configured) {
+          note.textContent = "Turba: SP-API credentials not configured in .env.";
+        } else if (!turba.seller_id_configured) {
+          note.textContent = "Turba: no seller ID configured yet — eligibility checks for Turba will fail until one is added to .env.";
+        } else {
+          note.textContent = "";
+        }
+      }
+    } catch { /* best-effort — leave the note blank on failure */ }
+  }
 
   // Tools sub-tabs: ASIN Check / Brand Check / MPN Check
   function _switchToolsTab(tab) {
@@ -8155,6 +8181,7 @@
     const wantSF   = $("#tools-opt-sf")?.checked ?? true;
     const wantGen  = $("#tools-opt-generic")?.checked ?? false;
     if (!wantElig && !wantSF && !wantGen) { showToast("Select at least one tool to run.", "warning"); return; }
+    const eligStore = $("input[name='tools-elig-store']:checked")?.value || "default";
 
     // Reset state
     const t = state.tools;
@@ -8185,7 +8212,7 @@
     const starts = [];
     if (wantElig) {
       starts.push(
-        api("/api/eligibility/check", { method: "POST", body: { asins } })
+        api("/api/eligibility/check", { method: "POST", body: { asins, store: eligStore } })
           .then(j => { t.eligJobId = j.job_id; })
           .catch(e => { showToast("Eligibility start failed: " + e.message, "error"); t.eligDone = true; })
       );

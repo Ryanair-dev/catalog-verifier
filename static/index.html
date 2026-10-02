@@ -1638,6 +1638,22 @@
         <div id="tools-asin-count" style="font-size:12px;color:#94a3b8;margin-top:4px;"></div>
       </div>
 
+      <!-- Store switch (which seller account Eligibility Check runs against) -->
+      <div>
+        <div class="abbr-section-title" style="margin-bottom:6px;">Store (Eligibility Check)</div>
+        <div class="seg-radio" role="radiogroup" aria-label="Eligibility store">
+          <label>
+            <input type="radio" name="tools-elig-store" id="tools-elig-store-default" value="default" checked />
+            Priority Pharmacy
+          </label>
+          <label>
+            <input type="radio" name="tools-elig-store" id="tools-elig-store-turba" value="turba" />
+            Turba
+          </label>
+        </div>
+        <div id="tools-elig-store-note" style="font-size:11px;color:#94a3b8;margin-top:4px;"></div>
+      </div>
+
       <!-- Options checkboxes -->
       <div style="display:flex;flex-direction:column;gap:10px;">
         <div class="abbr-section-title" style="margin-bottom:2px;">What to run</div>
@@ -2855,7 +2871,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=52"></script>
+  <script src="/static/app.js?v=53"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

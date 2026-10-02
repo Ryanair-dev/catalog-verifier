@@ -54,10 +54,16 @@ class CatalogAPI:
         token_manager,
         marketplace_id: str = MARKETPLACE_NA,
         endpoint: str = ENDPOINT_NA,
+        limiters: dict | None = None,
     ):
         self.tokens = token_manager
         self.marketplace_id = marketplace_id
         self.endpoint = endpoint
+        # Defaults to the shared module-level LIMITERS (unchanged behaviour for
+        # every existing caller). A second store's client is given its OWN
+        # independent dict (`rate_limiter.new_limiters()`) so its rate budget
+        # doesn't share/compete with the default store's.
+        self.limiters = limiters if limiters is not None else LIMITERS
 
     # ── Internal helpers ─────────────────────────────────────────────────
 
@@ -74,7 +80,7 @@ class CatalogAPI:
         operation: str,
         max_retries: int = 5,
     ) -> requests.Response:
-        limiter = LIMITERS.get(operation)
+        limiter = self.limiters.get(operation)
 
         for attempt in range(max_retries):
             if limiter:
