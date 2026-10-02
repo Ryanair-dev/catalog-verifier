@@ -6138,6 +6138,17 @@
     ba.run._firstRender = true;   // triggers entrance animations on first render only
     if (ba.run.poll) { clearTimeout(ba.run.poll); ba.run.poll = null; }
 
+    // The "Amazon brand names found" panel caches its fetch on the DOM node
+    // itself (dataset.loaded) since it only wants to fetch once per run, not
+    // on every 2s poll tick -- but that same node persists across different
+    // runs in this SPA, so without a reset here it would just keep showing
+    // whatever brand names were fetched for the FIRST run ever opened, no
+    // matter which run you open afterward. Clear it so each run fetches its
+    // own brand names fresh.
+    const bnContainer = $("#ba-run-brand-names-list");
+    if (bnContainer) { delete bnContainer.dataset.loaded; bnContainer.innerHTML = ""; }
+    $("#ba-brand-names-new-badge")?.classList.add("hidden");
+
     $$("main > div").forEach(el => el.classList.add("hidden"));
     const barView = $("#view-brand-analytics-run");
     if (barView) {
