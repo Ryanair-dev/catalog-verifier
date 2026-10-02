@@ -60,7 +60,7 @@ _STORES: dict[str, dict] = {
         "client_id":     ("AMZ_CLIENT_TRB__CLIENT_ID", "AMZ_CLIENT_TRB_CLIENT_ID"),
         "client_secret": ("AMZ_CLIENT_TRB_SECRET",),
         "refresh_token": ("AMZ_CLIENT_TRB_REFRESH_TOKEN",),
-        "seller_id":     ("AMZ_SELLER_ID_TRB", "AMZ_CLIENT_TRB_SELLER_ID"),
+        "seller_id":     ("AMZ_SELLER_TRB_ID", "AMZ_SELLER_ID_TRB", "AMZ_CLIENT_TRB_SELLER_ID"),
     },
 }
 
