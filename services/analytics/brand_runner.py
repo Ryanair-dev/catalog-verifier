@@ -1,12 +1,27 @@
 """
 Background worker for Brand Analytics runs.
 
-For each brand name in search_terms:
-  1. Keyword-search Amazon (search_by_keywords) for up to pages_per_brand pages
-  2. Post-filter: only keep items where amazon.brand fuzzy-matches one of the
-     searched brands (rapidfuzz ≥ 70%)
-  3. BSR filter: apply min_rank / max_rank
-  4. Upsert into brand_analytics_items
+Two discovery sources are combined, not treated as either/or (2026-10-02 —
+verified live that a manufacturer-only Keepa search can miss genuine products
+whose Amazon `manufacturer` field is blank/inconsistent even though the
+`brand` field is correct, e.g. a real "Torbot" ASIN with manufacturer
+"Med-Choice"):
+
+  1. Keepa discovery (`_keepa_brand_pipeline`, when KEEPA_API is configured) —
+     finds the full brand/manufacturer ASIN list past SP-API's own keyword-
+     search recall ceiling, then enriches each via SP-API.
+  2. SP-API keyword + brandNames search (`_brand_pipeline`'s Phases A-D,
+     ALWAYS run as a supplement, not just a fallback when Keepa is absent) —
+     catches real products Keepa's structured brand/manufacturer fields
+     missed, via Amazon's own brand-field search instead.
+
+Both sources upsert into the SAME `brand_analytics_items` row via
+`_upsert_item` (idempotent, keyed on run_id+asin), so an ASIN either source
+finds is simply refreshed with the other's data, never duplicated. Post-
+filter for the SP-API keyword phase: only keep items where amazon.brand
+fuzzy-matches one of the searched brands (rapidfuzz ≥ 70%); the brandNames-
+scan phases are filtered by Amazon itself, no post-filter needed. BSR filter
+(min_rank/max_rank) applies to both sources.
 
 Progress is written to brand_analytics_runs so the UI can poll for live status.
 """
@@ -506,12 +521,18 @@ def _keepa_brand_pipeline(
     max_rank: int,
     vetting_mode: str,
     category_filter: str,
+    mark_complete: bool = True,
 ) -> None:
     """Discover ALL of a brand/manufacturer's ASINs from Keepa (past SP-API's recall
     ceiling), then enrich each via SP-API (BSR / category / UPC/EAN/GTIN/MPN / dims →
     storage fee). Keeps the same category filtering + item storage as the SP-API path.
     Keepa token spend/balance are recorded on the run. Buy-box + eligibility are added
-    by their own steps afterward."""
+    by their own steps afterward.
+
+    `mark_complete=False` (used by `_brand_pipeline` when it's about to also run the
+    SP-API keyword/brandNames supplement afterward) skips the final status="Complete"
+    update, so the run stays visibly "Searching" through the supplement phase instead
+    of the UI showing Complete partway through."""
     from services import keepa
 
     # brand vs manufacturer for the Keepa selection + the units-sold window (stored on
@@ -638,9 +659,15 @@ def _keepa_brand_pipeline(
         _update_progress(run_id, status="Searching", done=min(i + 20, total), total=total,
                          phase=f"Enriching {min(i + 20, total):,}/{total:,} — {kept:,} kept")
 
-    _update_progress(run_id, status="Complete",
-                     phase=f"Done — {kept:,} products · Keepa {tok_spent} tokens",
-                     done=total, total=total)
+    if mark_complete:
+        _update_progress(run_id, status="Complete",
+                         phase=f"Done — {kept:,} products · Keepa {tok_spent} tokens",
+                         done=total, total=total)
+    else:
+        _update_progress(run_id, status="Searching",
+                         phase=f"Keepa done — {kept:,} products · {tok_spent} tokens — "
+                               f"supplementing via Amazon SP-API search…",
+                         done=total, total=total)
 
 
 def _brand_pipeline(
@@ -653,16 +680,23 @@ def _brand_pipeline(
     category_filter: str = "",
 ) -> None:
     # When a Keepa key is configured, discover the FULL brand/manufacturer catalog via
-    # Keepa (beats SP-API's ~6k recall ceiling) and enrich via SP-API. Falls back to the
-    # SP-API keyword search below when Keepa isn't configured.
+    # Keepa (beats SP-API's ~6k recall ceiling) first. The SP-API keyword/brandNames
+    # search below then ALWAYS ALSO runs as a supplement, not a fallback — verified
+    # live (2026-10-02, "Torbot" manufacturer run) that Keepa's own `manufacturer`
+    # field is frequently blank or inconsistent on real listings (e.g. "Med-Choice",
+    # "MedC", "TORBOTGROUPINC.1231") even when Amazon's own `brand` field correctly
+    # says "Torbot" — so a manufacturer-only Keepa search silently misses genuine
+    # products that a brand-field keyword/brandNames search on SP-API catches. Both
+    # sources feed the SAME `_upsert_item` (idempotent, keyed on run_id+asin), so an
+    # ASIN Keepa already found is just harmlessly re-upserted with fresh SP-API data,
+    # never duplicated.
     try:
         from services import keepa
         if keepa.is_configured():
             _keepa_brand_pipeline(run_id, search_terms, min_rank, max_rank,
-                                  vetting_mode, category_filter)
-            return
+                                  vetting_mode, category_filter, mark_complete=False)
     except Exception as exc:  # noqa: BLE001
-        log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search", run_id, exc)
+        log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search only", run_id, exc)
 
     # 0 = unlimited (paginate until Amazon has no more results)
     unlimited = pages_per_brand == 0
@@ -1066,11 +1100,17 @@ def _brand_pipeline(
             "WHERE id=?",
             (run_id,),
         )
+        # True combined total (Keepa + this SP-API pass share one idempotent upsert,
+        # keyed on run_id+asin) — `asin_count` only tracks THIS pass's own finds, which
+        # would understate the real total whenever the Keepa supplement ran first.
+        total_items = conn.execute(
+            "SELECT COUNT(*) FROM brand_analytics_items WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
 
     _update_progress(
         run_id,
         status="Complete",
-        phase=f"Done — {asin_count} ASINs found",
+        phase=f"Done — {total_items} ASINs found ({asin_count} via SP-API)",
         done=total_pages,
         total=total_pages,
     )
