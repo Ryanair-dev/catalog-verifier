@@ -8,8 +8,14 @@ whose Amazon `manufacturer` field is blank/inconsistent even though the
 "Med-Choice"):
 
   1. Keepa discovery (`_keepa_brand_pipeline`, when KEEPA_API is configured) —
-     finds the full brand/manufacturer ASIN list past SP-API's own keyword-
-     search recall ceiling, then enriches each via SP-API.
+     finds the full ASIN list past SP-API's own keyword-search recall ceiling,
+     searching each term as BOTH a `brand` AND a `manufacturer` field (never
+     just the one the wizard's Brand/Manufacturer toggle happens to pick —
+     that toggle only labels the run + drives the AI sub-brand discovery
+     step's entity_type), then enriches each ASIN via SP-API. A Keepa `title`
+     field also exists but was tested live and rejected for discovery:
+     title="3M" returned 896,900 results vs 96,500 for brand="3M" — far too
+     noisy/expensive as a bare substring match.
   2. SP-API keyword + brandNames search (`_brand_pipeline`'s Phases A-D,
      ALWAYS run as a supplement, not just a fallback when Keepa is absent) —
      catches real products Keepa's structured brand/manufacturer fields
@@ -535,16 +541,16 @@ def _keepa_brand_pipeline(
     of the UI showing Complete partway through."""
     from services import keepa
 
-    # brand vs manufacturer for the Keepa selection + the units-sold window (stored on
-    # the run; filtered in Keepa's finder for free, alongside the BSR window)
+    # The units-sold window (stored on the run; filtered in Keepa's finder for free,
+    # alongside the BSR window). `search_type` (brand vs manufacturer, the wizard's
+    # toggle) is READ but no longer used to pick ONE field — see below.
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT search_type, min_sold, max_sold FROM brand_analytics_runs WHERE id=?",
+            "SELECT min_sold, max_sold FROM brand_analytics_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-    search_type = ((row[0] if row else "") or "brand").lower()
-    min_sold = int((row[1] if row and row[1] is not None else 0) or 0)
-    max_sold = int((row[2] if row and row[2] is not None else 0) or 0)
+    min_sold = int((row[0] if row and row[0] is not None else 0) or 0)
+    max_sold = int((row[1] if row and row[1] is not None else 0) or 0)
 
     try:
         catalog = get_catalog_api()
@@ -555,31 +561,44 @@ def _keepa_brand_pipeline(
     _cat_target = _CATEGORY_FILTER_MAP.get(category_filter.lower()) if category_filter else None
 
     # ── 1) Keepa discovery ────────────────────────────────────────────────── #
+    # Always search EACH term as BOTH a brand AND a manufacturer field in Keepa, never
+    # just the one the wizard's toggle happened to pick — verified live (2026-10-02,
+    # "Torbot" run) that Amazon's manufacturer field is often blank/inconsistent on real
+    # listings even when the brand field is correct (and the reverse can happen too for
+    # some catalogs), so searching only one field silently drops real products. A `title`
+    # field also exists in Keepa's finder but was tested live and rejected: title="3M"
+    # returned 896,900 results vs 96,500 for brand="3M" — a bare substring match against
+    # free-text titles is far too noisy/expensive to use for discovery (the SP-API
+    # keyword-search supplement below already covers the "title" angle properly, WITH a
+    # strict brand-field verification post-filter that a raw Keepa title search has no
+    # equivalent for).
     _update_progress(run_id, status="Searching", phase="Keepa — finding ASINs…", done=0, total=0)
     all_asins: set[str] = set()
     tok_spent = 0
     tok_left = None
     for term in search_terms:
-        if _check_control(run_id) == "stop":
-            _update_progress(run_id, status="Stopped", phase="Stopped by user")
-            return
+        for field in ("brand", "manufacturer"):
+            if _check_control(run_id) == "stop":
+                _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                return
 
-        def _prog(found: int, target: int, _t=term) -> None:
-            _update_progress(run_id, status="Searching",
-                             phase=f"Keepa — {_t}: {found:,}/{target:,} ASINs",
-                             done=found, total=max(target, 1))
-        try:
-            kw = {"manufacturer": term} if search_type == "manufacturer" else {"brand": term}
-            # BSR window is filtered in Keepa's finder (free) — the ONLY place the Keepa
-            # path applies min/max rank, and it trims the list before SP-API enrichment.
-            res = keepa.find_asins(progress=_prog, min_rank=min_rank, max_rank=max_rank,
-                                   min_sold=min_sold, max_sold=max_sold, **kw)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[keepa] find_asins failed for %r: %s", term, exc)
-            continue
-        all_asins |= set(res["asins"])
-        tok_spent += int(res.get("tokens_spent") or 0)
-        tok_left = res.get("tokens_left")
+            def _prog(found: int, target: int, _t=term, _f=field) -> None:
+                _update_progress(run_id, status="Searching",
+                                 phase=f"Keepa — {_t} ({_f}): {found:,}/{target:,} ASINs",
+                                 done=found, total=max(target, 1))
+            try:
+                kw = {field: term}
+                # BSR window is filtered in Keepa's finder (free) — the ONLY place the
+                # Keepa path applies min/max rank, and it trims the list before SP-API
+                # enrichment.
+                res = keepa.find_asins(progress=_prog, min_rank=min_rank, max_rank=max_rank,
+                                       min_sold=min_sold, max_sold=max_sold, **kw)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[keepa] find_asins(%s=%r) failed: %s", field, term, exc)
+                continue
+            all_asins |= set(res["asins"])
+            tok_spent += int(res.get("tokens_spent") or 0)
+            tok_left = res.get("tokens_left")
 
     with database._LOCK, database._connect() as conn:
         conn.execute(
@@ -590,8 +609,8 @@ def _keepa_brand_pipeline(
 
     asins = sorted(all_asins)
     total = len(asins)
-    log.info("brand_runner run=%d: Keepa found %d ASINs (%s); enriching via SP-API",
-             run_id, total, search_type)
+    log.info("brand_runner run=%d: Keepa found %d ASINs (brand+manufacturer); enriching via SP-API",
+             run_id, total)
 
     # ── 2) SP-API catalog enrichment (BSR / category / IDs / dims→storage) ──── #
     _update_progress(run_id, status="Searching",
