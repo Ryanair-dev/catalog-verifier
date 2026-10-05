@@ -196,15 +196,32 @@ def _brand_matches(
        Threshold is length-adaptive: short names (≤5 chars) require 90%
        to avoid false positives like "Bode" matching "Bose" at 75%.
     2. Brand field set but doesn't match:
-       - strict=True  → False immediately.  Used during Phase A keyword search
-         where "brand field set but wrong brand" means it's a different product
-         (e.g. Amazon brand="Shure" when searching for "Microflex").  The keyword
-         may appear in the title by coincidence (competitor name, movie title, etc.)
-         and the title fallback would wrongly pass those.
+       - strict=True  → False immediately.  Originally used during Phase A
+         keyword search on the theory that "brand field set but wrong brand"
+         always means a different product (e.g. Amazon brand="Shure" when
+         searching for "Microflex") and the keyword only appears in the title
+         by coincidence (competitor name, movie title, etc.).
        - strict=False → fall through to title check (original behaviour).  Used
          for lookups where Amazon may store the parent-company name instead of
-         the sub-brand (e.g. "DJO Global" instead of "Aircast").
+         the sub-brand (e.g. "DJO Global" instead of "Aircast"), AND (2026-10-05)
+         now also Phase A itself — see note below.
     3. Brand field empty → title check is the only signal (both modes).
+
+    2026-10-05: Phase A's strict=True call was found to also reject a real,
+    common case it was never meant to catch — a RESELLER relisting the
+    genuine searched-for product under their own company name in Amazon's
+    brand field (e.g. Myco/Glassvan surgical blades listed under Amazon
+    brand="AmeriCan Goods"). That's structurally identical to the Shure/
+    Microflex false positive strict mode was built to stop (both are "a real,
+    different company name sits in the brand field, and a search term
+    happens to appear in the title") — there is no cheap text signal that
+    tells a reseller's storefront name apart from a genuine competing brand
+    with a same-named product line, so loosening one necessarily risks the
+    other back in. Per user instruction, Phase A now calls strict=False,
+    trading a *re-opened* chance of rare coincidental keyword collisions
+    (as in the original Ringers/Edge/Microflex cases) for recovering
+    genuine reseller-relisted inventory, which is the more common real-world
+    miss. Revisit if coincidental false positives start showing up again.
 
     Title check: sub-brand name must appear as a whole-word substring OR via
     partial_ratio ≥ 92 (tightened to reduce false positives on short names).
@@ -822,11 +839,14 @@ def _brand_pipeline(
                 amz_brand = normalized.get("brand") or normalized.get("manufacturer") or ""
                 amz_title = normalized.get("title") or ""
 
-                # strict=True: if Amazon brand field is set but doesn't match, reject
-                # immediately.  Prevents keyword coincidences (e.g. "Ringers" keyword
-                # matching "Dead Ringers" DVD, "Edge" matching shaving gel) from
-                # slipping through via the title fallback.
-                if not _brand_matches(amz_brand, search_terms, title=amz_title, strict=True):
+                # strict=False (2026-10-05, was True): a brand-field mismatch now
+                # falls through to the title check instead of a hard reject -- this
+                # is what recovers reseller-relisted inventory (e.g. Myco/Glassvan
+                # surgical blades listed under Amazon brand="AmeriCan Goods"), at
+                # the cost of re-opening rare coincidental keyword collisions
+                # (e.g. "Ringers" matching "Dead Ringers" DVD) that the old
+                # strict=True was built to stop. See _brand_matches docstring.
+                if not _brand_matches(amz_brand, search_terms, title=amz_title, strict=False):
                     continue
 
                 # Collect the exact Amazon brand name for Phase B seed
