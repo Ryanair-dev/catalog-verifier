@@ -635,7 +635,13 @@
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
-    if (view !== "po-analytics" && typeof _clearPoaPoll === "function") _clearPoaPoll();
+    // NOTE: PO Analytics' poll is deliberately NOT cleared when leaving this view —
+    // a job keeps running server-side regardless of which tab is open, and killing
+    // the poll here made the panel freeze on whatever phase it last showed (e.g.
+    // "pulling SellerCloud PO data") if the user clicked away and back before it
+    // finished. _pollPoAnalytics's own tick() stops scheduling itself once the job
+    // is complete/errored, so there's nothing to leak by leaving it running.
+    if (view === "po-analytics" && typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
   }
 
   // ========================================================================
@@ -8173,7 +8179,11 @@
   }
 
   // ---- PO Analytics ---------------------------------------------------------
+  // The poll is intentionally NOT tied to the view being visible — a job keeps
+  // running server-side regardless of which sidebar tab is open, so switching
+  // away and back must not freeze the display on a stale phase (see switchView).
   let _poaPoll = null;
+  let _poaActiveJobId = null;
 
   function _clearPoaPoll() {
     if (_poaPoll) { clearTimeout(_poaPoll); _poaPoll = null; }
@@ -8200,6 +8210,7 @@
 
     try {
       const r = await api("/api/po-analytics/start", { method: "POST", body: { po_numbers: raw } });
+      _poaActiveJobId = r.job_id;
       _pollPoAnalytics(r.job_id);
     } catch (e) {
       btn.disabled = false;
@@ -8211,12 +8222,36 @@
   }
   $("#poa-run")?.addEventListener("click", _startPoAnalytics);
 
-  function _pollPoAnalytics(jobId) {
+  function _applyPoaStatus(j, jobId) {
     const btn = $("#poa-run");
     const dl = $("#poa-download");
     const progress = $("#poa-progress");
     const errEl = $("#poa-error");
+    if (progress && !progress.classList.contains("hidden")) {
+      const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+      const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
+      progress.textContent = j.total
+        ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
+        : (j.phase || "Working…");
+    }
+    if (j.status === "complete") {
+      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+      progress?.classList.add("hidden");
+      dl?.classList.remove("hidden");
+      if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
+      return true;
+    }
+    if (j.status === "error") {
+      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = j.error || "Failed.";
+      return true;
+    }
+    return false;
+  }
 
+  function _pollPoAnalytics(jobId) {
     const tick = async () => {
       let j;
       try {
@@ -8225,30 +8260,22 @@
         _poaPoll = setTimeout(tick, 2000);
         return;
       }
-      if (progress) {
-        const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
-        const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
-        progress.textContent = j.total
-          ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
-          : (j.phase || "Working…");
-      }
-      if (j.status === "complete") {
-        if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
-        progress?.classList.add("hidden");
-        dl?.classList.remove("hidden");
-        if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
-        return;
-      }
-      if (j.status === "error") {
-        if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
-        progress?.classList.add("hidden");
-        errEl?.classList.remove("hidden");
-        if (errEl) errEl.textContent = j.error || "Failed.";
-        return;
-      }
+      if (_applyPoaStatus(j, jobId)) return;   // complete/error — stop polling
       _poaPoll = setTimeout(tick, 1500);
     };
     tick();
+  }
+
+  // Called when (re-)entering the PO Analytics view — immediately reflects the
+  // latest status of any job started earlier instead of waiting for the next
+  // 1.5s tick, so a job that finished while the user was on another tab shows
+  // up right away rather than looking frozen.
+  async function _refreshPoaStatusNow() {
+    if (!_poaActiveJobId) return;
+    try {
+      const j = await api(`/api/po-analytics/jobs/${_poaActiveJobId}`);
+      _applyPoaStatus(j, _poaActiveJobId);
+    } catch (e) { /* job may have expired — leave the panel as-is */ }
   }
 
   async function _downloadPoAnalytics(jobId, filename) {
