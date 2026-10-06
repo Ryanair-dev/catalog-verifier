@@ -599,6 +599,7 @@
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
+      "po-analytics":   $("#view-po-analytics"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -634,6 +635,7 @@
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
+    if (view !== "po-analytics" && typeof _clearPoaPoll === "function") _clearPoaPoll();
   }
 
   // ========================================================================
@@ -8167,6 +8169,100 @@
       }
     } catch (e) {
       el.textContent = "";
+    }
+  }
+
+  // ---- PO Analytics ---------------------------------------------------------
+  let _poaPoll = null;
+
+  function _clearPoaPoll() {
+    if (_poaPoll) { clearTimeout(_poaPoll); _poaPoll = null; }
+  }
+
+  async function _startPoAnalytics() {
+    const input = $("#poa-input");
+    const btn = $("#poa-run");
+    const dl = $("#poa-download");
+    const progress = $("#poa-progress");
+    const errEl = $("#poa-error");
+    if (!input || !btn) return;
+
+    const raw = input.value.trim();
+    if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
+
+    _clearPoaPoll();
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    dl?.classList.add("hidden");
+    errEl?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Starting…";
+
+    try {
+      const r = await api("/api/po-analytics/start", { method: "POST", body: { po_numbers: raw } });
+      _pollPoAnalytics(r.job_id);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run PO Analytics";
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+    }
+  }
+  $("#poa-run")?.addEventListener("click", _startPoAnalytics);
+
+  function _pollPoAnalytics(jobId) {
+    const btn = $("#poa-run");
+    const dl = $("#poa-download");
+    const progress = $("#poa-progress");
+    const errEl = $("#poa-error");
+
+    const tick = async () => {
+      let j;
+      try {
+        j = await api(`/api/po-analytics/jobs/${jobId}`);
+      } catch (e) {
+        _poaPoll = setTimeout(tick, 2000);
+        return;
+      }
+      if (progress) {
+        const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+        const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
+        progress.textContent = j.total
+          ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
+          : (j.phase || "Working…");
+      }
+      if (j.status === "complete") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+        progress?.classList.add("hidden");
+        dl?.classList.remove("hidden");
+        if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
+        return;
+      }
+      if (j.status === "error") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+        progress?.classList.add("hidden");
+        errEl?.classList.remove("hidden");
+        if (errEl) errEl.textContent = j.error || "Failed.";
+        return;
+      }
+      _poaPoll = setTimeout(tick, 1500);
+    };
+    tick();
+  }
+
+  async function _downloadPoAnalytics(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/po-analytics/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "po_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      showToast("Download failed: " + e.message, "error");
     }
   }
 

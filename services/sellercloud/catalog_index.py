@@ -69,6 +69,17 @@ def _is_shadow_sku(pid: str) -> bool:
     return bool(_SHADOW_SKU_RE.search(pid or ""))
 
 
+# A child (FBA/FBM shadow, plain or kit-variant) SKU is always MAIN + this exact
+# suffix: optional '_QY{n}' kit tag, then '-FBA'/'-FBM', optional company code
+# ('TRB' for Turba), optional collision digits (climbing '-FBA2', '-FBA3', ...).
+# Matched against the REMAINDER after an exact main-sku prefix (never a loose
+# substring/startswith on the whole SKU) so e.g. main 'ABC1' can't swallow an
+# unrelated main 'ABC10' or its own shadow 'ABC10-FBA'.
+_CHILD_SUFFIX_RE = re.compile(
+    r"^(?:_QY(?P<qty>\d+))?-FB(?P<ch>[AM])(?:TRB)?(?:\d*)$", re.IGNORECASE
+)
+
+
 def _pid(r: dict) -> str:
     """SKU/ProductID from either a search row (`ID`) or an export row (`ProductID`)."""
     return _norm(r.get("ProductID") or r.get("ID"))
@@ -200,6 +211,37 @@ class CatalogIndex:
 
     def shadows_for_asin(self, asin: str) -> list[dict]:
         return self.by_asin.get(_key(asin), [])
+
+    def children_for_main(self, main_sku: str) -> list[dict]:
+        """All FBA/FBM shadow + kit-variant children of a Main SKU: each
+        `{sku, channel ('FBA'/'FBM'), pack_qty (from '_QY{n}', else 1), asin}`.
+        Anchored on an EXACT main_sku prefix + the known child-suffix pattern —
+        never a loose startswith on the whole SKU — so a different main that
+        happens to share a numeric prefix ('ABC10' vs 'ABC1') is never mistaken
+        for a child of this one."""
+        main_u = _key(main_sku)
+        if not main_u:
+            return []
+        n = len(main_u)
+        out: list[dict] = []
+        for sku_u, row in self.by_sku.items():
+            if not sku_u.startswith(main_u):
+                continue
+            rest = sku_u[n:]
+            if not rest:
+                continue
+            m = _CHILD_SUFFIX_RE.match(rest)
+            if not m:
+                continue
+            channel = "FBA" if (m.group("ch") or "").upper() == "A" else "FBM"
+            qty = int(m.group("qty")) if m.group("qty") else 1
+            out.append({
+                "sku": _pid(row) or sku_u,
+                "channel": channel,
+                "pack_qty": qty,
+                "asin": _norm(row.get("ASIN")),
+            })
+        return out
 
     def sku_exists(self, sku: str) -> bool:
         return _key(sku) in self.all_skus

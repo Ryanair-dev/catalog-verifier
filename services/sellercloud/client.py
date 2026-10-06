@@ -233,6 +233,10 @@ class SellerCloudClient:
         """Full PO detail (PoDataDto). Totals live under `TotalInfo`."""
         return self._request("GET", f"/api/PurchaseOrders/{po_id}").json()
 
+    def get_vendor(self, vendor_id: int) -> dict:
+        """Vendor detail (name/email/active flag) -- {'ID','Name','Email','IsActive',...}."""
+        return self._request("GET", f"/api/Vendors/{vendor_id}").json()
+
     def search_purchase_orders(
         self, *, page_number: int = 1, page_size: int = 50, **filters
     ) -> dict:
