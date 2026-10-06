@@ -698,7 +698,15 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
                 cell.alignment = _CENTER
         r += 1
 
-    # highlight duplicate UPC + ASIN values (Excel-standard red)
+    # highlight duplicate UPC + ASIN values (Excel-standard red) + restore the
+    # template's own red-flag rules on the financial columns -- both were wiped
+    # by the `ConditionalFormattingList()` reset above (needed because the
+    # template's OWN ranges reference pre-insertion column letters that no
+    # longer line up once the 10 new columns are inserted), so they must be
+    # rebuilt here at the columns' NEW (post-insertion) positions via L().
+    # Thresholds confirmed straight from the template file itself (2026-10-06):
+    # Net Margin < 10%, ROI < 15%, Rank (current) > 100,000 all flag red; Net
+    # Profit < $0 is a new addition (the template never had one for that column).
     last = r - 1
     if last >= 2:
         dxf = DifferentialStyle(
@@ -706,6 +714,23 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             font=Font(color="9C0006"))
         for col in (L("UPC/EAN"), L("ASIN")):
             ws.conditional_formatting.add(f"{col}2:{col}{last}", Rule(type="duplicateValues", dxf=dxf))
+        for col, operator, formula in (
+            (L("Net Profit"), "lessThan", "0"),
+            (L("Net Margin"), "lessThan", "0.1"),
+            (L("ROI"), "lessThan", "0.15"),
+            (L("Rank (current)"), "greaterThan", "100000"),
+        ):
+            ws.conditional_formatting.add(
+                f"{col}2:{col}{last}",
+                Rule(type="cellIs", operator=operator, formula=[formula], dxf=dxf),
+            )
+
+    # AutoFilter: insert_cols shifts cell data/styles but does NOT widen the
+    # template's own auto_filter.ref ("A1:AI1", its original 35-column width)
+    # -- so after the 10 inserted columns, the filter dropdowns silently
+    # stopped at column AI and never covered AJ-AS. Re-set it to the sheet's
+    # real final width every export.
+    ws.auto_filter.ref = f"A1:{L(TEMPLATE_COLS[-1][0])}{max(last, 1)}"
 
     buf = io.BytesIO()
     wb.save(buf)
