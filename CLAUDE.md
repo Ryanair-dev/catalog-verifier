@@ -1,10 +1,8 @@
 # CLAUDE.md — Project Intelligence for catalog-verifier
 
-**Changes this session — matching-core score explanations in Analytics UI and Excel:**
-- `services/analytics/matching_core/adapter.py` now stores a method-specific explanation alongside each scorer result: weighted component points and caps; cascade's fired rule and per-attribute match/mismatch/unknown evidence; classifier probability plus the actual input feature values.
-- `services/analytics/matching_core/matching/classifier.py` reports global model feature importance separately and labels it as model-wide, not a per-row causal attribution.
-- Analytics run results and Quick Search show expandable “Why this score?” details. The Analytics workbook includes Scorer, Scorer verdict, and Scoring explanation columns; legacy rows without stored details receive an explicit unavailable note.
-- Newly scored or rescored candidates get explanations. Existing stored rows need a rescore to populate them. Targeted tests cover all three scorers and the workbook columns.
+Changes 2026-10-7 (Kate):
+- Ported the scoring logic from another repo (https://github.com/katestolbun/amazon_item_matching_agent), made some ui changes. 
+All of this is in the Offer Analysis Tab
 
 **Changes this session (2026-09-29i) — AI Check prompt: the LLM was itself wrongly calling a genuine count difference "just a bundle variation" (a different bug from every earlier one today — this is the AI's own reasoning, not the mechanical matcher):**
 - User reported two more Kotex mismatches: `"Kotex Ultra Thin Regular Pads with Wings, 36 Count"` matched to both `"Kotex Ultra Thin Pads, Wings, Regular, 100 Count, 2 Packs of 50"` and (separately) `"Kotex Ultra Thin Pads, Wings, Regular, 50 Count"`.
