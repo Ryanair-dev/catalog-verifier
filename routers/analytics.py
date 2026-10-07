@@ -1480,7 +1480,7 @@ def export_analytics_run(
 
         # Use json_extract so we never load the full data_json blob into Python
         # for large runs (74k candidates × 3 KB = ~220 MB → OOM crash).
-        # Only the two Amazon fields actually used in the export are extracted.
+        # Extract only the fields needed by the workbook, including scorer details.
         cat_rows = conn.execute(
             """
             SELECT row_idx,
@@ -1516,7 +1516,8 @@ def export_analytics_run(
                        json_extract(data_json, '$.amazon.brand'),
                        json_extract(data_json, '$.amazon.manufacturer'),
                        ''
-                   ) AS amz_brand
+                   ) AS amz_brand,
+                   json_extract(data_json, '$.scores') AS scores_json
             FROM analytics_candidates
             WHERE run_id=? {_exp_rank_clause}
             ORDER BY confidence DESC
@@ -1560,6 +1561,7 @@ def export_analytics_run(
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
         "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
+        "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + pt_cols  # passthrough columns appended after fixed columns
 
@@ -1570,6 +1572,23 @@ def export_analytics_run(
         src = src_by_idx.get(c["row_idx"], {})
         raw = src.get("_raw") or {}
         pt_values = [raw.get(col, "") for col in pt_cols]
+        try:
+            score_data = json.loads(c["scores_json"] or "{}")
+        except (ValueError, TypeError):
+            score_data = {}
+        explanation = score_data.get("explanation") or {}
+        explanation_text = explanation.get("summary") or ""
+        factors = explanation.get("factors") or []
+        if factors:
+            explanation_text += " Factors: " + "; ".join(str(factor) for factor in factors)
+        importance = explanation.get("global_importance") or []
+        if importance:
+            explanation_text += " Model-wide feature importance (not per-row attribution): " + "; ".join(
+                f"{item.get('name')}: {item.get('importance_pct')}%"
+                for item in importance
+            )
+        if not explanation_text:
+            explanation_text = "Scoring explanation unavailable (scored before explanation details were stored)."
         row = safe_spreadsheet_row([
             (c["row_idx"] or 0) + 1,
             src.get("upc") or "",
@@ -1582,6 +1601,9 @@ def export_analytics_run(
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
+            score_data.get("scoring_method") or "",
+            score_data.get("scoring_verdict") or "",
+            explanation_text,
             c["eligibility_status"] or "",           # blank until the eligibility check is run
             c["storage_fee"] if c["storage_fee"] is not None else "",
             c["storage_fee_peak"] if c["storage_fee_peak"] is not None else "",

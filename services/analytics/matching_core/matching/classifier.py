@@ -117,3 +117,65 @@ def score(offer: Offer, candidate: Candidate) -> MatchResult:
         signals={"match_probability": probability},
         reasons=["rule:classifier"],
     )
+
+
+def explain(offer: Offer, candidate: Candidate) -> dict[str, Any]:
+    """Return model inputs and clearly-labeled global importances for display."""
+    model_path = Path(os.environ.get("CLASSIFIER_MODEL_PATH", DEFAULT_MODEL_PATH))
+    model = _load_model(model_path)
+    features = extract_features({
+        "offer": offer.model_dump(),
+        "candidate": candidate.model_dump(),
+    })
+    classifier = model["clf"]
+    feature_names = model["feature_names"]
+
+    input_factors = [
+        f"UPC exact match: {'yes' if features['upc_hit'] else 'no'}",
+        f"MPN exact match: {'yes' if features['mpn_hit'] else 'no'}",
+        f"Brand agreement: {'yes' if features['brand_agrees'] else 'no'}",
+        f"Brand disagreement: {'yes' if features['brand_disagrees'] else 'no'}",
+        f"Title similarity: {float(features['title_ratio']):.1f}%",
+        "Size mismatch: " + ("yes" if features["size_mismatch"] else "no"),
+        "Apparel-size mismatch: " + ("yes" if features["apparel_mismatch"] else "no"),
+        "Linear-dimension mismatch: " + ("yes" if features["linear_mismatch"] else "no"),
+    ]
+
+    importances = getattr(classifier, "feature_importances_", None)
+    global_importance = []
+    if importances is not None and len(importances) == len(feature_names):
+        labels = {
+            "title_ratio": "Title similarity",
+            "title_ratio_sq": "Title similarity (squared)",
+            "brand_x_title": "Brand agreement × title similarity",
+            "upc_present": "UPC presence",
+            "mpn_hit_x_title": "MPN match × title similarity",
+            "upc_hit_x_title": "UPC match × title similarity",
+            "mpn_present": "MPN presence",
+            "upc_hit": "UPC exact match",
+            "mpn_hit": "MPN exact match",
+            "brand_agrees": "Brand agreement",
+            "brand_disagrees": "Brand disagreement",
+            "size_mismatch": "Volume/weight mismatch",
+            "apparel_mismatch": "Apparel-size mismatch",
+            "linear_mismatch": "Linear-dimension mismatch",
+            "any_mismatch": "Any detected mismatch",
+        }
+        ranked = sorted(
+            zip(feature_names, importances),
+            key=lambda item: float(item[1]),
+            reverse=True,
+        )
+        global_importance = [
+            {
+                "name": labels.get(name, name),
+                "importance_pct": round(float(value) * 100, 1),
+            }
+            for name, value in ranked[:4]
+            if float(value) > 0
+        ]
+
+    return {
+        "input_factors": input_factors,
+        "global_importance": global_importance,
+    }

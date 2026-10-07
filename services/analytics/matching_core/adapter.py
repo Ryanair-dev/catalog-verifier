@@ -7,7 +7,14 @@ from typing import Any
 
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
 from services.analytics.matching_core.matching.cascade import score as score_cascade
-from services.analytics.matching_core.matching.classifier import score as score_classifier
+from services.analytics.matching_core.matching.attribute_compare import (
+    Cmp,
+    compare_attributes,
+)
+from services.analytics.matching_core.matching.classifier import (
+    explain as explain_classifier,
+    score as score_classifier,
+)
 from services.analytics.matching_core.matching.normalize import (
     brands_match,
     normalize_upc,
@@ -230,11 +237,98 @@ def result_to_scores(
 ) -> dict[str, Any]:
     signals = dict(result.signals)
     reasons = list(result.reasons)
+    confidence = float(result.confidence)
+    mismatches = [
+        reason.removesuffix("_mismatch").replace("_", " ")
+        for reason in reasons
+        if reason.endswith("_mismatch")
+    ]
+    explanation: dict[str, Any]
+    if method == "weighted":
+        if signals.get("upc", 0) > 0:
+            summary = "Exact UPC match set the score to 100 before mismatch checks."
+        else:
+            components = (
+                f"MPN {signals.get('mpn', 0):.1f} + "
+                f"brand {signals.get('brand', 0):.1f} + "
+                f"title {signals.get('title', 0):.1f}"
+            )
+            raw_total = sum(float(signals.get(key, 0) or 0) for key in ("mpn", "brand", "title"))
+            summary = (
+                f"Weighted sum: {components} = {raw_total:.1f}, "
+                f"capped at {min(raw_total, 100.0):.1f}."
+            )
+        if mismatches:
+            summary += f" Hard mismatch cap applied ({', '.join(mismatches)}); final score {confidence:.1f}."
+        explanation = {
+            "summary": summary,
+            "factors": [
+                f"UPC: {signals.get('upc', 0):.1f}/100",
+                f"MPN: {signals.get('mpn', 0):.1f}/90",
+                f"Brand: {signals.get('brand', 0):.1f}/10",
+                f"Title: {signals.get('title', 0):.1f}/50",
+            ] + ([f"Hard mismatch: {', '.join(mismatches)}"] if mismatches else []),
+        }
+    elif method == "cascade":
+        rule = next(
+            (reason.removeprefix("rule:") for reason in reasons if reason.startswith("rule:")),
+            "fallback_fuzzy",
+        )
+        blocked_by_mismatch = rule.endswith("+blocked_by_mismatch")
+        if blocked_by_mismatch:
+            rule = rule.removesuffix("+blocked_by_mismatch")
+        rule_labels = {
+            "1_brand+upc": "Rule 1: brand + UPC",
+            "1_brand+mpn": "Rule 1: brand + MPN",
+            "2_upc+1attr": "Rule 2: UPC + at least one matching attribute",
+            "2_mpn+1attr": "Rule 2: MPN + at least one matching attribute",
+            "3_brand+all_attrs": "Rule 3: brand + all comparable attributes",
+            "4_all_attrs+fuzzy70": "Rule 4: all comparable attributes + title similarity",
+            "5_fuzzy72": "Rule 5: title similarity",
+            "6_all_attrs": "Rule 6: all comparable attributes",
+            "7_mpn_in_amz_text": "Rule 7: MPN found in Amazon text",
+            "7_mpn_in_amz_text+1attr": "Rule 7: MPN in Amazon text + matching attribute",
+            "fallback_fuzzy": "Fallback: half of fuzzy title similarity (capped at 60)",
+        }
+        attributes = compare_attributes(offer, candidate)
+        attr_labels = {"volume": "Volume", "color": "Color", "size": "Apparel size", "count": "Bundle count"}
+        attr_factors = [
+            f"{attr_labels[name]}: {value.value}"
+            for name, value in attributes.items()
+        ]
+        summary = f"{rule_labels.get(rule, rule)} produced {confidence:.1f}."
+        if blocked_by_mismatch:
+            summary += f" A hard attribute mismatch capped the score at {confidence:.1f}."
+        explanation = {
+            "summary": summary,
+            "factors": [
+                f"Brand agreement: {'yes' if signals.get('brand') else 'no'}",
+                f"UPC match: {'yes' if signals.get('upc') else 'no'}",
+                f"MPN match: {'yes' if signals.get('mpn') else 'no'}",
+                f"Title similarity: {signals.get('fuzzy', 0):.1f}%",
+                *attr_factors,
+            ],
+        }
+    else:
+        classifier_explanation = explain_classifier(offer, candidate)
+        probability = float(signals.get("match_probability", confidence / 100))
+        summary = (
+            f"Classifier predicted {probability * 100:.1f}% match probability "
+            f"({result.verdict.value}). This is a model probability, not a weighted point sum."
+        )
+        explanation = {
+            "summary": summary,
+            "factors": classifier_explanation["input_factors"],
+            "global_importance": classifier_explanation["global_importance"],
+        }
+
     scores: dict[str, Any] = {
-        "confidence_score": float(result.confidence),
+        "confidence_score": confidence,
         "scoring_method": method,
+        "scoring_verdict": "not_approved" if result.verdict is Verdict.REJECTED else result.verdict.value,
         "signals": signals,
         "reasons": reasons,
+        "explanation": explanation,
         "upc_match": bool(
             offer.upc and candidate.upc
             and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))

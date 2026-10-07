@@ -4656,6 +4656,7 @@
              <div style="white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(reason)}</div>
            </details>`
         : escapeHtml(reason);
+      const scorerDetails = _scoringDetailsHtml(c.data?.scores || {}, v);
 
       // ASIN conflict badge: same ASIN matched to more than one catalog row
       const conflictRows = _asinConflicts[c.asin];
@@ -4693,7 +4694,7 @@
             <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
             ${c.ai_verdict ? `<span class="ai-badge ai-badge-${escapeHtml(c.ai_verdict)}">${c.ai_verdict === "approve" ? "✓ AI" : c.ai_verdict === "reject" ? "✗ AI" : "? AI"}</span>${aiReasonDetails}` : ""}
           </td>
-          <td class="text-xs" style="color:#64748b;white-space:normal;">${reasonDetails}</td>
+          <td class="text-xs" style="color:#64748b;white-space:normal;">${reasonDetails}${scorerDetails}</td>
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
@@ -7412,6 +7413,25 @@
     return `<span style="display:inline-block;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;background:${bg};color:${color};">${conf}</span>`;
   }
 
+  function _scoringDetailsHtml(scoreData, currentVerdict) {
+    const explanation = scoreData?.explanation;
+    if (!explanation) return "";
+    const factors = Array.isArray(explanation.factors) ? explanation.factors : [];
+    const globalImportance = Array.isArray(explanation.global_importance)
+      ? explanation.global_importance
+      : [];
+    const method = scoreData.scoring_method || "Matcher";
+    return `<details style="margin-top:4px;font-size:11px;color:#475569;">
+      <summary style="cursor:pointer;color:#4f46e5;">Why this score? · ${escapeHtml(method)}</summary>
+      <div style="max-width:300px;white-space:normal;overflow-wrap:anywhere;padding:4px 0;">
+        <div>${escapeHtml(explanation.summary || "")}</div>
+        ${factors.map(factor => `<div>• ${escapeHtml(factor)}</div>`).join("")}
+        ${globalImportance.length ? `<div style="margin-top:4px;"><b>Model-wide feature importance</b> (not per-row attribution): ${globalImportance.map(item => `${escapeHtml(item.name)} ${Number(item.importance_pct).toFixed(1)}%`).join("; ")}</div>` : ""}
+        ${scoreData.scoring_verdict && scoreData.scoring_verdict !== currentVerdict ? `<div style="margin-top:4px;color:#92400e;">Matcher verdict: ${escapeHtml(scoreData.scoring_verdict)}; current row verdict: ${escapeHtml(currentVerdict)} (may include a later override or filter).</div>` : ""}
+      </div>
+    </details>`;
+  }
+
   function _renderQsResults() {
     const tbody   = $("#qs-results-tbody");
     const summary = $("#qs-results-summary");
@@ -7481,7 +7501,7 @@
         : "";
 
       return `<tr>
-        <td>${_qsScoreBadge(c.confidence, c.verdict)}</td>
+        <td>${_qsScoreBadge(c.confidence, c.verdict)}${_scoringDetailsHtml(c.scores, c.verdict)}</td>
         <td><span${reasonTip}>${_qsVerdictBadge(c.verdict)}</span></td>
         <td>
           <a href="${asinUrl}" target="_blank" rel="noopener"
