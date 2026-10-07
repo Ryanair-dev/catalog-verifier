@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from openpyxl import Workbook
 
-from services.sellercloud.catalog_index import CatalogIndex, _is_shadow_sku
+from services.sellercloud.catalog_index import CatalogIndex
 
 # Reuse the Analytics engine's brand normalisation so "NIVEA MEN" ≈ "NIVEA",
 # "Parker Labs" ≈ "Parker Laboratories" — same rules everywhere.
@@ -352,6 +352,20 @@ def _main_exists(index: CatalogIndex, upc: str, mpn: str, create_by: str,
     return hits
 
 
+def _pick_main(hits: list[dict], base_main: str) -> dict:
+    """When more than one existing row matches (messy historical data can have
+    real oddball variants sitting alongside the real main -- confirmed live:
+    'TORMS407W.B2B-PARENT' next to the real 'TORMS407W', both with an empty
+    ShadowOf), prefer the one that's an EXACT match to our own naming convention
+    (prefix + identifier) over whichever happened to come first. Only matters
+    when there's a genuine choice -- a single hit is returned as-is."""
+    if len(hits) > 1 and base_main:
+        for r in hits:
+            if _s(r.get("ProductID") or r.get("ID")).upper() == base_main.upper():
+                return r
+    return hits[0]
+
+
 # Shadow/kit ProductID suffixes. Used to (a) recover a MAIN from an ASIN's existing
 # child SKU and (b) detect the ASIN's existing shadow so we REUSE it instead of
 # minting a climber (-FBA2). Handles Ford Medical (-FBA/-FBM), Turba (-FBATRB/-FBMTRB)
@@ -364,33 +378,6 @@ def _strip_to_main(pid: str) -> str:
     """Strip a shadow/kit ProductID down to its MAIN SKU.
     'SOC615559-FBA' -> 'SOC615559'; 'DOV266545_QY6-FBA2' -> 'DOV266545'."""
     return _KIT_TAG_RE.sub("", _SHADOW_SUFFIX_RE.sub("", pid or ""))
-
-
-def _main_from_asin(index: CatalogIndex, asin: str, brand: str = "") -> str:
-    """When UPC/MPN find no main but the ASIN is already attached to a shadow/kit,
-    the main exists under another UPC/item-ID — recover it by stripping the shadow/kit
-    suffix off the ASIN's existing child SKU (ShadowOf here stores the channel, not the
-    parent, so we strip). Only returns a main that actually exists in the catalog.
-
-    Requires the recovered main's own BrandName to match this row's brand
-    (_brands_match) when a brand is known. Confirmed live 2026-10-07: an ASIN
-    being processed for brand "Torbot" already had an existing shadow filed
-    under the UNRELATED brand "Skin Tac" (two brands coincidentally sharing
-    the same catalog, same ASIN attached to both at different times) — without
-    this check, a totally wrong cross-brand main ("TORMS407.10", Skin Tac's
-    own variant SKU) was silently adopted as if it were the Torbot row's main.
-    A blank `brand` skips the check (never silently trusts an unknown brand)."""
-    if not (index and asin):
-        return ""
-    for r in index.shadows_for_asin(asin):
-        pid = _s(r.get("ProductID") or r.get("ID"))
-        cand = _strip_to_main(pid)
-        if not cand or _is_shadow_sku(cand) or not index.sku_exists(cand):
-            continue
-        if brand and not _brands_match(brand, _s(r.get("BrandName"))):
-            continue
-        return cand
-    return ""
 
 
 def _existing_shadow(index: CatalogIndex, asin: str, suffix: str,
@@ -491,13 +478,19 @@ def derive_rows(
         base_main = f"{bi.prefix}{id_part}" if (bi.prefix and id_part) else ""
         existing = _main_exists(index, upc, mpn, create_by, brand=bi.brand or brand) if index else []
         if existing and create.get("main", True):
-            main = _s(existing[0].get("ProductID") or existing[0].get("ID"))
+            picked = _pick_main(existing, base_main)
+            main = _s(picked.get("ProductID") or picked.get("ID"))
         else:
-            # Not found by UPC/MPN. If the ASIN is already attached to a shadow/kit,
-            # the main exists under another UPC/item-ID — recover it (strip the shadow
-            # suffix) rather than minting a brand-new main. Only falls back to a new
-            # base_main when the ASIN is genuinely unknown.
-            main = _main_from_asin(index, asin, brand=bi.brand or brand) or base_main
+            # Not found by UPC/MPN -- always mint a fresh main from prefix+identifier.
+            # Deliberately does NOT try to recover a main from whatever shadow the
+            # ASIN already happens to have attached: that used to silently adopt a
+            # totally unrelated brand's main on a cross-brand MPN collision (e.g. a
+            # Torbot row inheriting an ASIN's existing Skin Tac shadow as "the main").
+            # If the ASIN's existing shadow turns out to belong to a different main
+            # than the one generated here, the reused-shadow-stem mismatch check below
+            # (fba_mismatch/fbm_mismatch) catches it and flags it for human review
+            # instead of silently trusting it.
+            main = base_main
         main = ov("main", main) or None
         # "Already on SellerCloud" reflects the FINAL main SKU string (after any hand
         # edit) — not just the UPC/MPN lookup. Reserve it so children never reuse it.

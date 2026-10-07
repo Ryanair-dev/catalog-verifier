@@ -201,10 +201,25 @@ class CatalogIndex:
     def _mains(rows: list[dict]) -> list[dict]:
         # A main has no ShadowOf AND no shadow/kit marker in its SKU — the second
         # check catches kit shadows ('..._QY4-FBA') that the source stores with an
-        # empty ShadowOf and would otherwise be mistaken for mains.
-        return [r for r in rows
-                if not _norm(r.get("ShadowOf"))
-                and not _is_shadow_sku(_norm(r.get("ProductID") or r.get("ID")))]
+        # empty ShadowOf and would otherwise be mistaken for mains. A THIRD check
+        # (2026-10-07): a main is ALWAYS Merchant-fulfilled, never Amazon -- this
+        # catches a malformed/orphaned FBA shadow whose name follows none of the
+        # recognized suffix patterns at all (confirmed live: 'FBA195RLKL19.MISSING1',
+        # FulfilledBy=Amazon, ShadowOf='', a name matching no shadow regex) that would
+        # otherwise slip through both checks above and be mistaken for a main. Only
+        # enforced when FulfilledBy is actually populated, so this never affects the
+        # local snapshot path if that data isn't carried there.
+        out = []
+        for r in rows:
+            if _norm(r.get("ShadowOf")):
+                continue
+            if _is_shadow_sku(_norm(r.get("ProductID") or r.get("ID"))):
+                continue
+            fb = _norm(r.get("FulfilledBy")).upper()
+            if fb and fb != "MERCHANT":
+                continue
+            out.append(r)
+        return out
 
     # existence
     def main_by_upc(self, upc: str) -> list[dict]:
@@ -287,6 +302,13 @@ def build_from_rows(rows: list[dict], *, built_at: float = 0.0) -> CatalogIndex:
         pid = _pid(r)
         if not pid:
             continue
+        # A Disabled SKU is not part of the real, current catalog at all -- never a
+        # main, a shadow to reuse, or a collision to avoid. Only the live Azure path
+        # carries a Status field at all (the local snapshot has none), so an absent
+        # Status never filters anything out -- this never touches the snapshot path.
+        status = _norm(r.get("Status")).upper()
+        if status and status != "ACTIVE":
+            continue
         by_sku[pid.upper()] = r
         all_skus.add(pid.upper())
 
@@ -309,8 +331,24 @@ def build_from_rows(rows: list[dict], *, built_at: float = 0.0) -> CatalogIndex:
         if bn and mn_disp:
             brand_manuf[bn][mn_disp] += 1
 
-        if not _norm(r.get("ShadowOf")):          # prefix learned from mains only
-            if (pfx := _lead_prefix(pid)):
+        # Prefix learned from mains only. Two real bugs fixed here (2026-10-07):
+        # (1) `not ShadowOf` alone isn't enough to mean "main" -- a kit/corporate
+        #     SKU (e.g. '..._QY12', '...-C') also has an EMPTY ShadowOf (the same
+        #     quirk _mains() already guards against), so without _is_shadow_sku
+        #     dozens of kit-variant rows of the SAME underlying product were each
+        #     counted as their own "main" vote, badly over-weighting whatever
+        #     prefix happened to repeat across them.
+        # (2) the counted prefix was the FULL leading-letter run with no cap, so
+        #     a brand whose MPNs commonly start with letters too (e.g. Torbot's
+        #     "TT410", "TS6011-00") got that swallowed into the "prefix"
+        #     ('TORTT410' -> lead run 'TORTT', not the real 3-char 'TOR' prefix
+        #     + MPN 'TT410') -- confirmed live: Torbot's real prefix is 'TOR'
+        #     for every single main, but 'TORTT' (MPN-contaminated) won the vote
+        #     because 14/25 Torbot items happen to have a "TT..." MPN. Capped to
+        #     [:3], matching the fixed-3-char convention this catalog actually
+        #     uses (same convention sc_reference.py's own build already applies).
+        if not _norm(r.get("ShadowOf")) and not _is_shadow_sku(pid):
+            if (pfx := _lead_prefix(pid)[:3]):
                 if bn:
                     brand_pfx[bn][pfx] += 1
                 if mn:

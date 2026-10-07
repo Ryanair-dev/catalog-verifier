@@ -21,13 +21,11 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from services import azure_sql
-from services import brand_map
 from services import create_po as cp
 from services import database
 from services import sku_exports
 from services.file_parser import get_sheet_names, parse_raw_rows
 from services.sellercloud import get_sellercloud_client, sellercloud_configured
-from services.sellercloud import catalog_index as ci
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,15 +34,28 @@ router = APIRouter()
 def _catalog_source(company: str = "Ford Medical") -> tuple:
     """(CatalogIndex, brand_map, source_label) for reference lookups, restricted to
     `company`'s own SKUs (a brand only under another company is treated as new).
-    Prefer the LIVE Azure SellerCloud view; fall back to the local SC-data snapshot +
-    the brand_mappings table when Azure is unconfigured or unreachable."""
-    if azure_sql.is_configured():
-        try:
-            index, mapping = azure_sql.catalog_source(company)
-            return index, mapping, "azure"
-        except Exception as exc:   # network/token/query — degrade gracefully
-            log.warning("Azure catalog unavailable (%s) — using local snapshot", exc)
-    return ci.local_index(), brand_map.get_map(), "snapshot"   # NOTE: snapshot isn't company-filtered
+
+    LIVE Azure only (2026-10-07, per explicit user instruction) — no longer falls
+    back to the local SC-data.xlsx-derived snapshot. That snapshot was a repeated
+    source of real bugs this session: it sat 56 days stale with nobody noticing,
+    its source file is persistently locked (open in Excel) so it often can't even
+    refresh on demand, and silently degrading to it meant Create SKUs could return
+    wrong/stale matches with no visible sign anything was off. A real Azure outage
+    should surface as a clear, loud error instead."""
+    if not azure_sql.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Azure SQL isn't configured — Create SKUs now requires the live "
+                   "catalog (no local-snapshot fallback). Check AZURE_* env vars.",
+        )
+    try:
+        index, mapping = azure_sql.catalog_source(company)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Live Azure catalog pull failed: {str(exc)[:200]}. Try again shortly.",
+        )
+    return index, mapping, "azure"
 
 # token -> accumulating wizard session (rows, config, derived state). In-memory is
 # fine for this local single-user app.

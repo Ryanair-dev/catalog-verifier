@@ -44,7 +44,6 @@ from openpyxl.utils import get_column_letter
 
 from services import azure_sql, database, sc_reference
 from services import keepa as keepa_api
-from services.sellercloud.catalog_index import local_index
 from services.sellercloud.client import get_sellercloud_client
 from services.spapi import reports as sp_reports
 from services.vendor_offers_template_export import (
@@ -165,23 +164,22 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
 
     brand_label = _resolve_brand_label(client, all_items, vendor_ids, company)
 
-    # Prefer the LIVE Azure catalog mirror over the local xlsx-derived snapshot
-    # — found live (2026-10-07) that the local snapshot can silently sit weeks
-    # stale (ANH950685/ANH140702's real FBA children were both invisible to it
-    # while genuinely active in SellerCloud) with no visible symptom beyond a
-    # missing row. A full Azure pull costs ~165s uncached, then is cached
-    # in-process for 30 min (services.azure_sql.fetch_rows) — worth paying once
-    # per on-demand PO Analytics run for data that's actually current. Falls
-    # back to the local snapshot if Azure isn't configured or the pull fails.
-    try:
-        if azure_sql.is_configured():
-            idx = azure_sql.catalog_index(company)
-        else:
-            idx = local_index()
-    except Exception:  # noqa: BLE001
-        log.warning("[po-analytics] live Azure catalog pull failed, falling back "
-                    "to the local snapshot", exc_info=True)
-        idx = local_index()
+    # LIVE Azure only (2026-10-07, per explicit user instruction) — no local
+    # xlsx-snapshot fallback. The snapshot was a repeated source of real bugs:
+    # it sat 56 days stale with nobody noticing (ANH950685/ANH140702's real FBA
+    # children were both invisible to it while genuinely active in
+    # SellerCloud), and its source file is persistently locked (open in Excel)
+    # so it often can't even refresh on demand. A full Azure pull costs ~165s
+    # uncached, then is cached in-process for 30 min and kept warm by
+    # azure_sql's own hourly scheduler — worth paying once per on-demand PO
+    # Analytics run for data that's actually current. A real Azure outage now
+    # surfaces as a clear, loud error instead of silently degrading to stale data.
+    if not azure_sql.is_configured():
+        raise RuntimeError(
+            "Azure SQL isn't configured — PO Analytics requires the live catalog "
+            "(no local-snapshot fallback). Check AZURE_* env vars."
+        )
+    idx = azure_sql.catalog_index(company)
     base_rows: list[dict] = []
     for it in all_items:
         main_sku = str(it.get("ProductID") or "").strip()

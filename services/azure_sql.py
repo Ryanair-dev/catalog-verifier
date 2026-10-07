@@ -33,7 +33,7 @@ _VIEW = "[analytics].[sku_data_extended_view]"
 _COLS = [
     "ProductID", "UPC", "ManufacturerSKU", "Manufacturer", "BrandName", "ASIN",
     "ShadowOf", "QtyPerCase", "CostPerCase", "FulfilledBy", "ProductGroupName",
-    "Purchaser", "SOURCE_LEAD", "CompanyName",
+    "Purchaser", "SOURCE_LEAD", "CompanyName", "Status",
 ]
 # Columns that MAY exist in the view — pulled when present, skipped via a graceful
 # retry when the SELECT rejects them, so a wrong column name can never break the pull.
@@ -121,6 +121,9 @@ def fetch_rows(force: bool = False) -> list[dict]:
                 "ProductGroupName": _s(g(r, "ProductGroupName")),
                 "ProductName": _s(g(r, "ProductName")),   # "" when the column isn't pulled
                 "CompanyName": _s(g(r, "CompanyName")),
+                "Status": _s(g(r, "Status")),   # "Active" / "Disabled" -- a Disabled row
+                                                 # is never a real reference match (2026-10-07)
+
                 "_purchaser": _s(g(r, "Purchaser")), "_sourcer": _s(g(r, "SOURCE_LEAD")),
             } for r in cur.fetchall()]
         finally:
