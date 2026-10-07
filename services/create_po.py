@@ -755,8 +755,25 @@ def build_files(results: list[RowResult], config: dict, tag: str = "",
     def uom(qty: int) -> str:
         return f"Pack of {qty}" if qty and qty > 1 else "Each"
 
+    def _strip_trailing_uom(name: str) -> str:
+        """Strip a trailing ' (XXX)' UOM parenthetical off an existing ProductName,
+        e.g. 'Torbot MS407W Skin Tac Wipes (Box of 50)' -> '...Wipes' -- so a new
+        UOM can be appended without stacking two parentheticals."""
+        return re.sub(r"\s*\([^()]*\)\s*$", "", name or "").strip()
+
     def product_name(r: RowResult, name_qty: int, is_main: bool = False) -> str:
         brand = r.brand_name or r.brand
+        # When the MAIN already exists on SellerCloud and we're only creating its
+        # FBA/FBM child(ren), reuse the main's own REAL title instead of re-deriving
+        # one from the vendor's data -- the vendor title can drift from whatever the
+        # main is actually published as, and the sibling SKUs should read the same.
+        # Just swap in the UOM this child actually needs.
+        if not is_main and r.main_on_sc and r.main and index is not None:
+            existing_name = _s((index.by_sku.get(r.main.upper()) or {}).get("ProductName"))
+            if existing_name:
+                base = _strip_trailing_uom(existing_name)
+                suffix = uom(name_qty)
+                return f"{base} ({suffix})".strip() if base else ""
         # prefer the AI-cleaned description (set on the item by the export route);
         # fall back to the raw vendor title.
         title = _s(r.item.get("clean_name")) or _s(r.item.get("name"))
