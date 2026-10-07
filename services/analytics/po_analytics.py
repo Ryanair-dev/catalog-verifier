@@ -42,7 +42,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from services import database, sc_reference
+from services import azure_sql, database, sc_reference
 from services import keepa as keepa_api
 from services.sellercloud.catalog_index import local_index
 from services.sellercloud.client import get_sellercloud_client
@@ -165,7 +165,23 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
 
     brand_label = _resolve_brand_label(client, all_items, vendor_ids, company)
 
-    idx = local_index()
+    # Prefer the LIVE Azure catalog mirror over the local xlsx-derived snapshot
+    # — found live (2026-10-07) that the local snapshot can silently sit weeks
+    # stale (ANH950685/ANH140702's real FBA children were both invisible to it
+    # while genuinely active in SellerCloud) with no visible symptom beyond a
+    # missing row. A full Azure pull costs ~165s uncached, then is cached
+    # in-process for 30 min (services.azure_sql.fetch_rows) — worth paying once
+    # per on-demand PO Analytics run for data that's actually current. Falls
+    # back to the local snapshot if Azure isn't configured or the pull fails.
+    try:
+        if azure_sql.is_configured():
+            idx = azure_sql.catalog_index(company)
+        else:
+            idx = local_index()
+    except Exception:  # noqa: BLE001
+        log.warning("[po-analytics] live Azure catalog pull failed, falling back "
+                    "to the local snapshot", exc_info=True)
+        idx = local_index()
     base_rows: list[dict] = []
     for it in all_items:
         main_sku = str(it.get("ProductID") or "").strip()
@@ -246,7 +262,7 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
     keepa = keepa_api.fetch_products(asins, on_progress=_kp, should_cancel=should_cancel)
 
     _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
-    live_elig, live_storage, _gen = enrich_asins(asins, _ep, should_cancel)
+    live_elig, live_storage, live_generic = enrich_asins(asins, _ep, should_cancel, check_generic=True)
 
     fba_total = _fba_total_by_asin(asins)
     report30 = sp_reports.get_units_30d()
@@ -268,8 +284,14 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
 
     r = 2
     for row in rows:
-        _copy_row_style(r)
         asin = row.get("asin")
+        # DOG (deactivated listing) / GENERIC ASINs are excluded entirely, per
+        # the user (2026-10-07, example: B07C72FFSZ, a confirmed deactivated
+        # DOG listing) — not just flagged, since a dead/generic ASIN has no
+        # real profitability to analyze.
+        if asin and (live_elig.get(asin) == "DOG" or live_generic.get(asin) == "GENERIC"):
+            continue
+        _copy_row_style(r)
         key = (asin or "").strip().upper()
         k = keepa.get(key, {}) if asin else {}
         pack = row.get("pack_qty") or 1

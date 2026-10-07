@@ -130,7 +130,13 @@ _PRODUCT_BATCH = 100
 
 def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> dict:
     params = {"domain": _DOMAIN, "asin": ",".join(asins), "history": 0, "stats": stats_days,
-              "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1}
+              "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1, "rating": 1}
+    # NOTE (2026-10-07): without `rating=1`, Keepa never populates the RATING
+    # (idx 16) / COUNT_REVIEWS (idx 17) stats slots at all -- they come back as
+    # -1 ("no data") even for products that genuinely have thousands of
+    # reviews (`hasReviews: true`), which is why "Total Ratings Count" was
+    # silently 0 for every single row. Verified live: the exact same ASIN
+    # returned current[17]=-1 without this param and current[17]=7414 with it.
     # A 100-ASIN buybox batch costs well more than the old flat 20-token check
     # verified -- wait for a realistic amount up front so we don't walk straight
     # into a "not enough tokens" response from Keepa's own server.
