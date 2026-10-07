@@ -59,7 +59,7 @@ class SourceRow:
             "raw": self.raw,
         }
 
-    # Shape expected by matcher.calculate_confidence — always uses full title
+    # Canonical source shape used by the matcher adapter — always uses full title.
     def as_source_dict(self) -> dict:
         return {
             "upc": self.upc,

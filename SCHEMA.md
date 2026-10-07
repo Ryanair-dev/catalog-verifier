@@ -180,9 +180,10 @@ One row per verification session. Acts as the parent for all scan sub-tables.
 | `amazon_filename`    | TEXT      |              | Uploaded Amazon/Keepa filename                       |
 | `amazon_source`      | TEXT      |              | `keepa` or `amazon`                                  |
 | `amazon_count`       | INTEGER   | `0`          | Number of Amazon rows loaded                         |
-| `ai_mode`            | INTEGER   | `0`          | 1 = AI extraction enabled                            |
+| `ai_mode`            | INTEGER   | `0`          | 1 = AI extraction enabled; does not change matcher score |
 | `match_from_keepa`   | INTEGER   | `0`          | 1 = Match-from-Keepa mode (no pre-assigned ASINs)   |
 | `match_methods`      | TEXT      |              | JSON array e.g. `["upc","item_id","title"]`          |
+| `scoring_method`     | TEXT      | `weighted`   | New matcher scorer: `weighted`, `cascade`, or `classifier` |
 | `verified_count`     | INTEGER   | `0`          | Cached count of Verified rows                        |
 | `review_count`       | INTEGER   | `0`          | Cached count of Review rows                          |
 | `not_approved_count` | INTEGER   | `0`          | Cached count of Not Approved rows                    |
@@ -280,7 +281,10 @@ One row per analytics run. Tracks configuration, progress, and summary counts.
 | `search_methods`        | TEXT      |            | JSON array e.g. `["UPC","ItemID","Title"]`       |
 | `pages_per_title`       | INTEGER   | `5`        | SP-API search pages per title keyword            |
 | `ai_clean_titles`       | INTEGER   | `0`        | 1 = AI title cleaning enabled                    |
-| `vetting_mode`          | TEXT      | `cpg`      | `cpg` or `medical` — affects scoring thresholds  |
+| `vetting_mode`          | TEXT      | `cpg`      | `cpg` or `medical` — selects the matcher mode    |
+| `scoring_method`        | TEXT      | `weighted` | Matcher scorer: `weighted`, `cascade`, or `classifier` |
+| `use_query_agent`       | INTEGER   | `0`        | Use the matcher query agent only when regular retrieval returns no candidates |
+| `use_llm_verifier`      | INTEGER   | `0`        | Audit automatic approvals and send flagged pairs to Review |
 | `total_catalog_items`   | INTEGER   | `0`        | Number of catalog rows in this run               |
 | `total_candidates_found`| INTEGER   | `0`        | Total SP-API candidates found                    |
 | `verified_count`        | INTEGER   | `0`        | Verified candidate count                         |
@@ -312,7 +316,8 @@ One row per line of the uploaded vendor catalog, per run.
 | `run_id`        | INTEGER | PK (composite), FK → `analytics_runs(id)` CASCADE   | Parent run                               |
 | `row_idx`       | INTEGER | PK (composite)                                       | Row index (0-based)                      |
 | `data_json`     | TEXT    | NOT NULL                                             | Raw catalog row as JSON                  |
-| `extracted_json`| TEXT    |                                                      | AI-extracted brand/product fields (JSON) |
+| `extracted_json`| TEXT    |                                                      | Normalized vendor title and optional AI-extracted fields (JSON) |
+| `query_agent_json` | TEXT |                                                      | Fallback queries, token usage, and outcome |
 
 **Primary Key:** `(run_id, row_idx)`
 

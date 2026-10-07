@@ -9,8 +9,8 @@ catalog row using the selected match methods:
   item_id  — fuzzy match on model number / part number fields
   title    — token-set-ratio fuzzy match on product title
 
-Each candidate is scored using the same confidence.score_row() engine used
-by the normal verify flow.  Results are returned as a flat list sorted by
+Each retrieved candidate is scored with the selected matcher scorer. Results
+are returned as a flat list sorted by
 (row_idx ASC, confidence DESC) so callers can store them directly.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 
 from rapidfuzz import fuzz
 
-from .confidence import score_row
+from services.analytics.matching_core.adapter import score_export_pair
 
 MAX_PER_ROW = 8
 TITLE_MIN_SCORE = 40   # minimum token_set_ratio to include a title candidate
@@ -123,9 +123,8 @@ def find_candidates(
     catalog_rows: list[dict],
     keepa_rows: dict[str, dict],   # asin → keepa row dict
     methods: list[str],
-    abbr_list: list[dict],
-    thresholds: dict | None = None,
     max_per_row: int = MAX_PER_ROW,
+    scoring_method: str = "weighted",
 ) -> list[dict]:
     """
     Return a flat list of candidate dicts ready for save_scan_candidates().
@@ -207,10 +206,26 @@ def find_candidates(
             keepa_row = keepa_rows.get(asin)
             if not keepa_row:
                 continue
-            # Inject ASIN into catalog row so score_row can apply pair logic
+            # Keep the existing retrieval, but score its candidate with the
+            # selected matcher scorer.
             enriched = dict(cat_row)
             enriched["ASIN"] = asin
-            result = score_row(enriched, keepa_row, abbr_list, thresholds=thresholds)
+            matcher_scores, matcher_verdict = score_export_pair(
+                enriched, keepa_row, method=scoring_method, sources=[method],
+            )
+            verdict = {
+                "verified": "Approved",
+                "review": "Review",
+                "not_approved": "Not Approved",
+            }[matcher_verdict]
+            result = {
+                "confidence": matcher_scores["confidence_score"],
+                "verdict": verdict,
+                "signals": matcher_scores["signals"],
+                "notes": "; ".join(matcher_scores["reasons"]),
+                "amz_pack": matcher_scores.get("effective_pack"),
+                "matcher_scores": matcher_scores,
+            }
             scored.append((result["confidence"], asin, method, result, keepa_row))
 
         if not scored:
@@ -240,6 +255,8 @@ def find_candidates(
                 "original_verdict": score_result["verdict"],
                 "review_status":    "",
                 "signals":          score_result["signals"],
+                "matcher_scores":   score_result["matcher_scores"],
+                "scoring_method":   scoring_method,
                 "amz_pack":         score_result["amz_pack"],
                 "notes":            score_result["notes"],
                 "AmzTitle":         amz_title or None,

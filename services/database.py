@@ -131,6 +131,7 @@ def init_db() -> None:
             amazon_source TEXT,
             amazon_count INTEGER DEFAULT 0,
             ai_mode INTEGER DEFAULT 0,
+            scoring_method TEXT DEFAULT 'weighted',
             verified_count INTEGER DEFAULT 0,
             review_count INTEGER DEFAULT 0,
             not_approved_count INTEGER DEFAULT 0,
@@ -198,6 +199,9 @@ def init_db() -> None:
             search_methods TEXT,
             pages_per_title INTEGER DEFAULT 5,
             ai_clean_titles INTEGER DEFAULT 0,
+            scoring_method TEXT DEFAULT 'weighted',
+            use_query_agent INTEGER DEFAULT 0,
+            use_llm_verifier INTEGER DEFAULT 0,
             total_catalog_items INTEGER DEFAULT 0,
             total_candidates_found INTEGER DEFAULT 0,
             verified_count INTEGER DEFAULT 0,
@@ -215,6 +219,7 @@ def init_db() -> None:
             run_id INTEGER NOT NULL,
             row_idx INTEGER NOT NULL,
             data_json TEXT NOT NULL,
+            query_agent_json TEXT,
             PRIMARY KEY (run_id, row_idx),
             FOREIGN KEY (run_id) REFERENCES analytics_runs(id) ON DELETE CASCADE
         );
@@ -267,6 +272,10 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE analytics_catalog_rows ADD COLUMN extracted_json TEXT"
             )
+        if not _column_exists(conn, "analytics_catalog_rows", "query_agent_json"):
+            conn.execute(
+                "ALTER TABLE analytics_catalog_rows ADD COLUMN query_agent_json TEXT"
+            )
 
         # additive migrations — match-from-Keepa mode on scans
         if not _column_exists(conn, "scans", "match_from_keepa"):
@@ -277,11 +286,28 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE scans ADD COLUMN match_methods TEXT DEFAULT NULL"
             )
+        if not _column_exists(conn, "scans", "scoring_method"):
+            conn.execute(
+                "ALTER TABLE scans ADD COLUMN scoring_method TEXT DEFAULT 'weighted'"
+            )
 
         # additive migration — vetting mode (cpg / medical) per run
         if not _column_exists(conn, "analytics_runs", "vetting_mode"):
             conn.execute(
                 "ALTER TABLE analytics_runs ADD COLUMN vetting_mode TEXT DEFAULT 'cpg'"
+            )
+        if not _column_exists(conn, "analytics_runs", "scoring_method"):
+            conn.execute(
+                "ALTER TABLE analytics_runs "
+                "ADD COLUMN scoring_method TEXT DEFAULT 'weighted'"
+            )
+        if not _column_exists(conn, "analytics_runs", "use_query_agent"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN use_query_agent INTEGER DEFAULT 0"
+            )
+        if not _column_exists(conn, "analytics_runs", "use_llm_verifier"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN use_llm_verifier INTEGER DEFAULT 0"
             )
 
         # additive migration — brand column/text saved at wizard time for rescore pre-population
@@ -1366,17 +1392,19 @@ def create_scan(
     ai_mode: bool = False,
     match_from_keepa: bool = False,
     match_methods: list | None = None,
+    scoring_method: str = "weighted",
 ) -> int:
     with _LOCK, _connect() as conn:
         cur = conn.execute(
             "INSERT INTO scans(name, marketplace, condition, mapping_json, "
             "    catalog_filename, catalog_count, status, ai_mode, "
-            "    match_from_keepa, match_methods) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            "    match_from_keepa, match_methods, scoring_method) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
             (name, marketplace, condition, json.dumps(mapping, default=str),
              catalog_filename, int(catalog_count), 1 if ai_mode else 0,
              1 if match_from_keepa else 0,
-             json.dumps(match_methods or []) if match_methods else None),
+             json.dumps(match_methods or []) if match_methods else None,
+             scoring_method),
         )
         return cur.lastrowid
 
@@ -1386,7 +1414,7 @@ _SCANS_COLS = (
     "catalog_filename, catalog_count, amazon_filename, "
     "amazon_source, amazon_count, ai_mode, verified_count, "
     "review_count, not_approved_count, reviewed_count, "
-    "match_from_keepa, match_methods, "
+    "match_from_keepa, match_methods, scoring_method, "
     "exported_at, created_at, updated_at"
 )
 
@@ -1415,7 +1443,7 @@ def update_scan(scan_id: int, **fields: Any) -> None:
         "name", "marketplace", "condition", "status",
         "catalog_filename", "catalog_count",
         "amazon_filename", "amazon_source", "amazon_count",
-        "ai_mode", "match_from_keepa", "match_methods",
+        "ai_mode", "match_from_keepa", "match_methods", "scoring_method",
         "verified_count", "review_count", "not_approved_count",
         "reviewed_count", "exported_at",
     }

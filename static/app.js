@@ -202,6 +202,7 @@
       },
       name: "",
       ai_mode: false,
+      scoringMethod: "weighted",
     },
 
     // amazon-attach modal
@@ -279,6 +280,7 @@
       amazonFile: null,
       amazonSource: "keepa",
       aiMode: false,
+      scoringMethod: "weighted",
     },
   };
 
@@ -295,11 +297,15 @@
     : v === "Review"   ? "badge-review"
     : (v === "Not Approved" || v === "Not Verified") ? "badge-not" : "badge-overridden";
   const signalTone = (s) => {
+    if (typeof s === "boolean") return s ? "ok" : "bad";
+    if (typeof s === "number") return s > 0 ? "ok" : "bad";
     if (!s || s.score == null) return "";
     if (s.score >= state.thresholds.verified) return "ok";
     if (s.score >= state.thresholds.review) return "warn";
     return "bad";
   };
+  const confidenceTone = (verdict) =>
+    verdict === "Approved" ? "ok" : verdict === "Review" ? "warn" : "bad";
   const escapeHtml = (s) => s == null ? "" : String(s)
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
       .replace(/"/g,"&quot;").replace(/'/g,"&#039;");
@@ -487,11 +493,14 @@
   function failedSignalsOf(row) {
     const out = [];
     const s = row.signals || {};
-    if (s.upc     && !s.upc.matched)     out.push("UPC");
-    if (s.item_id && !s.item_id.matched) out.push("Item ID");
-    if (s.brand   && !s.brand.matched)   out.push("Brand");
-    if (s.title   && !s.title.matched)   out.push("Title");
-    if (s.pack    && !s.pack.matched)    out.push("Pack");
+    const matched = value => typeof value === "boolean" ? value
+      : typeof value === "number" ? value > 0
+      : value?.matched;
+    if (s.upc != null && !matched(s.upc)) out.push("UPC");
+    if ((s.item_id ?? s.mpn) != null && !matched(s.item_id ?? s.mpn)) out.push("Item ID");
+    if (s.brand != null && !matched(s.brand)) out.push("Brand");
+    if ((s.title ?? s.fuzzy) != null && !matched(s.title ?? s.fuzzy)) out.push("Title");
+    if (s.pack != null && !matched(s.pack)) out.push("Pack");
     return out;
   }
 
@@ -797,6 +806,7 @@
       s.marketplace,
       s.condition,
       fmtDate(s.created_at),
+      `${(s.scoring_method || "weighted").toUpperCase()} matcher`,
     ].filter(Boolean);
     $("#scan-meta").textContent = subparts.join(" · ");
     $("#scan-ai-badge").classList.toggle("hidden", !s.ai_mode);
@@ -1333,13 +1343,13 @@
         <td>${escapeHtml(row.Brand)}</td>
         <td class="font-mono text-xs">${escapeHtml(row.ASIN)}</td>
         <td>
-          <div class="signal-score ${signalTone({score: row.Confidence})}">${fmtConfidence(row.Confidence)}</div>
+          <div class="signal-score ${confidenceTone(row.Verdict)}">${fmtConfidence(row.Confidence)}</div>
           <div class="confidence-bar"><div class="fill ${confBarClass}" style="width: ${Math.max(3, row.Confidence)}%"></div></div>
         </td>
         <td>${statusTag}</td>
         <td style="max-width:220px;">${buildAiSuggestionCell(row, realIdx)}</td>
         <td class="text-xs" style="max-width:200px;color:#6b7480;">${escapeHtml(reasonText)}</td>
-        ${signalCell(s.upc)}${itemIdMpnCell(row, s.item_id)}${signalCell(s.brand)}${signalCell(s.title)}
+        ${signalCell(s.upc)}${itemIdMpnCell(row, s.item_id ?? s.mpn)}${signalCell(s.brand)}${signalCell(s.title ?? s.fuzzy)}
         <td class="text-center font-mono text-xs">${row.amz_pack == null ? '—' : row.amz_pack}</td>
         <td>${barcodeHTML}</td>
         <td>${verdictBadge}</td>
@@ -1385,7 +1395,13 @@
   }
 
   function signalCell(s) {
-    if (!s) return '<td></td>';
+    if (s == null) return '<td></td>';
+    if (typeof s === "number") {
+      return `<td><span class="signal-score ${signalTone(s)}">${Math.round(s)} pts</span></td>`;
+    }
+    if (typeof s === "boolean") {
+      return `<td><span class="signal-score ${signalTone(s)}">${s ? "Match" : "No match"}</span></td>`;
+    }
     const tone = signalTone(s);
     return `<td>
       <div class="signal-cell">
@@ -1397,13 +1413,16 @@
 
   function itemIdMpnCell(row, s) {
     const catId = escapeHtml(row.ItemID || '—');
+    const score = typeof s === "number" ? s : s?.score;
     let amzMpn = '';
     if (s && s.detail) {
       const m = s.detail.match(/^(?:Exact|Variant|Fuzzy):\s*(.+?)(?:\s+\(\d+%\))?$/);
       if (m) amzMpn = escapeHtml(m[1]);
     }
     const tone = s ? signalTone(s) : '';
-    const scoreBadge = s ? `<span class="signal-score ${tone}">${Math.round(s.score)}%</span>` : '';
+    const scoreBadge = score != null
+      ? `<span class="signal-score ${tone}">${typeof s === "number" ? `${Math.round(score)} pts` : `${Math.round(score)}%`}</span>`
+      : '';
     return `<td>
       <div class="signal-cell">
         ${scoreBadge}
@@ -1662,6 +1681,7 @@
       fdScan.append("ai_mode", cpg.aiMode ? "true" : "false");
       fdScan.append("match_from_keepa", cpg.matchFromKeepa ? "true" : "false");
       fdScan.append("match_methods", JSON.stringify(cpg.matchMethods || ["upc", "item_id", "title"]));
+      fdScan.append("scoring_method", cpg.scoringMethod || "weighted");
       const jScan = await api("/api/scans", { method: "POST", body: fdScan, form: true });
       const scanId = jScan.scan.id;
 
@@ -1790,6 +1810,7 @@
     preview: $("#mapping-preview-table"),
     detailName: $("#detail-name"),
     detailAI: $("#detail-ai-mode"),
+    scoringMethod: $("#scan-scoring-method"),
     stepLabel: $("#wizard-step-label"),
     back: $("#wizard-back"),
     next: $("#wizard-next"),
@@ -1815,6 +1836,7 @@
       },
       brandMode: "text",
       name: "", ai_mode: false,
+      scoringMethod: "weighted",
       matchFromKeepa: false,
       matchMethods: ["upc", "item_id", "title"],
     };
@@ -1833,6 +1855,7 @@
     $("#map-brand-note").textContent = "Free text. Leave empty if your catalog mixes brands and Amazon's brand field is trustworthy.";
     wizEl.detailName.value = "";
     wizEl.detailAI.checked = false;
+    if (wizEl.scoringMethod) wizEl.scoringMethod.value = "weighted";
     // Reset match-from-Keepa toggle
     const matchToggle = $("#map-match-toggle");
     if (matchToggle) matchToggle.checked = false;
@@ -2112,6 +2135,9 @@
   wizEl.detailAI.addEventListener("change", () => {
     state.wizard.ai_mode = wizEl.detailAI.checked;
   });
+  wizEl.scoringMethod?.addEventListener("change", () => {
+    state.wizard.scoringMethod = wizEl.scoringMethod.value || "weighted";
+  });
 
   // Wizard "Start/Apply" button — applies the mapping locally to the CPG
   // vendor-catalog slot and closes the modal. The scan itself is only
@@ -2132,6 +2158,7 @@
     };
     state.cpg.scanName       = (wizEl.detailName.value || "").trim() || w.file.name.replace(/\.[^.]+$/, "");
     state.cpg.aiMode         = !!wizEl.detailAI.checked;
+    state.cpg.scoringMethod  = w.scoringMethod || "weighted";
     state.cpg.matchFromKeepa = !!w.matchFromKeepa;
     state.cpg.matchMethods   = w.matchMethods || ["upc", "item_id", "title"];
     state.cpg.catalogReady   = true;
@@ -2405,11 +2432,11 @@
         <td style="max-width: 300px;"><div class="text-xs" style="color:#475569;">${escapeHtml(row.AmzTitle || "")}</div></td>
         <td class="font-semibold">${fmtConfidence(row.Confidence)}</td>
         <td><span class="badge ${badgeClass(row.Verdict)}">${row.Verdict}</span></td>
-        <td class="text-xs">${s.upc ? Math.round(s.upc.score) + "%" : ""}</td>
-        ${itemIdMpnCell(row, s.item_id)}
-        <td class="text-xs">${s.brand ? Math.round(s.brand.score) + "%" : ""}</td>
-        <td class="text-xs">${s.title ? Math.round(s.title.score) + "%" : ""}</td>
-        <td class="text-xs">${s.pack ? Math.round(s.pack.score) + "%" : ""}</td>
+        ${signalCell(s.upc)}
+        ${itemIdMpnCell(row, s.item_id ?? s.mpn)}
+        ${signalCell(s.brand)}
+        ${signalCell(s.title ?? s.fuzzy)}
+        ${signalCell(s.pack)}
         <td class="text-right">${actionButton(row)}</td>`;
       body.appendChild(tr);
     });
@@ -3484,8 +3511,8 @@
     const step4Hint = $("#awiz-mode-hint");
     if (step4Hint) {
       step4Hint.textContent = mode === "medical"
-        ? "Medical: MPN is primary identifier (+40 pts exact match, +25 pts partial). Tighter category filter."
-        : "CPG: UPC is primary identifier (+50 pts). MPN gives +20 pts bonus when match ≥70%.";
+        ? "Cascade prioritizes MPN for Medical; medical runs also apply the category filter."
+        : "Cascade prioritizes UPC for CPG; weighted and classifier use their own rules.";
     }
 
     // --- Step 3 buttons (awiz-map-mode-cpg / awiz-map-mode-medical) ---
@@ -3611,6 +3638,9 @@
                 <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
                   ${escapeHtml(r.name || "Untitled run")}
                   <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
+                  <span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#eef2ff;color:#4338ca;">${escapeHtml(r.scoring_method || "weighted")}</span>
+                  ${r.use_query_agent ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fef3c7;color:#92400e;">query agent</span>' : ''}
+                  ${r.use_llm_verifier ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#dcfce7;color:#166534;">LLM verifier</span>' : ''}
                 </div>
                 <div class="text-xs mt-0.5" style="color: #6b7480;">
                   ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
@@ -3882,15 +3912,23 @@
     const rs = (c.review_status || "").toLowerCase();
     if (rs === "ai-rejected") {
       const reasoning = (c.ai_reasoning || "").trim();
-      return reasoning ? `AI: ${reasoning.slice(0, 100)}` : "AI rejected";
+      return reasoning ? `AI: ${reasoning}` : "AI rejected";
     }
     if (rs === "ai-accepted") {
       return "AI approved";
     }
 
+    const audit = (c.data && c.data.verification_audit) || {};
+    if (audit.flagged) {
+      return `LLM verifier: ${(audit.reason || "flagged for review").trim()}`;
+    }
+    if (audit.error) return "LLM verifier could not check this approval";
+
     // Hard-reject signals (checked before confidence)
     if (sc.size_mismatch)          return "Size mismatch";
     if (sc.apparel_size_mismatch)  return "Size mismatch (S/M/L)";
+    if (sc.linear_size_mismatch)   return "Dimension mismatch";
+    if (sc.brand_mismatch)         return "Brand mismatch";
     if (sc.count_mismatch)         return "Count mismatch";
     if (sc.shade_mismatch)         return "Shade/color mismatch";
     if (sc.gender_mismatch)        return "Gender mismatch";
@@ -4002,8 +4040,25 @@
     const started = run.created_at ? new Date(run.created_at + "Z") : null;
     const when = started ? `started ${started.toLocaleString()}` : "";
     const methods = Array.isArray(run.search_methods) ? run.search_methods.join(" · ") : "";
+    const agentStats = run.agent_stats || {};
+    const queryStats = agentStats.query_agent || {};
+    const verifierStats = agentStats.llm_verifier || {};
+    const agentSummary = [];
+    if (run.use_query_agent && queryStats.offers_attempted) {
+      agentSummary.push(
+        `query agent: ${queryStats.offers_with_results}/${queryStats.offers_attempted} offers found candidates · ` +
+        `${queryStats.tokens_in + queryStats.tokens_out} tokens · ` +
+        `~$${Number(queryStats.cost_per_10_offers_usd_est || 0).toFixed(4)}/10 fallback offers`
+      );
+    }
+    if (run.use_llm_verifier && (verifierStats.approvals_audited || verifierStats.errors)) {
+      agentSummary.push(
+        `LLM verifier: ${verifierStats.approvals_audited} audited, ` +
+        `${verifierStats.flagged} flagged${verifierStats.errors ? `, ${verifierStats.errors} errors` : ""}`
+      );
+    }
     $("#analytics-run-subtitle").textContent =
-      [methods, when, `${run.total_catalog_items || 0} catalog rows`]
+      [methods, when, `${run.total_catalog_items || 0} catalog rows`, ...agentSummary]
         .filter(Boolean).join(" — ");
 
     // Status pill
@@ -4574,6 +4629,33 @@
       const sources = Array.isArray(c.sources) ? c.sources.join(", ") : "";
       const label  = _VERDICT_LABEL[v] || (c.verdict || "");
       const reason = _verdictReason(c);
+      const queryAgent = src.query_agent;
+      const queryStrings = Array.isArray(queryAgent?.queries_tried)
+        ? queryAgent.queries_tried.filter(Boolean)
+        : (queryAgent?.search_query ? [queryAgent.search_query] : []);
+      const queryAgentDetails = queryAgent?.used_agent
+        ? `<details style="margin-top:4px;font-size:11px;color:#475569;">
+             <summary style="cursor:pointer;color:#4f46e5;">LLM unabbreviation agent used</summary>
+             <div style="padding:4px 0;white-space:normal;overflow-wrap:anywhere;">
+               <div><b>Search string${queryStrings.length === 1 ? "" : "s"}:</b> ${queryStrings.length ? queryStrings.map(escapeHtml).join("<br />") : "—"}</div>
+               <div style="margin-top:3px;"><b>String used for scoring:</b> ${escapeHtml(queryAgent.scoring_title || queryAgent.comparison_title || "—")}</div>
+               ${queryAgent.error ? `<div style="margin-top:3px;color:#b91c1c;"><b>Agent error:</b> ${escapeHtml(queryAgent.error)}</div>` : ""}
+             </div>
+           </details>`
+        : "";
+      const aiReasoning = (c.ai_reasoning || "").trim();
+      const aiReasonDetails = c.ai_verdict && aiReasoning
+        ? `<details style="margin-top:4px;font-size:11px;color:#475569;">
+             <summary style="cursor:pointer;color:#4f46e5;">LLM explanation</summary>
+             <div style="max-width:280px;white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(aiReasoning)}</div>
+           </details>`
+        : "";
+      const reasonDetails = reason.length > 100
+        ? `<details class="analytics-reason-details" style="max-width:240px;font-size:12px;color:#64748b;">
+             <summary style="cursor:pointer;white-space:normal;"><span class="analytics-reason-preview">${escapeHtml(reason.slice(0, 100))}…</span></summary>
+             <div style="white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(reason)}</div>
+           </details>`
+        : escapeHtml(reason);
 
       // ASIN conflict badge: same ASIN matched to more than one catalog row
       const conflictRows = _asinConflicts[c.asin];
@@ -4594,6 +4676,7 @@
           <td style="max-width:260px;">
             <div class="text-sm" style="color: var(--navy-800);">${escapeHtml(src.title || "")}</div>
             <div class="text-xs" style="color:#94a3b8;">${escapeHtml(src.brand || "")}</div>
+            ${queryAgentDetails}
           </td>
           <td class="font-mono text-xs">${escapeHtml(c.asin || "")}${conflictBadge}</td>
           <td style="max-width:300px;">
@@ -4608,15 +4691,21 @@
           <td><span class="conf-pill ${confCls}">${conf}%</span></td>
           <td>
             <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
-            ${c.ai_verdict ? `<span class="ai-badge ai-badge-${escapeHtml(c.ai_verdict)}" title="${escapeHtml(c.ai_reasoning || "")}">${c.ai_verdict === "approve" ? "✓ AI" : c.ai_verdict === "reject" ? "✗ AI" : "? AI"}</span>` : ""}
+            ${c.ai_verdict ? `<span class="ai-badge ai-badge-${escapeHtml(c.ai_verdict)}">${c.ai_verdict === "approve" ? "✓ AI" : c.ai_verdict === "reject" ? "✗ AI" : "? AI"}</span>${aiReasonDetails}` : ""}
           </td>
-          <td class="text-xs" style="color:#64748b; white-space:nowrap;">${escapeHtml(reason)}</td>
+          <td class="text-xs" style="color:#64748b;white-space:normal;">${reasonDetails}</td>
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
 
     body.querySelectorAll("[data-run-action]").forEach(btn => {
       btn.addEventListener("click", handleAnalyticsRunAction);
+    });
+    body.querySelectorAll(".analytics-reason-details").forEach(details => {
+      const preview = details.querySelector(".analytics-reason-preview");
+      details.addEventListener("toggle", () => {
+        if (preview) preview.hidden = details.open;
+      });
     });
 
     _renderPagination(page, totalPages, totalRows);
@@ -5405,7 +5494,13 @@
       b.classList.toggle("active", isCpg);
     });
     const hint = $("#awiz-mode-hint");
-    if (hint) hint.textContent = "CPG: UPC is primary identifier (+50 pts). Medical: MPN is primary identifier (+40 pts exact).";
+    if (hint) hint.textContent = "Cascade prioritizes UPC for CPG; weighted and classifier use their own rules.";
+    const scoringMethod = $("#awiz-scoring-method");
+    if (scoringMethod) scoringMethod.value = "weighted";
+    const queryAgent = $("#awiz-query-agent");
+    const llmVerifier = $("#awiz-llm-verifier");
+    if (queryAgent) queryAgent.checked = false;
+    if (llmVerifier) llmVerifier.checked = false;
     // Clear passthrough pills so stale selections don't carry over to the next run.
     const ptList = $("#awiz-passthrough-list");
     if (ptList) Array.from(ptList.querySelectorAll(".pt-pill")).forEach(p => p.remove());
@@ -6032,6 +6127,9 @@
     fd.append("min_rank", String(minRankWiz));
     fd.append("max_rank", String(maxRankWiz));
     fd.append("vetting_mode", state.awiz.vettingMode || "cpg");
+    fd.append("scoring_method", $("#awiz-scoring-method")?.value || "weighted");
+    fd.append("use_query_agent", $("#awiz-query-agent")?.checked ? "true" : "false");
+    fd.append("use_llm_verifier", $("#awiz-llm-verifier")?.checked ? "true" : "false");
     if (state.awiz.selectedSheet) fd.append("sheet_name", state.awiz.selectedSheet);
     const ptCols = Array.from(state.awiz.passthroughCols || []);
     if (ptCols.length) fd.append("passthrough_cols", JSON.stringify(ptCols));
@@ -7342,9 +7440,10 @@
 
     const totalQueries = _qs.multiMode ? (_qs._queryCount || 1) : 1;
     if (summary) {
+      const method = _qs.results[0]?.scores?.scoring_method || "weighted";
       summary.textContent = _qs.multiMode
-        ? `${filtered.length} of ${_qs.results.length} candidates across ${totalQueries} searches`
-        : `${filtered.length} of ${_qs.results.length} candidates`;
+        ? `${filtered.length} of ${_qs.results.length} candidates across ${totalQueries} searches · ${method}`
+        : `${filtered.length} of ${_qs.results.length} candidates · ${method}`;
     }
 
     const colSpan = _qs.multiMode ? "11" : "10";
@@ -7364,6 +7463,8 @@
       const reasons = [];
       const scores = c.scores || {};
       if (scores.size_mismatch)     reasons.push("Size mismatch");
+      if (scores.linear_size_mismatch) reasons.push("Dimension mismatch");
+      if (scores.brand_mismatch)    reasons.push("Brand mismatch");
       if (scores.count_mismatch)    reasons.push("Count mismatch");
       if (scores.gender_mismatch)   reasons.push("Gender mismatch");
       if (scores.color_mismatch)    reasons.push("Color mismatch");
@@ -7426,6 +7527,8 @@
     ["qs-upc", "qs-itemid", "qs-title", "qs-brand", "qs-min-rank", "qs-max-rank"].forEach(id => {
       const el = $(`#${id}`); if (el) el.value = "";
     });
+    const scoringMethod = $("#qs-scoring-method");
+    if (scoringMethod) scoringMethod.value = "weighted";
     $$(".qs-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "cpg"));
     _qs.results = [];
     _qs.filter  = "all";
@@ -7453,6 +7556,7 @@
     const brand      = ($("#qs-brand")?.value  || "").trim();
     const mode       = Array.from($$(".qs-mode-btn"))
                          .find(b => b.classList.contains("active"))?.dataset?.mode || "cpg";
+    const scoringMethod = $("#qs-scoring-method")?.value || "weighted";
     const maxRank    = parseInt($("#qs-max-rank")?.value || "0") || 0;
     const minRank    = parseInt($("#qs-min-rank")?.value || "0") || 0;
 
@@ -7488,7 +7592,8 @@
             upc:          job.upc    || "",
             itemid:       job.itemid || "",
             title, brand,
-            vetting_mode: mode, max_rank: maxRank, min_rank: minRank,
+            vetting_mode: mode, scoring_method: scoringMethod,
+            max_rank: maxRank, min_rank: minRank,
           },
         });
         return (j.candidates || []).map(c => ({ ...c, _searchedFor: job.label }));

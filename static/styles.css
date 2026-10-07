@@ -2100,6 +2100,10 @@ html, body {
   background: var(--purple-500); color: #fff;
 }
 
+.analytics-reason-details[open] .analytics-reason-preview {
+  display: none;
+}
+
 /* ---------- AI verdict filter pills ----------------------------------- */
 .ai-filter-pill {
   padding: 3px 9px;

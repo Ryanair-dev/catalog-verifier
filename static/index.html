@@ -1291,6 +1291,14 @@
                     <button id="qs-mode-medical" class="qs-mode-btn" data-mode="medical">Medical</button>
                   </div>
                 </div>
+                <div style="flex: 1; min-width: 150px; max-width: 190px;">
+                  <label class="block text-xs font-semibold mb-1" style="color: #64748b;" for="qs-scoring-method">Scoring method</label>
+                  <select id="qs-scoring-method" class="input-field w-full">
+                    <option value="weighted">Weighted</option>
+                    <option value="cascade">Cascade</option>
+                    <option value="classifier">Classifier</option>
+                  </select>
+                </div>
                 <div style="flex: 1; min-width: 120px; max-width: 160px;">
                   <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Min BSR</label>
                   <input id="qs-min-rank" type="number" class="input-field w-full" placeholder="0 = no floor" min="0">
@@ -2216,9 +2224,19 @@
                   <input type="checkbox" id="detail-ai-mode" />
                   <span class="slider"></span>
                 </label>
-                <span class="text-sm" style="color:#6b7480;">Use GPT-4o attribute extraction on this scan</span>
+                <span class="text-sm" style="color:#6b7480;">Use GPT-4o to fill attribute details; it does not change matcher scores</span>
               </div>
             </div>
+          </div>
+
+          <div class="detail-field" style="margin-top:18px;max-width:420px;">
+            <label class="detail-label" for="scan-scoring-method">Matcher</label>
+            <select id="scan-scoring-method" class="wizard-input">
+              <option value="weighted">Weighted</option>
+              <option value="cascade">Cascade</option>
+              <option value="classifier">Classifier</option>
+            </select>
+            <div class="text-xs mt-1" style="color:#6b7480;">Search stays the same. This selects how each found product is scored.</div>
           </div>
 
           <div class="detail-status">
@@ -2835,7 +2853,26 @@
                 Medical
               </button>
             </div>
-            <span id="awiz-mode-hint" class="text-xs" style="color:#94a3b8;">CPG: UPC is primary identifier (+50 pts). Medical: MPN is primary identifier (+40 pts exact).</span>
+            <span id="awiz-mode-hint" class="text-xs" style="color:#94a3b8;">Cascade prioritizes UPC for CPG; weighted and classifier use their own rules.</span>
+          </div>
+          <div class="flex items-center gap-3 mb-4">
+            <label class="abbr-label" for="awiz-scoring-method" style="margin-bottom:0; white-space:nowrap;">Scoring method</label>
+            <select id="awiz-scoring-method" class="abbr-input" style="width:190px;">
+              <option value="weighted">Weighted</option>
+              <option value="cascade">Cascade</option>
+              <option value="classifier">Classifier</option>
+            </select>
+            <span class="text-xs" style="color:#94a3b8;">Each scorer uses its own confidence and verdict rules.</span>
+          </div>
+          <div class="flex flex-wrap gap-x-8 gap-y-3 mb-4">
+            <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
+              <input type="checkbox" id="awiz-query-agent" style="margin-top:2px;" />
+              <span><b>LLM query fallback</b><br />Only expands/searches rows where normal retrieval found no candidates. Uses Anthropic.</span>
+            </label>
+            <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
+              <input type="checkbox" id="awiz-llm-verifier" style="margin-top:2px;" />
+              <span><b>LLM approval verifier</b><br />Audits scorer-approved candidates; flagged approvals move to Review. Uses Anthropic.</span>
+            </label>
           </div>
           <div id="awiz-summary" class="awiz-summary"></div>
         </div>
@@ -2854,7 +2891,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=51"></script>
+  <script src="/static/app.js?v=52"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>
