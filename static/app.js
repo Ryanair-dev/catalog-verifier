@@ -1856,6 +1856,7 @@
     wizEl.detailName.value = "";
     wizEl.detailAI.checked = false;
     if (wizEl.scoringMethod) wizEl.scoringMethod.value = "weighted";
+    _updateScoringMethodHelp("#scan-scoring-method", "#scan-scoring-method-help");
     // Reset match-from-Keepa toggle
     const matchToggle = $("#map-match-toggle");
     if (matchToggle) matchToggle.checked = false;
@@ -3508,13 +3509,6 @@
       b.style.color      = active ? "#fff"    : "#64748b";
       b.classList.toggle("active", active);
     });
-    const step4Hint = $("#awiz-mode-hint");
-    if (step4Hint) {
-      step4Hint.textContent = mode === "medical"
-        ? "Cascade prioritizes MPN for Medical; medical runs also apply the category filter."
-        : "Cascade prioritizes UPC for CPG; weighted and classifier use their own rules.";
-    }
-
     // --- Step 3 buttons (awiz-map-mode-cpg / awiz-map-mode-medical) ---
     const s3cpg = $("#awiz-map-mode-cpg"), s3med = $("#awiz-map-mode-medical");
     if (s3cpg && s3med) {
@@ -3756,7 +3750,6 @@
     rankMin: 0,
     rankMax: 0,
     skipNullRank: false,
-    aiFilter: "all",
   };
 
   function _clearAnalyticsRunPoll() {
@@ -3786,7 +3779,6 @@
     state.analyticsRun.rankMin = 0;
     state.analyticsRun.rankMax = 0;
     state.analyticsRun.skipNullRank = false;
-    state.analyticsRun.aiFilter = "all";
     const sb = $("#analytics-run-search"); if (sb) sb.value = "";
     const rrMin = $("#analytics-run-rank-min"); if (rrMin) rrMin.value = "";
     const rrMax = $("#analytics-run-rank-max"); if (rrMax) rrMax.value = "";
@@ -3831,25 +3823,16 @@
       state.analyticsRun._lastStatus = j.run?.status;
       renderAnalyticsRunDetail(j);
 
-      // Auto-fetch current verdict tab when:
-      //   • no page data exists yet (initial open, or status change cleared the cache), OR
-      //   • page data exists but aiVerdictCounts hasn't been populated (e.g. an AI check
-      //     just finished while the user was on this tab — candidates are loaded but
-      //     scoped AI counts are stale/missing).
+      // Auto-fetch the current verdict tab if its server-paginated page is missing.
       const currentTab = state.analyticsRun.tab;
       const _curEntry = (state.analyticsRun.tabPageData || {})[currentTab];
-      if (currentTab !== "All" && (!_curEntry || _curEntry.aiVerdictCounts == null)) {
+      if (currentTab !== "All" && !_curEntry) {
         await _fetchVerdictPage(currentTab, state.analyticsRun.page || 1);
       }
 
-      // Poll while active or while AI check is running.
+      // Poll while the catalog search or scorer pipeline is active.
       _clearAnalyticsRunPoll();
-      const aiRunning2 = (j.run?.ai_check_status || "").toLowerCase() === "running";
-      // _aiCheckJustStarted keeps polling for a few cycles after the user
-      // clicks Start AI Check, giving the background thread time to set "Running".
-      const aiPending = (state.analyticsRun._aiCheckJustStarted || 0) > 0;
-      if (aiPending) state.analyticsRun._aiCheckJustStarted = Math.max(0, (state.analyticsRun._aiCheckJustStarted || 0) - 1);
-      if (_runIsActive(j.run || {}) || aiRunning2 || aiPending) {
+      if (_runIsActive(j.run || {})) {
         state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
       }
     } catch (e) {
@@ -3889,6 +3872,29 @@
     return `<span title="${escapeHtml(String(status))}" style="display:inline-block;padding:1px 7px;font-size:0.68rem;font-weight:700;border-radius:4px;background:${bg};color:${fg};">${escapeHtml(txt)}</span>`;
   }
 
+  function _updateScoringMethodHelp(selectId, helpId) {
+    const select = $(selectId);
+    const help = $(helpId);
+    if (select && help) {
+      const descriptions = {
+        weighted: "Adds points for identifiers, brand, and title similarity. Clear brand or size conflicts cap the score; scores ≥90 are Approved and ≥55 are Review.",
+        cascade: "Applies ordered rules from identifier and attribute evidence through fuzzy-title fallback. The first matching rule sets confidence; attribute conflicts can cap the result.",
+        classifier: "A trained Gradient Boosting model estimates match probability from identifier, brand, title, and mismatch features. ≥50% is Approved, ≥20% is Review, and lower scores are Not Approved.",
+      };
+      help.textContent = descriptions[select.value] || descriptions.weighted;
+    }
+  }
+
+  [
+    ["#qs-scoring-method", "#qs-scoring-method-help"],
+    ["#scan-scoring-method", "#scan-scoring-method-help"],
+    ["#awiz-scoring-method", "#awiz-scoring-method-help"],
+  ].forEach(([selectId, helpId]) => {
+    const select = $(selectId);
+    select?.addEventListener("change", () => _updateScoringMethodHelp(selectId, helpId));
+    _updateScoringMethodHelp(selectId, helpId);
+  });
+
   // Build a short human-readable reason explaining the verdict.
   function _verdictReason(c) {
     const sc = (c.data && c.data.scores) || {};
@@ -3907,16 +3913,8 @@
     // and confidence ≥ 35 — bumped to review at API response time.
     if (c.auto_promoted) return `Score ${Math.round(conf)}% — needs review`;
 
-    // AI decision applied: review_status is set by apply_ai_decisions and takes
-    // priority over the generic fallback so the user sees WHY it changed.
     const rs = (c.review_status || "").toLowerCase();
-    if (rs === "ai-rejected") {
-      const reasoning = (c.ai_reasoning || "").trim();
-      return reasoning ? `AI: ${reasoning}` : "AI rejected";
-    }
-    if (rs === "ai-accepted") {
-      return "AI approved";
-    }
+    if (rs.startsWith("ai-")) return "Decision retained from a prior review";
 
     const audit = (c.data && c.data.verification_audit) || {};
     if (audit.flagged) {
@@ -4190,75 +4188,7 @@
     const exp = $("#analytics-run-export");
     if (exp) exp.disabled = cand.length === 0;
 
-    // AI Check button — visible when run is done/paused/stopped and not currently checking.
-    const aiBtn = $("#analytics-run-ai-check");
-    if (aiBtn) {
-      const s2 = (run.status || "").toLowerCase();
-      const canAi = s2 === "complete" || s2 === "paused" || s2 === "stopped" || s2 === "error";
-      const aiStatus = (run.ai_check_status || "").toLowerCase();
-      const aiRunning = aiStatus === "running";
-      const aiDone = aiStatus === "done";
-      const aiErr = aiStatus.startsWith("error");
-
-      aiBtn.classList.toggle("hidden", !canAi);
-      const applyBtn = $("#analytics-run-ai-apply");
-      if (applyBtn) {
-        applyBtn.classList.toggle("hidden", !aiDone);
-        const alreadyApplied = run.ai_decisions_applied === 1;
-        applyBtn.disabled = alreadyApplied;
-        if (alreadyApplied) {
-          applyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> AI Applied`;
-          applyBtn.classList.add("btn-applied");
-        } else {
-          applyBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Apply AI Decisions`;
-          applyBtn.classList.remove("btn-applied");
-        }
-      }
-
-      // AI progress card
-      const aiCard = $("#analytics-run-ai-progress-card");
-      if (aiCard) {
-        aiCard.classList.toggle("hidden", !aiRunning);
-        if (aiRunning) {
-          const aiDoneN  = run.ai_check_done  || 0;
-          const aiTotalN = run.ai_check_total || 0;
-          const pct = aiTotalN > 0 ? Math.min(100, (aiDoneN / aiTotalN) * 100) : 0;
-          const bar = $("#analytics-run-ai-progress-bar");
-          if (bar) bar.style.width = pct + "%";
-          const counts = $("#analytics-run-ai-progress-counts");
-          if (counts) counts.textContent = aiTotalN > 0
-            ? `${aiDoneN.toLocaleString()} / ${aiTotalN.toLocaleString()}`
-            : "Starting…";
-          const sub = $("#analytics-run-ai-progress-sub");
-          if (sub) sub.textContent = aiTotalN > 0
-            ? `${Math.round(pct)}% complete`
-            : "Reviewing candidates";
-        }
-      }
-
-      // Stop AI button — only visible while AI check is running
-      const aiStopBtn = $("#analytics-run-ai-stop");
-      if (aiStopBtn) aiStopBtn.classList.toggle("hidden", !aiRunning);
-
-      if (aiRunning) {
-        const aiDoneN = run.ai_check_done || 0;
-        const aiTotalN = run.ai_check_total || 0;
-        aiBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;animation:spin 1.2s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> ${aiTotalN > 0 ? `Checking ${aiDoneN.toLocaleString()}/${aiTotalN.toLocaleString()}…` : "Checking…"}`;
-        aiBtn.disabled = true;
-        aiBtn.style.opacity = "0.7";
-        // Keep polling while AI check is running
-        if (!_runIsActive(run)) {
-          _clearAnalyticsRunPoll();
-          state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
-        }
-      } else {
-        aiBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg> ${aiDone ? "Re-check AI" : aiErr ? "Retry AI Check" : "AI Check"}`;
-        aiBtn.disabled = false;
-        aiBtn.style.opacity = "1";
-      }
-    }
-
-    // Eligibility & storage button — same visibility rule as AI check.
+    // Eligibility & storage button.
     const eligBtn = $("#analytics-run-elig-check");
     if (eligBtn) {
       const s3 = (run.status || "").toLowerCase();
@@ -4335,17 +4265,11 @@
     });
   }
 
-  // Navigate to page p — fetches from server when on a verdict tab,
-  // or when on "All" tab with an active AI filter.
+  // Navigate to page p — verdict tabs and search results are server-paginated.
   async function _onPageClick(p) {
     state.analyticsRun.page = p;
     const tab = state.analyticsRun.tab;
-    const aiFilter = state.analyticsRun.aiFilter || "all";
-    if (tab !== "All") {
-      await _fetchVerdictPage(tab, p);
-    } else if (aiFilter !== "all") {
-      await _fetchVerdictPage("All", p);
-    }
+    if (tab !== "All" || (state.analyticsRun.search || "").trim()) await _fetchVerdictPage(tab, p);
     renderAnalyticsRunCandidates();
     $("#analytics-run-candidates-body")?.closest(".overflow-auto")?.scrollTo(0, 0);
   }
@@ -4357,24 +4281,18 @@
     const id = state.analyticsRun.id;
     const pageSize = state.analyticsRun.pageSize || 50;
     const offset = (page - 1) * pageSize;
-    const aiFilter = state.analyticsRun.aiFilter || "all";
     const searchQ = (state.analyticsRun.search || "").trim();
     state.analyticsRun.tabLoading = tab;
     renderAnalyticsRunCandidates();
     try {
       let url = `/api/analytics/runs/${id}?limit=${pageSize}&offset=${offset}`;
       if (verdict) url += `&verdict=${encodeURIComponent(verdict)}`;
-      if (aiFilter !== "all") url += `&ai_verdict=${encodeURIComponent(aiFilter)}`;
       if (searchQ) url += `&search=${encodeURIComponent(searchQ)}`;
       const j = await api(url);
       if (!state.analyticsRun.tabPageData) state.analyticsRun.tabPageData = {};
       state.analyticsRun.tabPageData[tab] = {
         serverPage: page,
-        aiFilter: aiFilter,           // store which filter was active so the count guard works
         candidates: j.candidates || [],
-        aiFilteredCount: j.ai_filtered_count ?? null,
-        aiVerdictCounts: j.ai_verdict_counts ?? null,
-        aiFilter,
       };
     } catch (e) {
       console.warn("[tab fetch]", e);
@@ -4393,10 +4311,9 @@
     const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
     const isLoading = state.analyticsRun.tabLoading === tab;
 
-    const _aiFilterActive = (state.analyticsRun.aiFilter || "all") !== "all";
     const _searchActive   = !!(state.analyticsRun.search || "").trim();
-    // Use server-fetched tabPageData when: verdict tab, AI filter, OR search active.
-    const _useServerPage  = isVerdictTab || _aiFilterActive || _searchActive;
+    // Use server-fetched tabPageData for verdict tabs and search results.
+    const _useServerPage  = isVerdictTab || _searchActive;
     if (!_useServerPage && !j) return;
     if (_useServerPage && !tabPageEntry && !isLoading) return;
 
@@ -4440,73 +4357,6 @@
         if (_rankMax > 0 && rank > _rankMax) return false;
         return true;
       });
-    }
-
-    // ---- AI verdict filter --------------------------------------------
-    const _aiFilter = state.analyticsRun.aiFilter || "all";
-    // AI verdict pill counts.
-    // Verdict tabs (Approved / Review / Not Approved): use tab-scoped counts from
-    // tabPageData so the pill labels reflect only THIS tab's AI-checked items.
-    // If the scoped data hasn't arrived yet (null pageEntry), fall back temporarily
-    // to whole-run counts so the pills remain visible while the fetch is in flight.
-    // An empty {} from the server means no items in this tab have AI verdicts —
-    // treat as null so the filter section is hidden rather than showing disabled buttons.
-    // All tab: whole-run counts are always correct.
-    const _pageEntry = isVerdictTab ? (state.analyticsRun.tabPageData || {})[tab] : null;
-    let _serverCounts = null;
-    if (isVerdictTab) {
-      if (_pageEntry?.aiVerdictCounts != null) {
-        const scoped = _pageEntry.aiVerdictCounts;
-        // Non-empty scoped counts → use them (correct tab-scoped labels).
-        // Empty {} → no AI verdicts on this tab → null so section is hidden.
-        _serverCounts = Object.keys(scoped).length > 0 ? scoped : null;
-      } else {
-        // Scoped data not yet fetched → temporarily show whole-run counts.
-        _serverCounts = state.analyticsRun.data?.ai_verdict_counts ?? null;
-      }
-    } else {
-      _serverCounts = state.analyticsRun.data?.ai_verdict_counts ?? null;
-    }
-    const _aiCounts = _serverCounts
-      ? { approve: _serverCounts.approve || 0, reject: _serverCounts.reject || 0, uncertain: _serverCounts.uncertain || 0 }
-      : (() => {
-          const c = { approve: 0, reject: 0, uncertain: 0 };
-          rows.forEach(r => { if (r.ai_verdict && c[r.ai_verdict] !== undefined) c[r.ai_verdict]++; });
-          return c;
-        })();
-    const _hasAiBadges = _aiCounts.approve + _aiCounts.reject + _aiCounts.uncertain > 0;
-    const aiFilterWrap = $("#analytics-run-ai-filter-wrap");
-    if (aiFilterWrap) {
-      aiFilterWrap.classList.toggle("hidden", !_hasAiBadges);
-      $$(".ai-filter-pill", aiFilterWrap).forEach(btn => {
-        const f = btn.dataset.aiFilter;
-        btn.classList.toggle("active", f === _aiFilter);
-        if (f === "all") {
-          btn.textContent = "All";
-          btn.disabled = false;
-          btn.style.opacity = "1";
-          btn.style.cursor = "pointer";
-        } else {
-          const label = f === "approve" ? "✓ Approved" : f === "reject" ? "✗ Rejected" : "? Uncertain";
-          const cnt = _aiCounts[f] || 0;
-          btn.textContent = cnt > 0 ? `${label} (${cnt.toLocaleString()})` : label;
-          btn.disabled = cnt === 0;
-          btn.style.opacity = cnt > 0 ? "1" : "0.4";
-          btn.style.cursor = cnt > 0 ? "pointer" : "not-allowed";
-          if (_aiFilter === f && cnt === 0) state.analyticsRun.aiFilter = "all";
-        }
-      });
-    }
-    // When an AI filter is active on a verdict tab, the server already filtered
-    // the returned candidates — no need to re-filter client-side.
-    if (_aiFilter !== "all" && !isVerdictTab) {
-      rows = rows.filter(c => c.ai_verdict === _aiFilter);
-    } else if (_aiFilter !== "all" && isVerdictTab) {
-      // Server-filtered: all candidates already have the correct ai_verdict.
-      // Still filter in case tabPageData was populated before filter was applied.
-      if (_pageEntry?.aiFilter !== _aiFilter) {
-        rows = rows.filter(c => c.ai_verdict === _aiFilter);
-      }
     }
 
     // ---- sort ---------------------------------------------------------
@@ -4553,22 +4403,16 @@
     // ---- pagination ---------------------------------------------------
     // For verdict tabs the server sends exactly one page; use DB counts for
     // the total so page buttons cover the full dataset.
-    // When an AI filter is active the server returns ai_filtered_count — use
-    // that so pagination reflects only the filtered set.
     const pageSize = state.analyticsRun.pageSize || 50;
     const page     = state.analyticsRun.page;
     let totalRows, totalPages, pageRows;
-    if (isVerdictTab || _aiFilterActive) {
+    if (isVerdictTab) {
       const run = j?.run || {};
-      // If the cached page was fetched with the same AI filter, use its count.
-      const pageEntry = (state.analyticsRun.tabPageData || {})[tab];
-      const aiFilteredCount = (pageEntry?.aiFilter === _aiFilter && pageEntry?.aiFilteredCount != null)
-        ? pageEntry.aiFilteredCount : null;
       const dbTotal = tab === "Approved"     ? (run.verified_count     ?? 0)
                     : tab === "Review"        ? (run.review_count       ?? 0)
                     : tab === "Not Approved"  ? (run.not_approved_count ?? 0)
                     : (run.total_candidates_found ?? cand.length);
-      totalRows  = _aiFilter !== "all" && aiFilteredCount != null ? aiFilteredCount : dbTotal;
+      totalRows  = dbTotal;
       totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
       pageRows   = rows; // server already sent the right page
     } else {
@@ -4643,17 +4487,10 @@
              </div>
            </details>`
         : "";
-      const aiReasoning = (c.ai_reasoning || "").trim();
-      const aiReasonDetails = c.ai_verdict && aiReasoning
-        ? `<details style="margin-top:4px;font-size:11px;color:#475569;">
-             <summary style="cursor:pointer;color:#4f46e5;">LLM explanation</summary>
-             <div style="max-width:280px;white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(aiReasoning)}</div>
-           </details>`
-        : "";
       const reasonDetails = reason.length > 100
-        ? `<details class="analytics-reason-details" style="max-width:240px;font-size:12px;color:#64748b;">
+        ? `<details class="analytics-reason-details" style="width:100%;max-width:480px;font-size:12px;color:#64748b;">
              <summary style="cursor:pointer;white-space:normal;"><span class="analytics-reason-preview">${escapeHtml(reason.slice(0, 100))}…</span></summary>
-             <div style="white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(reason)}</div>
+             <div style="width:100%;white-space:normal;overflow-wrap:anywhere;padding:4px 0;">${escapeHtml(reason)}</div>
            </details>`
         : escapeHtml(reason);
       const scorerDetails = _scoringDetailsHtml(c.data?.scores || {}, v);
@@ -4692,9 +4529,8 @@
           <td><span class="conf-pill ${confCls}">${conf}%</span></td>
           <td>
             <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
-            ${c.ai_verdict ? `<span class="ai-badge ai-badge-${escapeHtml(c.ai_verdict)}">${c.ai_verdict === "approve" ? "✓ AI" : c.ai_verdict === "reject" ? "✗ AI" : "? AI"}</span>${aiReasonDetails}` : ""}
           </td>
-          <td class="text-xs" style="color:#64748b;white-space:normal;">${reasonDetails}${scorerDetails}</td>
+          <td class="analytics-reason-cell text-xs" style="width:380px;min-width:380px;max-width:520px;color:#64748b;white-space:normal;">${reasonDetails}${scorerDetails}</td>
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
@@ -5075,25 +4911,6 @@
   $("#analytics-run-rank-max")?.addEventListener("change", _applyRankFilter);
   $("#analytics-run-rank-skip-null")?.addEventListener("change", _applyRankFilter);
 
-  $("#analytics-run-ai-filter-wrap")?.addEventListener("click", async e => {
-    const btn = e.target.closest(".ai-filter-pill");
-    if (!btn || btn.disabled) return;
-    const newFilter = btn.dataset.aiFilter || "all";
-    if (newFilter === state.analyticsRun.aiFilter) return;
-    state.analyticsRun.aiFilter = newFilter;
-    state.analyticsRun.page = 1;
-    // Always refetch from server when filter changes — this covers verdict tabs
-    // AND the "All" tab (which also needs server-side filtering for completeness).
-    const tab = state.analyticsRun.tab;
-    if (state.analyticsRun.tabPageData) delete state.analyticsRun.tabPageData[tab];
-    if (newFilter !== "all" || tab !== "All") {
-      await _fetchVerdictPage(tab, 1);
-    } else {
-      // Resetting to "all" on "All" tab — just re-render from cached main data.
-      renderAnalyticsRunCandidates();
-    }
-  });
-
   // Sortable header clicks — toggle asc / desc on the current column, or
   // switch to a new column (default asc, except confidence which makes
   // more sense desc-first).
@@ -5221,54 +5038,6 @@
     document.body.appendChild(backdrop);
   }
 
-  // ==========================================================================
-  //  AI Check modal
-  // ==========================================================================
-  const _aiCheckModal = $("#analytics-ai-check-modal");
-
-  function _aiCheckSelectedVerdicts() {
-    const verdicts = [];
-    if ($("#ai-check-filter-review")?.checked)       verdicts.push("review");
-    if ($("#ai-check-filter-not-approved")?.checked) verdicts.push("not_approved");
-    if ($("#ai-check-filter-approved")?.checked)     verdicts.push("verified");
-    return verdicts.length === 0 || verdicts.length === 3 ? "all" : verdicts.join(",");
-  }
-
-  async function _fetchAiCheckEstimate() {
-    const id = state.analyticsRun.id;
-    if (!id) return;
-    const verdict = _aiCheckSelectedVerdicts();
-    const el = $("#ai-check-estimate");
-    if (el) el.textContent = "Loading estimate…";
-    try {
-      const j = await api(`/api/analytics/runs/${id}/ai_check/estimate?verdict=${encodeURIComponent(verdict)}`);
-      if (el) {
-        const cnt = (j.candidate_count ?? 0).toLocaleString();
-        const cost = (j.cost_usd_est ?? 0).toFixed(4);
-        const secs = Math.ceil((j.duration_ms_est ?? 0) / 1000);
-        el.innerHTML = `<strong>${cnt}</strong> candidate${j.candidate_count === 1 ? "" : "s"} · est. <strong>$${cost}</strong> · ~${secs}s`;
-      }
-    } catch (e) {
-      if (el) el.textContent = "Could not load estimate: " + (e.message || e);
-    }
-  }
-
-  $("#analytics-run-ai-stop")?.addEventListener("click", async () => {
-    const btn = $("#analytics-run-ai-stop");
-    if (!btn || btn.disabled) return;
-    btn.disabled = true;
-    btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg> Stopping…`;
-    try {
-      const result = await api(`/api/analytics/runs/${state.analyticsRun.id}/ai_check/stop`, { method: "POST", body: {} });
-      console.log("[stop] server response:", result);
-    } catch (e) {
-      console.error("[stop] request failed:", e);
-      showToast("Stop request failed: " + e.message, "error");
-    }
-    // Re-enable after a tick so it can't be double-clicked
-    setTimeout(() => { if (btn) { btn.disabled = false; } }, 1500);
-  });
-
   $("#analytics-run-elig-check")?.addEventListener("click", async () => {
     const id = state.analyticsRun.id; if (!id) return;
     let n = 0;
@@ -5292,102 +5061,6 @@
     try { await api(`/api/analytics/runs/${id}/eligibility/stop`, { method: "POST" }); } catch (_) {}
     _clearAnalyticsRunPoll();
     state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 500);
-  });
-
-  $("#analytics-run-ai-check")?.addEventListener("click", () => {
-    _aiCheckModal?.classList.remove("hidden");
-    // Reset to default: Review only checked
-    const r = $("#ai-check-filter-review");
-    const n = $("#ai-check-filter-not-approved");
-    const a = $("#ai-check-filter-approved");
-    if (r) r.checked = true;
-    if (n) n.checked = false;
-    if (a) a.checked = false;
-    _fetchAiCheckEstimate();
-  });
-
-  ["ai-check-filter-review", "ai-check-filter-not-approved", "ai-check-filter-approved"]
-    .forEach(id => $("#" + id)?.addEventListener("change", _fetchAiCheckEstimate));
-
-  $("#ai-check-cancel")?.addEventListener("click", () => {
-    _aiCheckModal?.classList.add("hidden");
-  });
-  _aiCheckModal?.addEventListener("click", (e) => {
-    if (e.target === _aiCheckModal) _aiCheckModal.classList.add("hidden");
-  });
-
-  $("#ai-check-confirm")?.addEventListener("click", async () => {
-    const id = state.analyticsRun.id;
-    if (!id) return;
-    const verdict = _aiCheckSelectedVerdicts();
-    _aiCheckModal?.classList.add("hidden");
-    try {
-      await api(`/api/analytics/runs/${id}/ai_check`, {
-        method: "POST",
-        body: { verdict },
-      });
-      state.analyticsRun._aiCheckJustStarted = 15;
-      _clearAnalyticsRunPoll();
-      state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
-    } catch (e) {
-      showToast("AI Check failed to start: " + (e.message || e), "error");
-    }
-  });
-
-  $("#analytics-run-ai-apply")?.addEventListener("click", (e) => {
-    if (e.currentTarget.disabled) return;
-    const modal = $("#analytics-ai-apply-modal");
-    if (modal) modal.classList.remove("hidden");
-  });
-
-  $("#ai-apply-cancel")?.addEventListener("click", () => {
-    $("#analytics-ai-apply-modal")?.classList.add("hidden");
-  });
-
-  $("#analytics-ai-apply-modal")?.addEventListener("click", (e) => {
-    if (e.target === e.currentTarget) e.currentTarget.classList.add("hidden");
-  });
-
-  $("#ai-apply-confirm")?.addEventListener("click", async () => {
-    const id = state.analyticsRun.id;
-    if (!id) return;
-    const modal = $("#analytics-ai-apply-modal");
-    const btn = $("#ai-apply-confirm");
-    if (btn) { btn.disabled = true; btn.textContent = "Applying…"; }
-    try {
-      const j = await api(`/api/analytics/runs/${id}/ai_check/apply`, { method: "POST", body: {} });
-      modal?.classList.add("hidden");
-      const approved = j.approved ?? 0;
-      const rejected = j.rejected ?? 0;
-      // Show loading overlay so the table visibly refreshes before showing updated results
-      const loadingEl = $("#analytics-run-loading");
-      const runViewEl = $("#view-analytics-run");
-      if (loadingEl) loadingEl.classList.remove("hidden");
-      if (runViewEl) runViewEl.classList.add("hidden");
-      // Clear stale per-tab page cache so the refreshed view shows updated counts.
-      state.analyticsRun.tabPageData = {};
-      await fetchAnalyticsRunDetail();
-      if (loadingEl) loadingEl.classList.add("hidden");
-      if (runViewEl) runViewEl.classList.remove("hidden");
-      showToast(
-        `<strong>AI decisions applied</strong><br>` +
-        `<span style="color:#86efac;">✓ ${approved.toLocaleString()} approved</span>&ensp;` +
-        `<span style="color:#fca5a5;">✗ ${rejected.toLocaleString()} rejected</span>`,
-        "success", 6000
-      );
-    } catch (e) {
-      // Make sure overlay is hidden if something goes wrong
-      const loadingEl = $("#analytics-run-loading");
-      const runViewEl = $("#view-analytics-run");
-      if (loadingEl) loadingEl.classList.add("hidden");
-      if (runViewEl) runViewEl.classList.remove("hidden");
-      showToast("Failed to apply AI decisions: " + (e.message || e), "error");
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Apply`;
-      }
-    }
   });
 
   // ==========================================================================
@@ -5494,10 +5167,9 @@
       b.style.color      = isCpg ? "#fff"    : "#64748b";
       b.classList.toggle("active", isCpg);
     });
-    const hint = $("#awiz-mode-hint");
-    if (hint) hint.textContent = "Cascade prioritizes UPC for CPG; weighted and classifier use their own rules.";
     const scoringMethod = $("#awiz-scoring-method");
     if (scoringMethod) scoringMethod.value = "weighted";
+    _updateScoringMethodHelp("#awiz-scoring-method", "#awiz-scoring-method-help");
     const queryAgent = $("#awiz-query-agent");
     const llmVerifier = $("#awiz-llm-verifier");
     if (queryAgent) queryAgent.checked = false;
@@ -7549,6 +7221,7 @@
     });
     const scoringMethod = $("#qs-scoring-method");
     if (scoringMethod) scoringMethod.value = "weighted";
+    _updateScoringMethodHelp("#qs-scoring-method", "#qs-scoring-method-help");
     $$(".qs-mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "cpg"));
     _qs.results = [];
     _qs.filter  = "all";
