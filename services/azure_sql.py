@@ -138,6 +138,74 @@ def fetch_rows(force: bool = False) -> list[dict]:
     return rows
 
 
+# ── hourly background refresh ────────────────────────────────────────────────
+# The 30-min _CACHE_TTL above only refreshes WHEN something happens to call
+# fetch_rows() after the TTL has expired -- between calls (e.g. the hours
+# between two on-demand PO Analytics runs) the cache can sit stale well past
+# 30 min with nothing proactively refreshing it. This forces a real pull once
+# an hour regardless of demand, so any caller (PO Analytics, Create SKUs,
+# sc_reference) almost always finds an already-warm cache instead of paying
+# the ~165s pull cost inline. Mirrors services/vendor_offers_db_sync.py's
+# exact hourly-scheduler shape.
+INTERVAL_SECONDS = 3600
+_sched_thread: threading.Thread | None = None
+_sched_stop = threading.Event()
+_sched_running = threading.Event()
+_last_refresh: dict = {"at": None, "rows": None, "error": None}
+
+
+def _sched_loop() -> None:
+    while not _sched_stop.is_set():
+        _sched_running.set()
+        try:
+            rows = fetch_rows(force=True)
+            _last_refresh["at"], _last_refresh["rows"], _last_refresh["error"] = time.time(), len(rows), None
+            # Keep the brand-prefix/manufacturer reference tables (Create SKUs,
+            # PO Analytics' brand-label resolution) current too -- force=False
+            # here reuses the rows just pulled above rather than a 2nd full pull.
+            try:
+                from services import sc_reference
+                sc_reference.build_reference(force=False)
+            except Exception:  # noqa: BLE001
+                log.exception("[azure_sql] sc_reference refresh failed")
+        except Exception as exc:  # noqa: BLE001
+            _last_refresh["error"] = str(exc)[:300]
+            log.exception("[azure_sql] scheduled catalog refresh failed")
+        finally:
+            _sched_running.clear()
+        if _sched_stop.wait(INTERVAL_SECONDS):
+            return
+
+
+def start_scheduler() -> None:
+    """Start the hourly Azure catalog refresh thread (idempotent)."""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        return
+    _sched_stop.clear()
+    _sched_thread = threading.Thread(target=_sched_loop, name="azure-sql-refresh", daemon=True)
+    _sched_thread.start()
+    log.info("[azure_sql] hourly catalog refresh scheduler started")
+
+
+def stop_scheduler() -> None:
+    _sched_stop.set()
+
+
+def scheduler_status() -> dict:
+    next_run = (_last_refresh["at"] + INTERVAL_SECONDS) if _last_refresh["at"] else None
+    return {
+        "running_now": _sched_running.is_set(),
+        "scheduler_alive": bool(_sched_thread and _sched_thread.is_alive()),
+        "interval_seconds": INTERVAL_SECONDS,
+        "last_refresh_at": _last_refresh["at"],
+        "last_refresh_rows": _last_refresh["rows"],
+        "last_refresh_error": _last_refresh["error"],
+        "next_run": next_run,
+        "cache_age_seconds": (time.time() - _CACHE["at"]) if _CACHE["at"] else None,
+    }
+
+
 def catalog_index(company: str = "Ford Medical") -> CatalogIndex:
     return build_from_rows(_rows_for_company(fetch_rows(), company), built_at=time.time())
 

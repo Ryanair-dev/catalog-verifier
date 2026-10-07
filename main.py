@@ -33,25 +33,20 @@ async def _lifespan(app: FastAPI):
     """Ensure DB is initialised and orphaned run states are cleared on startup."""
     database.init_db()
     database.reset_orphaned_running_states()
-    # Warm the live SellerCloud (Azure) catalog cache in the background so the first
-    # Create SKUs run isn't blocked by the ~30s initial pull. Best-effort; the
-    # feature falls back to the local snapshot if this fails.
+    # Live SellerCloud (Azure) catalog: hourly background refresh (2026-10-07,
+    # replaces a one-shot startup-only warm) so PO Analytics/Create SKUs/
+    # sc_reference almost always find an already-warm cache (<1h old) instead
+    # of paying the ~165s pull inline, and so a change made in SellerCloud
+    # shows up here within the hour even with nobody actively using the app.
+    # The scheduler's own first loop iteration runs immediately (not after the
+    # first hour), so this still warms the cache right at startup exactly like
+    # the one-shot thread it replaces. Best-effort; every feature that reads
+    # this data already falls back to the local snapshot if Azure is
+    # unconfigured/unreachable.
     try:
-        from services import azure_sql, sc_reference
+        from services import azure_sql
         if azure_sql.is_configured():
-            import threading
-
-            def _warm():
-                azure_sql.fetch_rows(force=True)
-                # Rebuild the saved brand-prefix / manufacturer reference tables from
-                # the fresh pull so Create SKUs reads them instantly (3-char prefixes,
-                # company-scoped, Dove→DOV, Nestlé→Nestlé S.A. + purchaser/sourcer).
-                try:
-                    sc_reference.build_reference(force=False)
-                except Exception:
-                    pass
-
-            threading.Thread(target=_warm, daemon=True).start()
+            azure_sql.start_scheduler()
     except Exception:
         pass
     # Weekly catalog health check (Eligibility + DOG over the Pair Library),
