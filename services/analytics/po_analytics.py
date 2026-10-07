@@ -37,9 +37,9 @@ import io
 import logging
 import re
 from collections import defaultdict
+from pathlib import Path
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from services import database, sc_reference
@@ -92,10 +92,17 @@ def _pl(name: str) -> str:
     return get_column_letter(PCOL[name])
 
 
-_HDR_FILL = PatternFill("solid", fgColor="FFE9E9E9")
-_HDR_FONT = Font(bold=True)
-_HDR_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
-_CUR = r'"$"#,##0.00_);\("$"#,##0.00\)'
+# Bundled template (assets/po_analytics_template.xlsx) — built once from the
+# user's own ground-truth reference file (49932 Blazy Susan.xlsx, 2026-10-07)
+# by copying its real per-column fills/fonts/number-formats/conditional-
+# formatting rules (captured by header NAME, not position) onto this module's
+# own ANALYTICS_COLS order. Row 1 = real styled headers; row 2 is a blank
+# "style swatch" row whose per-column cell style is copied onto every actual
+# data row at build time (see _copy_row_style below) — this is what makes the
+# export's colours/number-formats/conditional-formatting pixel-identical to
+# the reference file instead of an approximation.
+_TEMPLATE = Path(__file__).resolve().parent.parent.parent / "assets" / "po_analytics_template.xlsx"
+_STYLE_ROW = 2
 
 
 def _parse_po_numbers(raw: str) -> list[int]:
@@ -250,17 +257,18 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
 
     pct = lambda v: z(v) / 100
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Analytics"
-    for c, name in enumerate(ANALYTICS_COLS, start=1):
-        cell = ws.cell(row=1, column=c, value=name)
-        cell.fill, cell.font, cell.alignment = _HDR_FILL, _HDR_FONT, _HDR_ALIGN
-        ws.column_dimensions[get_column_letter(c)].width = 16
-    ws.freeze_panes = f"{L('Approved')}2"
+    wb = load_workbook(_TEMPLATE)
+    ws = wb["Analytics"]      # headers (row 1) + a per-column style swatch (row 2) already in place
+
+    def _copy_row_style(dest_row: int) -> None:
+        if dest_row == _STYLE_ROW:
+            return
+        for c in range(1, len(ANALYTICS_COLS) + 1):
+            ws.cell(row=dest_row, column=c)._style = ws.cell(row=_STYLE_ROW, column=c)._style
 
     r = 2
     for row in rows:
+        _copy_row_style(r)
         asin = row.get("asin")
         key = (asin or "").strip().upper()
         k = keepa.get(key, {}) if asin else {}
@@ -311,24 +319,23 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
             "Variation Parent": k.get("parent_asin") or k.get("variation_asin"),
         }
         for name, c in COL.items():
-            cell = ws.cell(row=r, column=c, value=rowd.get(name))
-            if name in ("Product Cost", "FBA Fee", "Referral Fee", "Storage Fee", "Prep & Out fee"):
-                cell.number_format = _CUR
-            elif name in ("Buy Box Price current", "BB Price 30d", "BB Price 90d"):
-                cell.number_format = _CUR
-            elif name in ("Net Margin", "ROI", "BB share 30d", "BB share 90d",
-                          "Amazon 30d %", "Amazon 90d %"):
-                cell.number_format = "0%"
+            ws.cell(row=r, column=c, value=rowd.get(name))
         r += 1
 
-    ws2 = wb.create_sheet("PO")
-    for c, name in enumerate(PO_SHEET_COLS, start=1):
-        cell = ws2.cell(row=1, column=c, value=name)
-        cell.fill, cell.font, cell.alignment = _HDR_FILL, _HDR_FONT, _HDR_ALIGN
-        ws2.column_dimensions[get_column_letter(c)].width = 16
+    last = r - 1
+    ws.auto_filter.ref = f"A1:{L(ANALYTICS_COLS[-1])}{max(last, 1)}"
+
+    ws2 = wb["PO"]            # header row (plain, unstyled — matches the reference) already in place
+
+    def _copy_po_row_style(dest_row: int) -> None:
+        if dest_row == _STYLE_ROW:
+            return
+        for c in range(1, len(PO_SHEET_COLS) + 1):
+            ws2.cell(row=dest_row, column=c)._style = ws2.cell(row=_STYLE_ROW, column=c)._style
 
     r2 = 2
     for pr in gathered["po_rows"]:
+        _copy_po_row_style(r2)
         rowd2 = {
             "POItemID": pr["po_item_id"], "ProductID": pr["product_id"],
             "Vendor SKU": pr["vendor_sku"], "Product Name": pr["product_name"],
@@ -342,10 +349,7 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
             "ExtraCostPerUnit": pr["extra_cost_per_unit"], "VendorName": pr["vendor_name"],
         }
         for name, c in PCOL.items():
-            cell = ws2.cell(row=r2, column=c, value=rowd2.get(name))
-            if name in ("Unit Price", "Unit Discount", "Adjusted Price", "Sub Total",
-                       "ExtraCostPerUnit"):
-                cell.number_format = _CUR
+            ws2.cell(row=r2, column=c, value=rowd2.get(name))
         r2 += 1
 
     buf = io.BytesIO()

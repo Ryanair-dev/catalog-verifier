@@ -77,6 +77,18 @@ async def _lifespan(app: FastAPI):
             mpn_check_sync.start_scheduler()
     except Exception:
         pass
+    # Local SellerCloud catalog snapshot (Create SKUs / PO Analytics' Main
+    # SKU -> FBA/FBM children lookup): refresh from SC data.xlsx whenever it's
+    # >24h stale. Found live 2026-10-07 sitting 56 days stale with nobody
+    # noticing (ANH950685's real FBA child was invisible to PO Analytics as a
+    # result) even though the source file itself had been refreshed that same
+    # morning — this closes that gap with a periodic background check instead
+    # of relying on someone remembering to run `--snapshot` by hand.
+    try:
+        from services.sellercloud import catalog_index as sc_catalog_index
+        sc_catalog_index.start_scheduler()
+    except Exception:
+        pass
     yield
     try:
         from services import health_check

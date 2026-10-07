@@ -20,15 +20,19 @@ CLI:  python -m services.sellercloud.catalog_index [--force] [Brand Name ...]
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .client import SellerCloudClient, get_sellercloud_client
+
+log = logging.getLogger(__name__)
 
 SLIM_KEYS = [
     "ID", "ProductID", "UPC", "ManufacturerSKU", "ManufacturerName", "ManufacturerID",
@@ -455,6 +459,61 @@ def local_index() -> CatalogIndex:
                                           built_at=float(blob.get("built_at", 0.0)))
         _LOCAL["key"] = key
     return _LOCAL["index"]
+
+
+# ── background staleness refresher ──────────────────────────────────────────
+# The snapshot was found 56 days stale on 2026-10-07 (ANH950685 and its FBA
+# shadow existed live in SellerCloud but were invisible to PO Analytics/
+# Create SKUs because nobody had re-run `--snapshot` since 2026-08-12), even
+# though the SOURCE file (SC data.xlsx) had itself been refreshed that same
+# morning. Reading the snapshot was never the slow part (~0.5-0.7s) — the
+# missing piece was anything that re-reads the source file on a schedule. This
+# closes that gap the same way sc_reference's Azure pull is already warmed in
+# main.py's lifespan: a daemon thread, best-effort, safe to call multiple times.
+_SNAPSHOT_CHECK_INTERVAL_HOURS = 6     # how often to check the snapshot's age
+_SNAPSHOT_MAX_AGE_HOURS = 24           # refresh once it's older than this
+_scheduler_thread: threading.Thread | None = None
+_scheduler_stop = threading.Event()
+
+
+def _snapshot_age_hours() -> float:
+    if not SNAPSHOT_JSON.exists():
+        return float("inf")
+    return (time.time() - SNAPSHOT_JSON.stat().st_mtime) / 3600.0
+
+
+def _scheduler_loop() -> None:
+    while not _scheduler_stop.is_set():
+        try:
+            age = _snapshot_age_hours()
+            if age > _SNAPSHOT_MAX_AGE_HOURS:
+                log.info("[catalog_index] snapshot is %.1fh old (> %dh) — refreshing", age, _SNAPSHOT_MAX_AGE_HOURS)
+                n = refresh_snapshot()
+                log.info("[catalog_index] snapshot refreshed: %d rows", n)
+        except PermissionError:
+            # SC data.xlsx is open in Excel / being written by its own export job
+            # right now — harmless, just try again next cycle instead of crashing
+            # the whole scheduler thread.
+            log.warning("[catalog_index] snapshot source is locked (likely open in "
+                        "Excel) — will retry in %dh", _SNAPSHOT_CHECK_INTERVAL_HOURS)
+        except Exception:  # noqa: BLE001
+            log.exception("[catalog_index] snapshot refresh failed")
+        _scheduler_stop.wait(_SNAPSHOT_CHECK_INTERVAL_HOURS * 3600)
+
+
+def start_scheduler() -> None:
+    """Idempotent — safe to call on every app startup."""
+    global _scheduler_thread
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        return
+    _scheduler_stop.clear()
+    _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True,
+                                         name="catalog-snapshot-refresh")
+    _scheduler_thread.start()
+
+
+def stop_scheduler() -> None:
+    _scheduler_stop.set()
 
 
 # ── CLI: build + smoke-test ────────────────────────────────────────────────
