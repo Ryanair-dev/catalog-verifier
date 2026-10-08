@@ -38,7 +38,7 @@ from services.file_parser import parse_raw_rows as _parse_raw_rows_shared, get_s
 from services.safety import clamp_int, read_upload_limited, safe_spreadsheet_row
 from services.analytics import parse_source_rows, start_analytics_run
 from services.analytics.runner import (
-    request_pause, request_stop, resume_run, start_rescore,
+    _clean_search_query, request_pause, request_stop, resume_run, start_rescore,
     _tier1_upc, _tier2_itemid, _tier3_title,
     _normalize_source_rows,
     normalize_amazon_item,
@@ -61,9 +61,30 @@ router = APIRouter(prefix="/analytics")
 # Raw-row file preview — NO header assumption.
 # --------------------------------------------------------------------------- #
 
+EST_SEC_PER_CALL    = (0.6, 0.85, 1.5)     # report: 0.83 s/row at ~1 call/row; limiter floor 0.5
+EST_PAGE_SLEEP      = 0.6                  # runner sleeps this between pages / keyword fallbacks
+EST_UPC_MISS_RATE   = (0.05, 0.15, 0.35)   # no figure in the report, still a guess
+
+EST_AGENT_RATE = {
+    "upc":  (0.01, 0.05, 0.25),
+    "id":   (0.10, 0.16, 0.25),
+    "none": (0.75, 0.89, 0.95),
+}
+
+EST_AGENT_SEC = {"upc": 12.0, "id": 5.0, "none": 12.5}
+EST_AGENT_COST_ROW  = (0.0030, 0.0045, 0.0083)
+
+EST_APPROVE_RATE    = (0.10, 0.35, 0.80)   
+EST_VERIFIER_SEC    = 2.5                  
+EST_CLEAN_SEC_ROW   = 0.3                  
+EST_SCORING_SEC_ROW = (0.03, 0.08, 0.20)   
+CAL_SPREAD          = (0.75, 1.0, 1.4)     
+
+SECONDS_PER_CALL = 1.0   
+MISS_RATE = 0.15         
 _PREVIEW_LIMIT = 25
 MAX_PAGE_SIZE = 1000
-MAX_TITLE_PAGES = 100   # explicit page count ceiling; 0 = unlimited (runner-bounded)
+MAX_TITLE_PAGES = 100   
 
 
 def _parse_raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
@@ -1438,6 +1459,169 @@ def apply_ai_decisions(run_id: int) -> dict[str, Any]:
 
     return {"ok": True, "approved": approved, "rejected": rejected, "counts": counts}
 
+def _timing_calibration(pages_cap: int) -> dict[str, tuple[float, int]]:
+    """{stage: (median seconds per input unit, sample count)} from finished runs.
+    Only stages with >= 3 samples are returned; empty before any history exists."""
+    try:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT tier, units, seconds, pages_cap FROM analytics_run_timing "
+                "WHERE units > 0 AND seconds > 0 ORDER BY id DESC LIMIT 300"
+            ).fetchall()
+    except sqlite3.OperationalError:      # table doesn't exist until the first logged run
+        return {}
+    per: dict[str, list[float]] = {}
+    for r in rows:
+        if r["tier"] in ("itemid", "title") and int(r["pages_cap"] or 0) != pages_cap:
+            continue
+        per.setdefault(r["tier"], []).append(r["seconds"] / r["units"])
+    return {t: (median(v), len(v)) for t, v in per.items() if len(v) >= 3}
+
+
+@router.post("/estimate")
+async def estimate_run(
+    catalog_file: UploadFile = File(...),
+    header_row: int = Form(...),
+    mapping: str = Form(...),
+    brand: str = Form(""),
+    search_methods: str = Form(...),
+    pages_per_title: int = Form(3),
+    sheet_name: str = Form(""),
+    use_query_agent: bool = Form(False),
+    use_llm_verifier: bool = Form(False),
+    ai_clean_titles: bool = Form(False),
+) -> dict[str, Any]:
+    """Count-based estimate of everything between 'Start run' and scored results.
+    No SP-API calls and no DB writes."""
+    try:
+        data = await read_upload_limited(catalog_file)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
+
+    try:
+        mapping_dict = json.loads(mapping)
+        methods = set(json.loads(search_methods))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Bad mapping / search_methods JSON")
+    if not isinstance(mapping_dict, dict):
+        raise HTTPException(status_code=400, detail="mapping must be a JSON object")
+
+    try:
+        rows = parse_source_rows(
+            filename=catalog_file.filename or "catalog.xlsx", data=data,
+            header_row_idx=int(header_row), mapping=mapping_dict,
+            brand=brand or "", sheet_name=sheet_name or "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+
+    unlimited = pages_per_title <= 0
+    cap = min(3 if unlimited else pages_per_title, MAX_TITLE_PAGES)
+    pages_by_scen = (1, min(2, cap), cap)
+    n_rows = len(rows)
+
+    upcs: set[str] = set()
+    for r in rows:
+        u = (r.upc or "").strip()
+        if len(u) == 11 and u.isdigit():
+            u = "0" + u
+        if u:
+            upcs.add(u)
+    u12 = sum(1 for u in upcs if u.isdigit() and len(u) == 12)
+    e13 = sum(1 for u in upcs if u.isdigit() and len(u) == 13)
+    ids = {(r.itemid or "").strip() for r in rows if (r.itemid or "").strip()}
+    terms = {t for t in (_clean_search_query(r.search_term) for r in rows if r.search_term) if t}
+
+    # best identifier per row decides how many rows will reach the LLM agent
+    n_upc_rows = sum(1 for r in rows if (r.upc or "").strip())
+    n_id_rows = sum(1 for r in rows
+                    if not (r.upc or "").strip() and (r.itemid or "").strip())
+    class_rows = {"upc": n_upc_rows, "id": n_id_rows,
+                  "none": n_rows - n_upc_rows - n_id_rows}
+
+    def agent_estimate(i: int) -> tuple[int, float, float]:
+        """(rows reaching the agent, seconds, dollars) for scenario i."""
+        n = secs = usd = 0.0
+        for k, cnt in class_rows.items():
+            a = cnt * EST_AGENT_RATE[k][i]
+            n += a
+            secs += a * EST_AGENT_SEC[k]
+            usd += a * EST_AGENT_COST_ROW[i]
+        return round(n), secs, usd
+
+    cal = _timing_calibration(max(0, pages_per_title))
+
+    def build(i: int) -> list[dict]:
+        spc, pg = EST_SEC_PER_CALL[i], pages_by_scen[i]
+        out: list[dict] = []
+
+        def add(key: str, label: str, work: str, units: int, model_secs: float) -> None:
+            if key in cal:      # measured seconds-per-unit beats the built-in guess
+                secs, meas = units * cal[key][0] * CAL_SPREAD[i], True
+            else:
+                secs, meas = model_secs, False
+            out.append({"key": key, "label": label, "work": work,
+                        "seconds": secs, "measured": meas})
+
+        if ai_clean_titles:
+            add("clean", "AI title cleaning", f"{n_rows:,} titles",
+                n_rows, n_rows * EST_CLEAN_SEC_ROW)
+        if "UPC" in methods:
+            misses = round(len(upcs) * EST_UPC_MISS_RATE[i])
+            calls = 2 * -(-u12 // 20) + -(-e13 // 20) + misses
+            add("upc", "UPC lookup", f"{len(upcs):,} UPCs · ~{calls:,} calls",
+                len(upcs), calls * spc + misses * EST_PAGE_SLEEP)
+        if "ItemID" in methods:
+            calls = len(ids) * pg
+            add("itemid", "Item ID search", f"{len(ids):,} item IDs · ~{calls:,} calls",
+                len(ids), calls * spc + len(ids) * (pg - 1) * EST_PAGE_SLEEP)
+        if "Title" in methods:
+            calls = len(terms) * pg
+            add("title", "Title search", f"{len(terms):,} titles · ~{calls:,} calls",
+                len(terms), calls * spc + len(terms) * (pg - 1) * EST_PAGE_SLEEP)
+        if use_query_agent:
+            n, secs, _ = agent_estimate(i)
+            add("agent", "LLM query fallback", f"~{n:,} rows with no candidates",
+                n, secs)
+        if use_llm_verifier:
+            n = round(n_rows * EST_APPROVE_RATE[i])
+            add("verifier", "LLM approval check", f"~{n:,} approvals audited",
+                n, n * EST_VERIFIER_SEC)
+        # Measured search stages already include their own scoring time.
+        if not any(k in cal for k in ("upc", "itemid", "title")):
+            add("scoring", "Scoring & saving", f"{n_rows:,} rows",
+                n_rows, n_rows * EST_SCORING_SEC_ROW[i])
+        return out
+
+    scen = [build(0), build(1), build(2)]
+    stages = [{
+        "key": m["key"], "label": m["label"], "work": m["work"], "measured": m["measured"],
+        "low": round(scen[0][k]["seconds"]), "mid": round(m["seconds"]),
+        "high": round(scen[2][k]["seconds"]),
+    } for k, m in enumerate(scen[1])]
+    total = {k: sum(s[k] for s in stages) for k in ("low", "mid", "high")}
+
+    def cost(i: int) -> float:
+        c = 0.0
+        if use_query_agent:
+            c += agent_estimate(i)[2]
+        if use_llm_verifier:
+            c += round(n_rows * EST_APPROVE_RATE[i]) * (500 * 3 + 60 * 15) / 1_000_000
+        return round(c, 4)
+
+    return {
+        "rows": n_rows,
+        "stages": stages,
+        "total": total,
+        "cost": {"mid": cost(1), "high": cost(2)},
+        "pages_assumed": cap,
+        "unlimited_unmeasured": unlimited and any(
+            (not s["measured"]) and s["key"] in ("itemid", "title") for s in stages),
+        "calibrated_runs": max((v[1] for v in cal.values()), default=0),
+    }
 
 # --------------------------------------------------------------------------- #
 # GET /runs/{run_id}/export — multi-sheet Excel download
@@ -1852,3 +2036,5 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
 
     results.sort(key=lambda x: x["confidence"], reverse=True)
     return {"candidates": results, "total": len(results)}
+
+

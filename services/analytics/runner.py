@@ -645,8 +645,9 @@ def _audit_run_approvals(
     run_id: int,
     scoring_method: str,
     mode: str,
-) -> None:
-    """Audit final scorer approvals and downgrade only explicitly flagged pairs."""
+) -> int:
+    """Audit final scorer approvals and downgrade only explicitly flagged pairs.
+    Returns the number of approvals audited."""
     from services.analytics.matching_core.agents.verification_agent import (
         apply_audit,
         create_approval_auditor,
@@ -715,7 +716,7 @@ def _audit_run_approvals(
         })
 
     if not pending:
-        return
+        return 0
     auditor = create_approval_auditor()
     with database._LOCK, _with_conn() as conn:
         for item in pending:
@@ -743,7 +744,28 @@ def _audit_run_approvals(
                 ),
             )
     _recompute_run_counts(run_id)
+    return len(pending)
 
+def _log_run_timing(run_id: int, pages_cap: int, timings: dict) -> None:
+    """Remember how long each stage took, so /estimate can learn from real runs."""
+    rows = [(run_id, tier, int(units), float(sec), int(pages_cap or 0))
+            for tier, (sec, units) in timings.items() if units and units > 0 and sec > 0]
+    if not rows:
+        return
+    try:
+        with database._LOCK, _with_conn() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS analytics_run_timing ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER,"
+                " tier TEXT, units INTEGER, seconds REAL, pages_cap INTEGER,"
+                " created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.executemany(
+                "INSERT INTO analytics_run_timing(run_id, tier, units, seconds, pages_cap) "
+                "VALUES (?,?,?,?,?)", rows,
+            )
+    except Exception:
+        log.exception("Could not log run timing")
 
 def _recompute_run_counts(run_id: int) -> None:
     with database._LOCK, _with_conn() as conn:
@@ -1816,8 +1838,16 @@ def _run_pipeline(
                     out.append(r)
             return out
 
+        # Per-stage timing, logged at the end so /estimate can learn from real runs.
+        timings: dict[str, tuple[float, int]] = {}
+        _n_upc = len({r.upc.strip() for r in source_rows if r.upc})
+        _n_ids = len({r.itemid.strip() for r in source_rows if r.itemid})
+        _n_terms = len({t for t in (_clean_search_query(r.search_term)
+                                    for r in source_rows if r.search_term) if t})
+
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
             tier1, tier1_kw = _tier1_upc(api, source_rows, run_id=run_id)
             for ri, items in tier1.items():
@@ -1837,11 +1867,13 @@ def _run_pipeline(
                 candidates_by_row, extracted_brands,
                 max_rank, min_rank, mode, "Scoring UPC matches", scoring_method,
             )
+            timings["upc"] = (time.monotonic() - _t0, _n_upc)
             if _handle_control():
                 return
 
         # --- Tier 2: Item ID -------------------------------------------------
         if "ItemID" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 2 / Item ID search")
             tier2 = _tier2_itemid(api, source_rows, run_id=run_id, max_pages=pages_per_title)
             for ri, items in tier2.items():
@@ -1852,11 +1884,13 @@ def _run_pipeline(
                 candidates_by_row, extracted_brands,
                 max_rank, min_rank, mode, "Scoring Item ID matches", scoring_method,
             )
+            timings["itemid"] = (time.monotonic() - _t0, _n_ids)
             if _handle_control():
                 return
 
         # --- Tier 3: Title ---------------------------------------------------
         if "Title" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 3 / Title search")
             tier3 = _tier3_title(
                 api,
@@ -1873,10 +1907,12 @@ def _run_pipeline(
                 candidates_by_row, extracted_brands,
                 max_rank, min_rank, mode, "Scoring title matches", scoring_method,
             )
+            timings["title"] = (time.monotonic() - _t0, _n_terms)
             if _handle_control():
                 return
 
         if use_query_agent:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="LLM query fallback")
             comparison_titles, agent_rows = _run_query_agent_fallback(
                 run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
@@ -1894,16 +1930,21 @@ def _run_pipeline(
                 )
                 if _handle_control():
                     return
+            timings["agent"] = (time.monotonic() - _t0, len(agent_rows))
 
         if use_llm_verifier:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Auditing approved matches with LLM")
-            _audit_run_approvals(run_id, scoring_method, mode)
+            _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
+            timings["verifier"] = (time.monotonic() - _t0, _n_audited or 0)
 
         # Each tier vetted the rows it touched (with the full set of candidates
         # accumulated so far), so every row that produced a candidate has been
         # scored with all its sources by the last tier that touched it.
         _recompute_run_counts(run_id)
         clear_control(run_id)
+        if not is_resume:
+            _log_run_timing(run_id, pages_per_title, timings)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
 
     except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles

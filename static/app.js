@@ -8378,4 +8378,93 @@
     </tr>`;
   }
 
+    let _awizEstTimer = null;
+  let _awizEstSeq = 0;
+
+  function _fmtEstDur(sec) {
+    sec = Math.max(0, Math.round(sec));
+    if (sec < 60) return `${Math.max(1, sec)} sec`;
+    if (sec < 600) {
+      const m = Math.floor(sec / 60), s = Math.round((sec % 60) / 10) * 10;
+      if (s === 60) return `${m + 1} min`;
+      return s ? `${m} min ${s} sec` : `${m} min`;
+    }
+    const mins = Math.round(sec / 60);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return m ? `${h} hr ${m} min` : `${h} hr`;
+  }
+
+  function _updateAwizRunEstimate() {
+    const box = $("#awiz-run-estimate");
+    if (!box || !state.awiz?.file || !state.awiz?.preview) return;
+
+    const methods = [];
+    if ($("#awiz-search-upc")?.checked)    methods.push("UPC");
+    if ($("#awiz-search-itemid")?.checked) methods.push("ItemID");
+    if ($("#awiz-search-title")?.checked)  methods.push("Title");
+    if (!methods.length) {
+      box.textContent = "Pick at least one search method to see an estimate.";
+      return;
+    }
+
+    box.textContent = "Estimating…";
+    clearTimeout(_awizEstTimer);
+    const seq = ++_awizEstSeq;
+
+    _awizEstTimer = setTimeout(async () => {
+      const w = state.awiz;
+      if (!w?.file) return;
+      const pagesRaw = parseInt($("#awiz-title-pages")?.value ?? "0", 10);
+      const fd = new FormData();
+      fd.append("catalog_file", w.file);
+      fd.append("header_row", String(w.headerRowIdx ?? 0));
+      fd.append("mapping", JSON.stringify(w.mapping || {}));
+      fd.append("brand", w.brandMode === "col" ? "" : (w.brandName || "").trim());
+      fd.append("search_methods", JSON.stringify(methods));
+      fd.append("pages_per_title", String(Number.isNaN(pagesRaw) ? 0 : Math.max(0, pagesRaw)));
+      fd.append("use_query_agent", $("#awiz-query-agent")?.checked ? "true" : "false");
+      fd.append("use_llm_verifier", $("#awiz-llm-verifier")?.checked ? "true" : "false");
+      fd.append("ai_clean_titles", $("#awiz-title-ai-clean")?.checked ? "true" : "false");
+      if (w.selectedSheet) fd.append("sheet_name", w.selectedSheet);
+
+      try {
+        const j = await api("/api/analytics/estimate", { method: "POST", body: fd, form: true });
+        if (seq !== _awizEstSeq || !state.awiz) return;   // stale response, ignore
+
+        const t = j.total;
+        const rowsHtml = j.stages.map(s => `
+          <tr style="border-top:1px solid #e2e8f0;">
+            <td style="padding:4px 0;color:#334155;">${escapeHtml(s.label)}</td>
+            <td style="padding:4px 8px;color:#64748b;">${escapeHtml(s.work)}</td>
+            <td style="padding:4px 0;text-align:right;white-space:nowrap;font-weight:600;color:#1e293b;">
+              ${escapeHtml(_fmtEstDur(s.mid))}${s.measured ? ' <span title="Based on your past runs" style="color:#16a34a;">●</span>' : ""}
+            </td>
+          </tr>`).join("");
+
+        const costLine = j.cost.high > 0
+          ? `<div style="margin-top:8px;color:#475569;"><b>LLM cost:</b> ~${escapeHtml(_formatEstimateCost(j.cost.mid))} (up to ${escapeHtml(_formatEstimateCost(j.cost.high))})</div>`
+          : "";
+        const warn = j.unlimited_unmeasured
+          ? `<div style="margin-top:8px;padding:6px 8px;border-radius:6px;background:#fef3c7;color:#92400e;">Pages per search is set to unlimited, so the real run may take longer than this. Set a limit (3 is a good start) for a reliable estimate.</div>`
+          : "";
+        const footer = j.calibrated_runs > 0
+          ? `● = based on your past runs. From Start run to scored results.`
+          : `Built-in assumptions. Estimates sharpen after a few completed runs. From Start run to scored results.`;
+
+        box.innerHTML = `
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div style="font-size:15px;font-weight:700;color:#1e293b;">About ${escapeHtml(_fmtEstDur(t.mid))}</div>
+            <div style="color:#64748b;">Likely ${escapeHtml(_fmtEstDur(t.low))} – ${escapeHtml(_fmtEstDur(t.high))} · ${j.rows.toLocaleString()} rows</div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">${rowsHtml}</table>
+          ${costLine}${warn}
+          <div style="margin-top:8px;color:#94a3b8;">${footer}</div>`;
+      } catch (e) {
+        if (seq !== _awizEstSeq) return;
+        box.textContent = "Couldn't estimate: " + (e.message || e);
+      }
+    }, 400);
+  }
+  $("#awiz-title-ai-clean")?.addEventListener("change", _updateAwizRunEstimate);
 })();
