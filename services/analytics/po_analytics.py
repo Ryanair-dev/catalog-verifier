@@ -307,8 +307,15 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
                 "vendor_name": vname,
             })
 
+    # The PO(s) actually used -- may differ from the originally-requested
+    # `po_numbers` when one of those was cancelled and auto-resolved to a real
+    # split (see _resolve_received_pos). The filename should reflect what was
+    # actually analyzed, not what was typed in.
+    resolved_po_numbers = [p["Purchase"]["POId"] for p in pos if p.get("Purchase", {}).get("POId")]
+
     return {
-        "po_numbers": po_numbers, "brand_label": brand_label,
+        "po_numbers": po_numbers, "resolved_po_numbers": resolved_po_numbers,
+        "brand_label": brand_label,
         "rows": base_rows, "po_rows": po_rows,
         "skipped_pos": skipped_pos,
     }

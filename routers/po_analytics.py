@@ -70,7 +70,12 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
         try:
             gathered = poa.gather(po_numbers)
             job["skipped_pos"] = gathered.get("skipped_pos") or []
-            job["filename"] = poa.po_analytics_filename(po_numbers, gathered["brand_label"])
+            # Name the file after the PO(s) actually analyzed, not what was typed
+            # in -- a cancelled PO auto-resolves to its real split (see gather()),
+            # and the export should be named after the split, not the cancelled
+            # original.
+            filename_pos = gathered.get("resolved_po_numbers") or po_numbers
+            job["filename"] = poa.po_analytics_filename(filename_pos, gathered["brand_label"])
             job["blob"] = poa.enrich_and_build(gathered, on_progress=_progress)
             job["phase"], job["status"] = "done", "complete"
         except Exception as exc:  # noqa: BLE001
