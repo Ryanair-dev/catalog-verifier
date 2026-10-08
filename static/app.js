@@ -3498,6 +3498,102 @@
   }
   $("#awiz-title-ai-clean")?.addEventListener("change", _updateAiCostHint);
 
+  function _formatEstimateDuration(seconds) {
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))} sec`;
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const remaining = minutes % 60;
+    return remaining ? `${hours} hr ${remaining} min` : `${hours} hr`;
+  }
+
+  function _formatEstimateCost(amount) {
+    return amount < 0.01 ? `$${amount.toFixed(4)}` : `$${amount.toFixed(2)}`;
+  }
+
+  function _updateAwizRunEstimate() {
+    const box = $("#awiz-run-estimate");
+    if (!box || !state.awiz?.preview) return;
+
+    const rows = Math.max(
+      0,
+      Number(state.awiz.preview.total_rows || 0) - (state.awiz.headerRowIdx ?? 0) - 1,
+    );
+    const selectedPages = Number.parseInt($("#awiz-title-pages")?.value || "0", 10);
+    // Unlimited pagination cannot have a useful upper time estimate, so use
+    // three pages as a planning assumption and call it out below.
+    const pages = selectedPages > 0 ? selectedPages : 3;
+    const hasUpc = !!$("#awiz-search-upc")?.checked;
+    const hasItemId = !!$("#awiz-search-itemid")?.checked;
+    const hasTitle = !!$("#awiz-search-title")?.checked;
+    const queryAgent = !!$("#awiz-query-agent")?.checked;
+    const verifier = !!$("#awiz-llm-verifier")?.checked;
+
+    // Rough sequential Amazon request estimate. UPCs are batched in 20s;
+    // Item ID and title searches are mostly per unique value. Later tiers
+    // usually run only for rows the earlier tiers did not find.
+    const lowCallsPerRow =
+      (hasUpc ? 1 / 20 : 0) +
+      (hasItemId ? 0.15 * pages : 0) +
+      (hasTitle ? 0.05 * pages : 0);
+    const highCallsPerRow =
+      (hasUpc ? 3 / 20 : 0) +
+      (hasItemId ? pages : 0) +
+      (hasTitle ? pages : 0);
+    const lowSeconds = rows * lowCallsPerRow;
+    const highSeconds = rows * highCallsPerRow * 3
+      + rows * ((hasItemId ? pages - 1 : 0) + (hasTitle ? pages - 1 : 0)) * 0.6;
+
+    // Anthropic Claude Sonnet 4.6 estimate: $3/1M input and $15/1M output.
+    // Query fallback: ~2,000 input + 150 output tokens over its LLM calls.
+    // Verifier: ~500 input + 60 output tokens per approved candidate.
+    const queryCostPerRow = (2000 * 3 + 150 * 15) / 1_000_000;
+    const verifierCostPerApproval = (500 * 3 + 60 * 15) / 1_000_000;
+    const queryCost = queryAgent ? rows * queryCostPerRow : 0;
+    const verifierCost = verifier ? rows * verifierCostPerApproval : 0;
+    const costLines = [];
+    if (queryAgent) {
+      costLines.push(
+        `<div><b>Query fallback:</b> $0–${_formatEstimateCost(queryCost)}</div>`,
+      );
+    }
+    if (verifier) {
+      costLines.push(
+        `<div><b>Approval verifier:</b> $0–${_formatEstimateCost(verifierCost)}</div>`,
+      );
+    }
+    if (!costLines.length) {
+      costLines.push("<div><b>Optional LLM agents:</b> off; estimated cost $0.</div>");
+    }
+
+    const queryTimeMax = queryAgent ? rows * 12 : 0;
+    const verifierTimeMax = verifier ? rows * 3 : 0;
+    const timeMax = highSeconds + queryTimeMax + verifierTimeMax;
+    const assumptions = [
+      "Very rough estimate: about 1–3 seconds per Amazon search request; UPCs are sent in batches of 20.",
+      "Time range assumes about 15% of rows reach Item ID search and 5% reach title search at the low end; the high end assumes every row reaches each selected search.",
+      "Later searches and agents only process rows that need them, so actual time/cost is often lower. LLM cost assumes every row needs query fallback and one approved candidate per row; more approvals can cost more.",
+      "The row count includes any blank rows below the selected header, so it may be a little high.",
+      "Title-cleaning cost is estimated separately beside its checkbox.",
+      selectedPages > 0
+        ? `Uses your ${pages}-page lookup limit.`
+        : "Unlimited pagination selected: time estimate assumes 3 pages; it may take longer.",
+    ];
+    box.innerHTML = `
+      <div style="font-weight:700;color:#1e293b;">Approximate estimate for ${rows.toLocaleString()} worksheet rows</div>
+      <div style="margin-top:4px;"><b>Processing time:</b> ~${_formatEstimateDuration(lowSeconds)}–${_formatEstimateDuration(timeMax)}</div>
+      <div style="margin-top:4px;"><b>Approximate LLM cost:</b>${costLines.join("")}</div>
+      <div style="margin-top:5px;color:#64748b;">${assumptions.map(escapeHtml).join(" ")}</div>`;
+  }
+
+  [
+    "#awiz-search-upc", "#awiz-search-itemid", "#awiz-search-title",
+    "#awiz-title-pages", "#awiz-query-agent", "#awiz-llm-verifier",
+  ].forEach(selector => {
+    $(selector)?.addEventListener("change", _updateAwizRunEstimate);
+    $(selector)?.addEventListener("input", _updateAwizRunEstimate);
+  });
+
   // Shared helper — sync CPG/Medical toggle across all wizard steps
   function _awizSetVettingMode(mode) {
     if (state.awiz) state.awiz.vettingMode = mode;
@@ -3877,9 +3973,9 @@
     const help = $(helpId);
     if (select && help) {
       const descriptions = {
-        weighted: "Adds points for identifiers, brand, and title similarity. Clear brand or size conflicts cap the score; scores ≥90 are Approved and ≥55 are Review.",
-        cascade: "Applies ordered rules from identifier and attribute evidence through fuzzy-title fallback. The first matching rule sets confidence; attribute conflicts can cap the result.",
-        classifier: "A trained Gradient Boosting model estimates match probability from identifier, brand, title, and mismatch features. ≥50% is Approved, ≥20% is Review, and lower scores are Not Approved.",
+        weighted: "Choose this for a balanced, easy-to-understand score. UPC, part number, brand, and title add points; clear conflicts lower the score.",
+        cascade: "Choose this when you want clear rules checked in order. Strong identifier and attribute matches win first; title similarity is a fallback.",
+        classifier: "Choose this when you want a trained model to weigh the signals together. It gives a match probability instead of a simple point total.",
       };
       help.textContent = descriptions[select.value] || descriptions.weighted;
     }
@@ -5728,6 +5824,7 @@
   // ---- Step 4: summary card ---------------------------------------------
   function renderAwizSummary() {
     _updateAiCostHint();
+    _updateAwizRunEstimate();
     if (!awizEl.runName.value) awizEl.runName.value = state.awiz.runName || "";
     awizEl.runName.oninput = () => { state.awiz.runName = awizEl.runName.value; };
 
