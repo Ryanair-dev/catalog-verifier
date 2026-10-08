@@ -268,7 +268,12 @@ def normalize_amazon_item(raw: dict) -> dict:
     return {
         "asin": asin,
         "title": summary.get("itemName") or _attr_str("item_name"),
-        "brand": summary.get("brand") or _attr_str("brand"),
+        "brand": (
+            summary.get("brand")
+            or _attr_str("brand")
+            or summary.get("manufacturer")
+            or _attr_str("manufacturer")
+        ),
         "manufacturer": summary.get("manufacturer") or _attr_str("manufacturer"),
         "mpn": summary.get("partNumber") or summary.get("modelNumber") or _attr_str("part_number"),
         "upc": upcs[0] if upcs else "",

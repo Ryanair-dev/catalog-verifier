@@ -41,7 +41,7 @@ _OFFER_FIELDS = {
 }
 _CANDIDATE_FIELDS = {
     "title": ("Title", "title", "Item Name", "item_name", "Product Title"),
-    "brand": ("Brand", "brand"),
+    "brand": ("Brand", "brand", "Manufacturer", "manufacturer"),
     "mpn": (
         "Product Codes: PartNumber", "Part Number", "part_number",
         "Model", "model_number", "MPN", "mpn",
@@ -191,7 +191,7 @@ def build_pair(
         offer_id=str(source.get("row_idx", "")),
         title=str(source.get("title") or ""),
         raw_text=str(source.get("title") or ""),
-        brand=str(extracted.get("brand") or source.get("brand") or "") or None,
+        brand=str(source.get("brand") or extracted.get("brand") or "") or None,
         upc=str(source.get("upc") or "") or None,
         mpn=str(source.get("mpn") or source.get("itemid") or "") or None,
     )
@@ -199,7 +199,7 @@ def build_pair(
     candidate = Candidate(
         asin=str(normalized.get("asin") or ""),
         title=str(normalized.get("title") or ""),
-        brand=str(normalized.get("brand") or "") or None,
+        brand=str(normalized.get("brand") or normalized.get("manufacturer") or "") or None,
         upc=str(normalized.get("upc") or normalized.get("ean") or normalized.get("gtin") or "") or None,
         mpn=str(normalized.get("mpn") or "") or None,
         attributes={
