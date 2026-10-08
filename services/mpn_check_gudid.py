@@ -45,12 +45,28 @@ def _company_matches(company_name: str, manufacturer: str) -> bool:
 
 
 def _case_breakdown_from_identifiers(ids: list[dict]) -> dict | None:
-    """Walk the GS1/HIBCC packaging hierarchy from whichever identifier is
-    tagged a case/carton down to the Primary (base sellable) unit, multiplying
+    """Walk the GS1/HIBCC packaging hierarchy from the TRUE outermost (root)
+    package tier down to the Primary (base sellable) unit, multiplying
     quantity_per_package at each level -- a case tier's quantity_per_package
     is relative to its OWN child tier, not always the primary unit directly
     (verified live: CURCHSIL0753's "CS" tier holds 6 of an INTERMEDIATE
     package that itself holds 4 primaries -> 24 real units/case, not 6).
+
+    The root is found STRUCTURALLY (a Package-type identifier that is never
+    referenced as any other identifier's `unit_of_use_id` -- i.e. nothing
+    nests above it), NOT by matching `package_type` against a fixed word
+    list. Confirmed live this distinction matters: MPN 66800834's real GUDID
+    record has an identifier package_type literally "Carton" (an INNER tier,
+    qty 10, pointing straight to Primary) that textually matches the old
+    word-list check and happens to appear earlier in the API's (unordered)
+    array than the TRUE outer "case" tier (qty 6, wrapping that Carton) --
+    the old exact-string match picked the inner Carton as if it were the
+    start, silently truncating a real 6x10=60 case down to just 10. A
+    GUDID record can carry more than one root chain for the identical
+    physical packaging (two duplicate/legacy chains were present for this
+    exact MPN, both correctly totaling 60) -- when several roots exist,
+    one whose own label textually resembles a case/carton/box is preferred,
+    purely as a deterministic tie-breaker, not as the sole detection method.
 
     Returns {qty_case, qty_case_uom, ea_case}:
       ea_case    = the FULLY multiplied-down total base-unit ("each") count
@@ -58,7 +74,7 @@ def _case_breakdown_from_identifiers(ids: list[dict]) -> dict | None:
                    return on its own before "Qty/Case" and "EA/Case" became
                    two separate columns, 2026-10-08).
       qty_case   = the count at the HIGHEST sub-case packaging tier only --
-                   i.e. the case's OWN quantity_per_package, one level down,
+                   i.e. the root's OWN quantity_per_package, one level down,
                    NOT multiplied any further (6 for CURCHSIL0753 -- "6 boxes
                    per case", not the 24 total eaches).
       qty_case_uom = that tier's label (Pack/Box/Bag/Dozen/...), straight from
@@ -66,20 +82,25 @@ def _case_breakdown_from_identifiers(ids: list[dict]) -> dict | None:
                    GUDID actually supplies one. Confirmed live this is often
                    blank (CURCHSIL0753's own intermediate "4" tier has
                    package_type=None in the real GUDID record) -- GUDID
-                   reliably labels only the top (case) tier, not what's
-                   inside it. Falls back to "Each" only when the case's
-                   immediate child IS the Primary (base) unit itself (i.e.
-                   there's no intermediate tier at all, so qty_case==ea_case
-                   by construction) -- that's a real fact from GUDID's own
-                   `type` marker, not a guess. Otherwise stays None rather
-                   than inventing a label the source data doesn't provide.
+                   doesn't always label what's inside the top tier. Falls
+                   back to "Each" only when the root's immediate child IS the
+                   Primary (base) unit itself (i.e. there's no intermediate
+                   tier at all, so qty_case==ea_case by construction) --
+                   that's a real fact from GUDID's own `type` marker, not a
+                   guess. Otherwise stays None rather than inventing a label
+                   the source data doesn't provide.
 
-    None if there's no case-tagged identifier or the packaging data is
-    incomplete (a missing quantity_per_package partway down the chain)."""
+    None if there's no identifiable root package tier, or the packaging data
+    is incomplete (a missing quantity_per_package partway down the chain)."""
     by_id = {i["id"]: i for i in ids if i.get("id")}
-    case = next((i for i in ids if str(i.get("package_type", "")).upper() in _CASE_TYPES), None)
-    if not case:
+    referenced = {i.get("unit_of_use_id") for i in ids if i.get("unit_of_use_id")}
+    roots = [i for i in ids if i.get("type") == "Package" and i.get("id") not in referenced
+             and i.get("quantity_per_package") is not None]
+    if not roots:
         return None
+    case = next((i for i in roots
+                 if any(t in str(i.get("package_type", "")).upper() for t in _CASE_TYPES)),
+                roots[0])
     total = 1
     qty_case: int | None = None
     qty_case_uom: str | None = None
