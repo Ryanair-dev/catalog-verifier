@@ -8247,8 +8247,19 @@
       if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
       if (skipEl) {
         if (j.skipped_pos?.length) {
-          const parts = j.skipped_pos.map(s => `PO ${s.po} (${s.status})`).join(", ");
-          skipEl.textContent = `Skipped — not Received, so left out of the analysis: ${parts}.`;
+          // A skip with a "note" successfully followed a split (not a failure,
+          // just not what was literally typed in) -- phrase those positively
+          // and separately from ones truly left out with nothing usable found.
+          const followed = j.skipped_pos.filter(s => s.note);
+          const leftOut = j.skipped_pos.filter(s => !s.note);
+          const parts = [];
+          if (followed.length) {
+            parts.push(...followed.map(s => `PO ${s.po} (${s.status}) → used its split instead`));
+          }
+          if (leftOut.length) {
+            parts.push(...leftOut.map(s => `PO ${s.po} (${s.status}) — left out, no Received split found`));
+          }
+          skipEl.textContent = parts.join("; ") + ".";
           skipEl.classList.remove("hidden");
         } else {
           skipEl.classList.add("hidden");

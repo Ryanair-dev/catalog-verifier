@@ -267,3 +267,26 @@ def catalog_source(company: str = "Ford Medical") -> tuple[CatalogIndex, dict]:
     callers can fall back."""
     fetch_rows()   # prime the cache (one pull; all companies, filtered per call)
     return catalog_index(company), brand_map(company)
+
+
+def find_split_pos(po_id: int) -> list[int]:
+    """PO IDs that were split off FROM `po_id` -- i.e. every row in the live
+    `sellercloud.Purchase` mirror whose `SplittedFromPOId` equals it. Confirmed
+    live (2026-10-08, user-identified table): a cancelled "main" PO's real
+    replacement/split PO records this parent link in `SplittedFromPOId` -- it's
+    NOT exposed anywhere in the SellerCloud REST API's PO payload (checked:
+    `RelatedItems`/`RelatedFbaId`/`RelatedPOFBAPlanningId` are all empty/zero
+    even on a confirmed real split pair), so this direct SQL table is the only
+    way to discover it. A small, uncached, on-demand query (not the big
+    sku_data_extended_view pull) -- never raises; callers should catch and
+    degrade (e.g. treat as "no splits found") on any connection problem, same
+    as `catalog_source`."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ID FROM sellercloud.Purchase WHERE SplittedFromPOId = %s", (int(po_id),)
+        )
+        return [int(r[0]) for r in cur.fetchall()]
+    finally:
+        conn.close()

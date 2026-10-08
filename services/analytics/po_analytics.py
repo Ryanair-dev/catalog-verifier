@@ -154,6 +154,36 @@ _PO_STATUS_NAMES = {0: "Saved", 1: "Ordered", 2: "Pending", 3: "Received",
 _PO_STATUS_RECEIVED = 3
 
 
+def _resolve_received_pos(client, po_id: int, visited: set[int], skipped: list[dict]) -> list[dict]:
+    """The real Received PO(s) reachable from `po_id`: itself if it's already
+    Received, else its split(s) (sellercloud.Purchase.SplittedFromPOId -- the
+    real parent-PO link, confirmed live 2026-10-08; it's NOT exposed anywhere
+    in the REST API's own PO payload), recursed the same way in case a split
+    was itself later split again. `visited` guards against revisiting the same
+    PO twice (a cycle, or two requested numbers converging on one split) and
+    makes repeat lookups free. Every PO actually skipped along the way
+    (including an intermediate one that correctly led somewhere, not just a
+    final dead end) is recorded in `skipped` for visibility."""
+    if po_id in visited:
+        return []
+    visited.add(po_id)
+    po = client.get_purchase_order(po_id)
+    status = (po.get("Statuses") or {}).get("Status")
+    if status == _PO_STATUS_RECEIVED:
+        return [po]
+    status_name = _PO_STATUS_NAMES.get(status, str(status))
+    splits = azure_sql.find_split_pos(po_id)
+    if not splits:
+        skipped.append({"po": po_id, "status": status_name})
+        return []
+    skipped.append({"po": po_id, "status": status_name,
+                    "note": f"following its split PO(s): {', '.join(str(s) for s in splits)}"})
+    out: list[dict] = []
+    for sp in splits:
+        out.extend(_resolve_received_pos(client, sp, visited, skipped))
+    return out
+
+
 def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
     """Fast phase: pull the PO(s) from SellerCloud, resolve every Main SKU to
     its FBA/FBM children via the local catalog snapshot, and build the base
@@ -161,26 +191,21 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
 
     Only a RECEIVED PO's items are ever used (per user 2026-10-08: a split PO's
     cancelled parent must never be used, and any other split that hasn't itself
-    been received yet must be left out) — this is a single, general rule (any
-    non-Received PO is skipped) rather than special-cased "is this specifically
-    a cancelled parent" detection, since a not-yet-received split needs the
-    exact same treatment and this tool's whole purpose is analyzing RECEIVED
-    stock in the first place. Every PO passed in gets checked independently;
-    skipped ones are reported back in `skipped_pos` (po number + real status
-    name) so the caller/UI can show exactly what was left out and why, instead
-    of a silent row-count mismatch."""
+    been received yet must be left out). Entering a cancelled/not-yet-received
+    PO number now automatically follows its real split(s) instead of just
+    erroring — see `_resolve_received_pos`. Every PO actually skipped along the
+    way (the cancelled parent, and any split that also didn't pan out) is
+    reported back in `skipped_pos` so the caller/UI can show exactly what was
+    left out and why, instead of a silent row-count mismatch."""
     client = get_sellercloud_client()
-    pos: list[dict] = []
     all_items: list[dict] = []
     vendor_ids: set[int] = set()
+    visited: set[int] = set()
     skipped_pos: list[dict] = []
+    pos: list[dict] = []
     for num in po_numbers:
-        po = client.get_purchase_order(num)
-        status = (po.get("Statuses") or {}).get("Status")
-        if status != _PO_STATUS_RECEIVED:
-            skipped_pos.append({"po": num, "status": _PO_STATUS_NAMES.get(status, str(status))})
-            continue
-        pos.append(po)
+        pos.extend(_resolve_received_pos(client, num, visited, skipped_pos))
+    for po in pos:
         items = po.get("Items") or []
         all_items.extend(items)
         vid = (po.get("Purchase") or {}).get("VendorId")
@@ -188,10 +213,13 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
             vendor_ids.add(vid)
 
     if not pos:
-        reasons = ", ".join(f"PO {s['po']} ({s['status']})" for s in skipped_pos)
+        reasons = ", ".join(
+            f"PO {s['po']} ({s['status']}" + (f" — {s['note']}" if s.get("note") else "") + ")"
+            for s in skipped_pos
+        )
         raise RuntimeError(
-            f"None of the requested PO(s) are Received, so there's nothing to "
-            f"analyze: {reasons}."
+            f"None of the requested PO(s) (or their splits) are Received, so "
+            f"there's nothing to analyze: {reasons}."
         )
 
     brand_label = _resolve_brand_label(client, all_items, vendor_ids, company)
