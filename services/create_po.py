@@ -755,11 +755,15 @@ def build_files(results: list[RowResult], config: dict, tag: str = "",
     def uom(qty: int) -> str:
         return f"Pack of {qty}" if qty and qty > 1 else "Each"
 
-    def _strip_trailing_uom(name: str) -> str:
-        """Strip a trailing ' (XXX)' UOM parenthetical off an existing ProductName,
-        e.g. 'Torbot MS407W Skin Tac Wipes (Box of 50)' -> '...Wipes' -- so a new
-        UOM can be appended without stacking two parentheticals."""
-        return re.sub(r"\s*\([^()]*\)\s*$", "", name or "").strip()
+    def _unwrap_trailing_uom(name: str) -> tuple[str, str]:
+        """Split a ProductName into (everything before the trailing '(...)' UOM
+        parenthetical, the text INSIDE that parenthetical) --
+        'Torbot ... Wipes (Box of 50)' -> ('Torbot ... Wipes', 'Box of 50').
+        No trailing parenthetical -> (name, '')."""
+        m = re.search(r"^(.*?)\s*\(([^()]*)\)\s*$", name or "")
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        return (name or "").strip(), ""
 
     def product_name(r: RowResult, name_qty: int, is_main: bool = False) -> str:
         brand = r.brand_name or r.brand
@@ -767,13 +771,19 @@ def build_files(results: list[RowResult], config: dict, tag: str = "",
         # FBA/FBM child(ren), reuse the main's own REAL title instead of re-deriving
         # one from the vendor's data -- the vendor title can drift from whatever the
         # main is actually published as, and the sibling SKUs should read the same.
-        # Just swap in the UOM this child actually needs.
+        # A plain (non-kit) shadow's title is IDENTICAL to the main's own, UOM and
+        # all -- e.g. main "...Wipes (Box of 50)" -> shadow "...Wipes (Box of 50)".
+        # A KIT unwraps the main's UOM parenthetical into plain text and appends its
+        # own "(Pack of N)" -- "...Wipes (Box of 50)" + QY2 -> "...Wipes Box of 50
+        # (Pack of 2)".
         if not is_main and r.main_on_sc and r.main and index is not None:
             existing_name = _s((index.by_sku.get(r.main.upper()) or {}).get("ProductName"))
             if existing_name:
-                base = _strip_trailing_uom(existing_name)
-                suffix = uom(name_qty)
-                return f"{base} ({suffix})".strip() if base else ""
+                if name_qty and name_qty > 1:
+                    base, inner = _unwrap_trailing_uom(existing_name)
+                    unwrapped = f"{base} {inner}".strip() if inner else base
+                    return f"{unwrapped} ({uom(name_qty)})".strip()
+                return existing_name
         # prefer the AI-cleaned description (set on the item by the export route);
         # fall back to the raw vendor title.
         title = _s(r.item.get("clean_name")) or _s(r.item.get("name"))
