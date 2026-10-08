@@ -102,13 +102,20 @@ def _local_product_id(pairs_norm: list[tuple[str, str]]) -> dict[tuple[str, str]
 def check_mpns(pairs: list[tuple[str, str]], fields: set[str] | None = None) -> list[dict]:
     """pairs: [(mpn, manufacturer), ...] (raw, as typed/pasted). Returns one
     dict per input pair, SAME ORDER, duplicates preserved:
-    {mpn, manufacturer, matched, product_id, qty_case, note}.
+    {mpn, manufacturer, matched, product_id, qty_case, qty_case_uom, ea_case, note}.
 
     product_id comes from the local mirror (confirms the MPN/manufacturer
-    exists in our own data -- informational). qty_case comes from a LIVE
-    AccessGUDID lookup (services.mpn_check_gudid), run concurrently across all
-    rows -- free, no fbidb "CS" tag involved. matched=True iff AccessGUDID
-    returned a real case quantity."""
+    exists in our own data -- informational). qty_case/qty_case_uom/ea_case
+    come from a LIVE AccessGUDID lookup (services.mpn_check_gudid), run
+    concurrently across all rows -- free, no fbidb "CS" tag involved.
+
+    Per user 2026-10-08: "Qty/Case" and "EA/Case" are two DIFFERENT numbers --
+    qty_case is the count at the HIGHEST sub-case packaging tier (e.g. "6
+    boxes/case"), ea_case is the fully multiplied-down total base-unit count
+    (e.g. "24 eaches/case" when each of those 6 boxes holds 4). matched=True
+    iff AccessGUDID found the product at all (ea_case can still be None if
+    GUDID has no case-level packaging data for it -- that's a genuine "found
+    but unanswerable", not a non-match)."""
     fields = (fields or {"qty_case"}) & SUPPORTED_FIELDS
 
     rows = [{"mpn": (m or "").strip(), "manufacturer": (b or "").strip()} for m, b in pairs]
@@ -138,11 +145,14 @@ def check_mpns(pairs: list[tuple[str, str]], fields: set[str] | None = None) -> 
             row_out = {"mpn": r["mpn"], "manufacturer": r["manufacturer"],
                        "matched": pid is not None, "product_id": pid, "note": ""}
         else:
-            g = gudid_by_idx.get(i, {"qty_case": None, "matched": False, "note": ""})
+            g = gudid_by_idx.get(i, {"matched": False, "note": ""})
             row_out = {"mpn": r["mpn"], "manufacturer": r["manufacturer"],
                        "matched": g["matched"], "product_id": pid, "note": g["note"]}
         if "qty_case" in fields:
-            row_out["qty_case"] = gudid_by_idx.get(i, {}).get("qty_case") if r["mpn"] and r["manufacturer"] else None
+            g = gudid_by_idx.get(i, {}) if r["mpn"] and r["manufacturer"] else {}
+            row_out["qty_case"] = g.get("qty_case")
+            row_out["qty_case_uom"] = g.get("qty_case_uom")
+            row_out["ea_case"] = g.get("ea_case")
         out.append(row_out)
     return out
 
@@ -158,9 +168,13 @@ _QTY_RE = re.compile(r"\b(\d{1,5})\b")
 
 
 def ai_lookup_qty_case(mpn: str, manufacturer: str, client) -> dict:
-    """One web-search-backed lookup. Returns {qty_case, confidence, note}.
-    qty_case is None unless the model is confident it found the SAME product's
-    real case-pack quantity -- never a guess. Never raises; client must be an
+    """One web-search-backed lookup. Returns {ea_case, confidence, note} --
+    ea_case (the TOTAL individual units per case, same thing GUDID's own
+    ea_case means) is None unless the model is confident it found the SAME
+    product's real case-pack quantity -- never a guess. The AI has no way to
+    reliably determine the Qty/Case sub-tier breakdown (that needs the real
+    packaging hierarchy, not a web search), so this fallback only ever fills
+    ea_case, never qty_case/qty_case_uom. Never raises; client must be an
     Anthropic client (services.ai_recheck.make_client()) with web search access."""
     prompt = (
         f"Find the case-pack quantity (how many individual units ship in one "
@@ -186,20 +200,20 @@ def ai_lookup_qty_case(mpn: str, manufacturer: str, client) -> dict:
         text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
-            return {"qty_case": None, "confidence": "low", "note": "AI: no parseable answer"}
+            return {"ea_case": None, "confidence": "low", "note": "AI: no parseable answer"}
         data = json.loads(m.group())
         qty = data.get("qty_case")
         conf = str(data.get("confidence") or "low").lower()
         if qty is None or conf == "low":
-            return {"qty_case": None, "confidence": conf,
+            return {"ea_case": None, "confidence": conf,
                     "note": "AI: could not verify a case-pack quantity"}
         try:
             qty = int(qty)
         except (TypeError, ValueError):
-            return {"qty_case": None, "confidence": conf, "note": "AI: non-numeric answer"}
+            return {"ea_case": None, "confidence": conf, "note": "AI: non-numeric answer"}
         src = (data.get("source") or "").strip()[:80]
-        return {"qty_case": qty, "confidence": conf,
+        return {"ea_case": qty, "confidence": conf,
                 "note": f"AI ({conf} confidence){': ' + src if src else ''}"}
     except Exception as exc:  # noqa: BLE001
         log.warning("[mpn_check] AI web lookup failed for %s/%s: %s", mpn, manufacturer, str(exc)[:150])
-        return {"qty_case": None, "confidence": "low", "note": f"AI lookup failed: {str(exc)[:100]}"}
+        return {"ea_case": None, "confidence": "low", "note": f"AI lookup failed: {str(exc)[:100]}"}

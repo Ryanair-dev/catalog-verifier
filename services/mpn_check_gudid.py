@@ -44,55 +44,99 @@ def _company_matches(company_name: str, manufacturer: str) -> bool:
     return bool(a and b and (a in b or b in a))
 
 
-def _case_qty_from_identifiers(ids: list[dict]) -> int | None:
+def _case_breakdown_from_identifiers(ids: list[dict]) -> dict | None:
     """Walk the GS1/HIBCC packaging hierarchy from whichever identifier is
     tagged a case/carton down to the Primary (base sellable) unit, multiplying
     quantity_per_package at each level -- a case tier's quantity_per_package
     is relative to its OWN child tier, not always the primary unit directly
     (verified live: CURCHSIL0753's "CS" tier holds 6 of an INTERMEDIATE
-    package that itself holds 4 primaries -> 24 real units/case, not 6)."""
+    package that itself holds 4 primaries -> 24 real units/case, not 6).
+
+    Returns {qty_case, qty_case_uom, ea_case}:
+      ea_case    = the FULLY multiplied-down total base-unit ("each") count
+                   (24 for CURCHSIL0753 -- same number this function used to
+                   return on its own before "Qty/Case" and "EA/Case" became
+                   two separate columns, 2026-10-08).
+      qty_case   = the count at the HIGHEST sub-case packaging tier only --
+                   i.e. the case's OWN quantity_per_package, one level down,
+                   NOT multiplied any further (6 for CURCHSIL0753 -- "6 boxes
+                   per case", not the 24 total eaches).
+      qty_case_uom = that tier's label (Pack/Box/Bag/Dozen/...), straight from
+                   GUDID's own `package_type` on that child identifier WHEN
+                   GUDID actually supplies one. Confirmed live this is often
+                   blank (CURCHSIL0753's own intermediate "4" tier has
+                   package_type=None in the real GUDID record) -- GUDID
+                   reliably labels only the top (case) tier, not what's
+                   inside it. Falls back to "Each" only when the case's
+                   immediate child IS the Primary (base) unit itself (i.e.
+                   there's no intermediate tier at all, so qty_case==ea_case
+                   by construction) -- that's a real fact from GUDID's own
+                   `type` marker, not a guess. Otherwise stays None rather
+                   than inventing a label the source data doesn't provide.
+
+    None if there's no case-tagged identifier or the packaging data is
+    incomplete (a missing quantity_per_package partway down the chain)."""
     by_id = {i["id"]: i for i in ids if i.get("id")}
     case = next((i for i in ids if str(i.get("package_type", "")).upper() in _CASE_TYPES), None)
     if not case:
         return None
     total = 1
-    cur, seen = case, set()
+    qty_case: int | None = None
+    qty_case_uom: str | None = None
+    cur, seen, first_step = case, set(), True
     while cur:
         qty = cur.get("quantity_per_package")
         if qty is None:
             break
         try:
-            total *= int(qty)
+            qty_i = int(qty)
         except (TypeError, ValueError):
             return None
+        total *= qty_i
         nxt_id = cur.get("unit_of_use_id")
+        nxt = by_id.get(nxt_id) if nxt_id and nxt_id not in seen else None
+        if first_step:
+            qty_case = qty_i
+            if nxt and nxt.get("type") == "Primary":
+                qty_case_uom = "Each"
+            elif nxt:
+                qty_case_uom = (str(nxt.get("package_type") or "").strip() or None)
+            first_step = False
         if not nxt_id or nxt_id in seen:
             break
         seen.add(nxt_id)
-        cur = by_id.get(nxt_id)
+        cur = nxt
         if cur and cur.get("type") == "Primary":
             break
-    return total
+    if qty_case is None:
+        return None
+    return {"qty_case": qty_case, "qty_case_uom": qty_case_uom, "ea_case": total}
+
+
+_NOT_FOUND = {"qty_case": None, "qty_case_uom": None, "ea_case": None}
 
 
 def lookup_case_qty(mpn: str, manufacturer: str) -> dict:
-    """Free, live GUDID lookup. Returns {qty_case, matched, note}. Never
-    raises -- network/API problems come back as a clear note with qty_case=None,
-    same contract as the paid AI fallback so callers can treat them uniformly."""
+    """Free, live GUDID lookup. Returns {qty_case, qty_case_uom, ea_case, matched,
+    note} -- qty_case/qty_case_uom = the count+label at the highest sub-case
+    packaging tier (e.g. 6 'Box'); ea_case = the fully multiplied-down total
+    base-unit count (e.g. 24). Never raises -- network/API problems come back
+    as a clear note with all three quantities None, same contract as the paid
+    AI fallback so callers can treat them uniformly."""
     mpn = (mpn or "").strip()
     manufacturer = (manufacturer or "").strip()
     if not mpn or not manufacturer:
-        return {"qty_case": None, "matched": False, "note": "missing MPN or manufacturer"}
+        return {**_NOT_FOUND, "matched": False, "note": "missing MPN or manufacturer"}
     try:
         resp = requests.get(_ENDPOINT, params={"search": f'catalog_number:"{mpn}"', "limit": 20},
                             timeout=15)
         if resp.status_code == 404:
-            return {"qty_case": None, "matched": False, "note": "not found in AccessGUDID"}
+            return {**_NOT_FOUND, "matched": False, "note": "not found in AccessGUDID"}
         resp.raise_for_status()
         results = resp.json().get("results") or []
     except Exception as exc:  # noqa: BLE001
         log.warning("[mpn_check_gudid] lookup failed for %s/%s: %s", mpn, manufacturer, str(exc)[:150])
-        return {"qty_case": None, "matched": False, "note": f"AccessGUDID lookup failed: {str(exc)[:100]}"}
+        return {**_NOT_FOUND, "matched": False, "note": f"AccessGUDID lookup failed: {str(exc)[:100]}"}
 
     # A single hit for this catalog number is unambiguous even when the
     # company name doesn't match what we call the manufacturer -- verified
@@ -109,11 +153,11 @@ def lookup_case_qty(mpn: str, manufacturer: str) -> dict:
     else:
         rec = next((r for r in results if _company_matches(r.get("company_name") or "", manufacturer)), None)
         if rec is None:
-            return {"qty_case": None, "matched": False,
+            return {**_NOT_FOUND, "matched": False,
                     "note": f"AccessGUDID has {len(results)} hit(s) for this MPN, none from {manufacturer!r}"}
 
-    qty = _case_qty_from_identifiers(rec.get("identifiers") or [])
-    if qty is None:
-        return {"qty_case": None, "matched": True,
+    breakdown = _case_breakdown_from_identifiers(rec.get("identifiers") or [])
+    if breakdown is None:
+        return {**_NOT_FOUND, "matched": True,
                 "note": f"found in AccessGUDID ({rec.get('company_name')}) but no case-level packaging data"}
-    return {"qty_case": qty, "matched": True, "note": f"AccessGUDID ({rec.get('company_name')})"}
+    return {**breakdown, "matched": True, "note": f"AccessGUDID ({rec.get('company_name')})"}

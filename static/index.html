@@ -1903,7 +1903,7 @@
           <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;">
             <div>
               <div style="font-size:13px;font-weight:600;color:#1e293b;">Qty / Case</div>
-              <div style="font-size:11px;color:#94a3b8;">How many units ship per case, from the mirrored database.</div>
+              <div style="font-size:11px;color:#94a3b8;">From AccessGUDID: Qty/Case = count at the highest sub-case packaging tier (e.g. 6 boxes/case); EA/Case = total individual units per case (e.g. 24).</div>
             </div>
             <label class="toggle-pill"><input type="checkbox" id="mpn-check-opt-qty" checked /><span class="slider"></span></label>
           </label>
@@ -1935,6 +1935,7 @@
                 <th style="padding:4px 6px;">MPN</th>
                 <th style="padding:4px 6px;">Manufacturer</th>
                 <th style="padding:4px 6px;">Qty / Case</th>
+                <th style="padding:4px 6px;">EA / Case</th>
                 <th style="padding:4px 6px;">Note</th>
               </tr>
             </thead>
@@ -2907,7 +2908,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=55"></script>
+  <script src="/static/app.js?v=56"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

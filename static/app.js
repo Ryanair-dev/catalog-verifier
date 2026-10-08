@@ -7910,11 +7910,15 @@
 
   function _mpnRowHtml(r) {
     const qtyCell = r.matched && r.qty_case != null
-      ? `<span style="color:#16a34a;font-weight:600;">${r.qty_case}</span>`
+      ? `<span style="color:#16a34a;font-weight:600;">${r.qty_case}${r.qty_case_uom ? " " + _escHtml(r.qty_case_uom) : ""}</span>`
+      : `<span style="color:#94a3b8;">\u2014</span>`;
+    const eaCell = r.matched && r.ea_case != null
+      ? `<span style="color:#16a34a;font-weight:600;">${r.ea_case}</span>`
       : `<span style="color:#94a3b8;">\u2014</span>`;
     return `<td style="padding:5px 6px;font-family:monospace;color:#1e293b;white-space:nowrap;">${_escHtml(r.mpn)}</td>` +
       `<td style="padding:5px 6px;color:#475569;white-space:nowrap;">${_escHtml(r.manufacturer)}</td>` +
       `<td style="padding:5px 6px;">${qtyCell}</td>` +
+      `<td style="padding:5px 6px;">${eaCell}</td>` +
       `<td style="padding:5px 6px;color:#94a3b8;">${_escHtml(r.note || "")}</td>`;
   }
 
@@ -7957,7 +7961,7 @@
   async function _runMpnAiFallback(progress) {
     const needsAi = [];
     _mpnCheckState.results.forEach((r, idx) => {
-      if (!r.matched || r.qty_case == null) needsAi.push(idx);
+      if (!r.matched || r.ea_case == null) needsAi.push(idx);
     });
     if (!needsAi.length) return;
 
@@ -7973,8 +7977,8 @@
         const idx = needsAi[i];
         const r = _mpnCheckState.results[idx];
         if (!r) return;
-        if (ar.qty_case != null) {
-          r.qty_case = ar.qty_case;
+        if (ar.ea_case != null) {
+          r.ea_case = ar.ea_case;
           r.matched = true;
           found++;
         }
@@ -8041,10 +8045,10 @@
     const rows = _mpnCheckState.results;
     if (!rows.length) return;
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = ["mpn", "manufacturer", "matched", "qty_case", "note"];
+    const headers = ["mpn", "manufacturer", "matched", "qty_case", "qty_case_uom", "ea_case", "note"];
     const lines = [headers.map(_q).join(",")];
     for (const r of rows) {
-      lines.push([r.mpn, r.manufacturer, r.matched, r.qty_case ?? "", r.note || ""].map(_q).join(","));
+      lines.push([r.mpn, r.manufacturer, r.matched, r.qty_case ?? "", r.qty_case_uom ?? "", r.ea_case ?? "", r.note || ""].map(_q).join(","));
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
