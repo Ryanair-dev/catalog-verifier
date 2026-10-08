@@ -8209,6 +8209,7 @@
     btn.textContent = "Running…";
     dl?.classList.add("hidden");
     errEl?.classList.add("hidden");
+    $("#poa-skipped")?.classList.add("hidden");
     progress?.classList.remove("hidden");
     if (progress) progress.textContent = "Starting…";
 
@@ -8231,6 +8232,7 @@
     const dl = $("#poa-download");
     const progress = $("#poa-progress");
     const errEl = $("#poa-error");
+    const skipEl = $("#poa-skipped");
     if (progress && !progress.classList.contains("hidden")) {
       const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
       const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
@@ -8243,6 +8245,15 @@
       progress?.classList.add("hidden");
       dl?.classList.remove("hidden");
       if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
+      if (skipEl) {
+        if (j.skipped_pos?.length) {
+          const parts = j.skipped_pos.map(s => `PO ${s.po} (${s.status})`).join(", ");
+          skipEl.textContent = `Skipped — not Received, so left out of the analysis: ${parts}.`;
+          skipEl.classList.remove("hidden");
+        } else {
+          skipEl.classList.add("hidden");
+        }
+      }
       return true;
     }
     if (j.status === "error") {

@@ -40,6 +40,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from services import azure_sql, database, sc_reference
@@ -145,22 +146,53 @@ def _resolve_brand_label(client, items: list[dict], vendor_ids: set[int],
     return "PO Analytics"
 
 
+# PurchaseOrderStatusesDto.Status enum (confirmed live via the SellerCloud swagger
+# spec, 2026-10-08): 0=Saved, 1=Ordered, 2=Pending, 3=Received, 4=Cancelled,
+# 5=Completed, -1=Select.
+_PO_STATUS_NAMES = {0: "Saved", 1: "Ordered", 2: "Pending", 3: "Received",
+                    4: "Cancelled", 5: "Completed", -1: "Select"}
+_PO_STATUS_RECEIVED = 3
+
+
 def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
     """Fast phase: pull the PO(s) from SellerCloud, resolve every Main SKU to
     its FBA/FBM children via the local catalog snapshot, and build the base
-    (un-enriched) row list + the raw PO-sheet rows. No Keepa/SP-API calls."""
+    (un-enriched) row list + the raw PO-sheet rows. No Keepa/SP-API calls.
+
+    Only a RECEIVED PO's items are ever used (per user 2026-10-08: a split PO's
+    cancelled parent must never be used, and any other split that hasn't itself
+    been received yet must be left out) — this is a single, general rule (any
+    non-Received PO is skipped) rather than special-cased "is this specifically
+    a cancelled parent" detection, since a not-yet-received split needs the
+    exact same treatment and this tool's whole purpose is analyzing RECEIVED
+    stock in the first place. Every PO passed in gets checked independently;
+    skipped ones are reported back in `skipped_pos` (po number + real status
+    name) so the caller/UI can show exactly what was left out and why, instead
+    of a silent row-count mismatch."""
     client = get_sellercloud_client()
     pos: list[dict] = []
     all_items: list[dict] = []
     vendor_ids: set[int] = set()
+    skipped_pos: list[dict] = []
     for num in po_numbers:
         po = client.get_purchase_order(num)
+        status = (po.get("Statuses") or {}).get("Status")
+        if status != _PO_STATUS_RECEIVED:
+            skipped_pos.append({"po": num, "status": _PO_STATUS_NAMES.get(status, str(status))})
+            continue
         pos.append(po)
         items = po.get("Items") or []
         all_items.extend(items)
         vid = (po.get("Purchase") or {}).get("VendorId")
         if vid:
             vendor_ids.add(vid)
+
+    if not pos:
+        reasons = ", ".join(f"PO {s['po']} ({s['status']})" for s in skipped_pos)
+        raise RuntimeError(
+            f"None of the requested PO(s) are Received, so there's nothing to "
+            f"analyze: {reasons}."
+        )
 
     brand_label = _resolve_brand_label(client, all_items, vendor_ids, company)
 
@@ -189,6 +221,7 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
         product_cost = _f(it.get("AdjustedPrice"))
         vendor_title = it.get("ProductName") or it.get("ProductNameFromProductTable") or ""
         upc = str(it.get("UPC") or "").strip()
+        qty_per_case = _f(it.get("QtyPerCase"))
 
         children = idx.children_for_main(main_sku)
         by_asin: dict[str, dict] = defaultdict(dict)
@@ -206,6 +239,7 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
                 "sku": main_sku, "fba_sku": None, "upc": upc, "asin": None,
                 "po_qty": po_qty, "product_cost": product_cost,
                 "vendor_title": vendor_title, "pack_qty": 1,
+                "qty_per_case": qty_per_case,
             })
             continue
 
@@ -217,6 +251,7 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
                 "po_qty": po_qty, "product_cost": product_cost,
                 "vendor_title": vendor_title,
                 "pack_qty": info.get("pack_qty") or 1,
+                "qty_per_case": qty_per_case,
             })
 
     po_rows: list[dict] = []
@@ -247,12 +282,68 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
     return {
         "po_numbers": po_numbers, "brand_label": brand_label,
         "rows": base_rows, "po_rows": po_rows,
+        "skipped_pos": skipped_pos,
     }
+
+
+def _fetch_dimensions(asins: list[str], on_progress=None, should_cancel=None) -> dict[str, dict]:
+    """{asin: {length_in, width_in, height_in, weight_lb}} via a live SP-API
+    getCatalogItem call per ASIN -- the "Jim" sheet's dimension columns. A
+    small, separate pool (doesn't touch enrich_asins' shared signature, which
+    the Price Desk "Offer Analytics" export also depends on) -- enrich_asins
+    DOES compute these same dims internally for any ASIN it isn't already
+    storage-cached for, but discards them immediately after turning them into
+    a single storage-fee number, and the shared storage_fee_cache table only
+    reliably carries dims for ASINs that happened to also go through the
+    separate Tools-panel storage-fee job, not every ASIN PO Analytics needs --
+    so a dedicated fetch here is the simplest way to guarantee every ASIN gets
+    real dimensions. Best-effort: a failed/missing ASIN just gets all-None
+    dims, never raises."""
+    import requests
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from services.spapi.client import get_catalog_api
+    from services.spapi.config import sp_api_configured
+    from services.storage_fees import extract_dimensions
+
+    out: dict[str, dict] = {}
+    uniq = sorted({a.strip().upper() for a in asins if a})
+    if not uniq or not sp_api_configured():
+        if on_progress:
+            on_progress(0, 0)
+        return out
+    capi = get_catalog_api()
+
+    def one(asin: str):
+        try:
+            raw = capi.get_by_asin(asin, included_data="attributes")
+            dims = extract_dimensions(raw.get("attributes") or {})
+        except Exception:  # noqa: BLE001 -- 404/DOG, throttled, or any other failure
+            dims = {"length_in": None, "width_in": None, "height_in": None, "weight_lb": None}
+        return asin, dims
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futs = [ex.submit(one, a) for a in uniq]
+        for f in as_completed(futs):
+            if should_cancel and should_cancel():
+                for fut in futs:
+                    fut.cancel()
+                raise ExportCancelled()
+            a, dims = f.result()
+            out[a] = dims
+            done += 1
+            if on_progress:
+                on_progress(done, len(uniq))
+    return out
+
+
+JIM_COLS = ["Main SKU", "FBA SKU", "ASIN", "Description", "PO qty", "Qty/Case", "amz pack",
+            "Length (in)", "Width (in)", "Height (in)", "Weight (lb)"]
 
 
 def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> bytes:
     """Slow phase: live Keepa + SP-API eligibility/storage + 30d Sales & Traffic
-    for every distinct ASIN, then assemble the 2-sheet workbook."""
+    for every distinct ASIN, then assemble the workbook (Analytics + PO + Jim)."""
     rows = gathered["rows"]
     asins = sorted({r["asin"] for r in rows if r.get("asin")})
 
@@ -261,6 +352,9 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
 
     _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
     live_elig, live_storage, live_generic = enrich_asins(asins, _ep, should_cancel, check_generic=True)
+
+    _dp = (lambda d, t: on_progress(d, t, "fetching dimensions")) if on_progress else None
+    dims_by_asin = _fetch_dimensions(asins, _dp, should_cancel)
 
     fba_total = _fba_total_by_asin(asins)
     report30 = sp_reports.get_units_30d()
@@ -280,6 +374,7 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         for c in range(1, len(ANALYTICS_COLS) + 1):
             ws.cell(row=dest_row, column=c)._style = ws.cell(row=_STYLE_ROW, column=c)._style
 
+    kept_rows: list[dict] = []   # reused below to build the "Jim" sheet off the SAME set
     r = 2
     for row in rows:
         asin = row.get("asin")
@@ -289,6 +384,7 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         # real profitability to analyze.
         if asin and (live_elig.get(asin) == "DOG" or live_generic.get(asin) == "GENERIC"):
             continue
+        kept_rows.append(row)
         _copy_row_style(r)
         key = (asin or "").strip().upper()
         k = keepa.get(key, {}) if asin else {}
@@ -371,6 +467,27 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         for name, c in PCOL.items():
             ws2.cell(row=r2, column=c, value=rowd2.get(name))
         r2 += 1
+
+    # "Jim" sheet — a lean subset of the same kept rows (DOG/Generic already
+    # excluded above) plus full SP-API package dimensions, per explicit request.
+    # Not in the bundled template (no pre-built styling to reuse) -- plain
+    # bold headers are enough since no one asked for pixel-matched formatting
+    # on this one.
+    ws3 = wb.create_sheet("Jim")
+    ws3.append(JIM_COLS)
+    for c in range(1, len(JIM_COLS) + 1):
+        ws3.cell(row=1, column=c).font = Font(bold=True)
+    for row in kept_rows:
+        asin = row.get("asin")
+        d = dims_by_asin.get((asin or "").strip().upper(), {}) if asin else {}
+        ws3.append([
+            row["sku"], row.get("fba_sku"), asin, row.get("vendor_title"),
+            row.get("po_qty"), row.get("qty_per_case"), row.get("pack_qty") or 1,
+            d.get("length_in"), d.get("width_in"), d.get("height_in"), d.get("weight_lb"),
+        ])
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(JIM_COLS))}{max(len(kept_rows) + 1, 1)}"
+    for c, w in zip(range(1, len(JIM_COLS) + 1), (16, 18, 12, 40, 10, 10, 10, 11, 11, 11, 11)):
+        ws3.column_dimensions[get_column_letter(c)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

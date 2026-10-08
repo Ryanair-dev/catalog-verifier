@@ -56,6 +56,7 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
     job_id = uuid.uuid4().hex[:12]
     job = {"status": "running", "phase": "pulling SellerCloud PO data", "done": 0,
            "total": 0, "blob": None, "error": None, "filename": None,
+           "skipped_pos": [],
            "started": time.time(), "phase_started": time.time()}
     with _JOBS_LOCK:
         _JOBS[job_id] = job
@@ -68,6 +69,7 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
     def _run() -> None:
         try:
             gathered = poa.gather(po_numbers)
+            job["skipped_pos"] = gathered.get("skipped_pos") or []
             job["filename"] = poa.po_analytics_filename(po_numbers, gathered["brand_label"])
             job["blob"] = poa.enrich_and_build(gathered, on_progress=_progress)
             job["phase"], job["status"] = "done", "complete"
@@ -88,7 +90,7 @@ async def po_analytics_status(job_id: str) -> dict:
         eta = max(0, round(el / job["done"] * (job["total"] - job["done"])))
     return {"status": job["status"], "phase": job["phase"], "done": job["done"],
             "total": job["total"], "eta_seconds": eta, "error": job["error"],
-            "filename": job.get("filename")}
+            "filename": job.get("filename"), "skipped_pos": job.get("skipped_pos") or []}
 
 
 @router.get("/po-analytics/jobs/{job_id}/download")
