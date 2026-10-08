@@ -57,6 +57,31 @@ def _catalog_source(company: str = "Ford Medical") -> tuple:
         )
     return index, mapping, "azure"
 
+
+def _session_index(sess: dict, company: str) -> tuple:
+    """(CatalogIndex, brand_map) for this session, rebuilt whenever the batch's
+    configured `company` differs from whatever company the cached index was last
+    built for.
+
+    Without this check (bug found live 2026-10-08): `/brands` (Step 2) eagerly
+    caches `sess['index']` using whatever `company` happened to be selected AT
+    THAT MOMENT -- but the Company dropdown lives on the SAME step and changing
+    it does NOT re-trigger `/brands`. So a user who loaded the brand roster under
+    the default "Ford Medical" and only THEN switched to "Turba" had every later
+    step (Generate, Export, check-sku) silently keep using the stale Ford-Medical
+    -scoped index. A Turba batch's own existing `-FBATRB`/`-FBMTRB` shadows live
+    under `CompanyName='Turba'` in the Azure view -- invisible to a Ford-Medical
+    -scoped pull -- so the collision-avoidance ladder (`_claim` in derive_rows)
+    never saw them as already taken and silently minted names that were already
+    assigned to OTHER ASINs. Confirmed live against a real export
+    (`Bulk_FDD199_2026-10-08.xlsx`): 6 "new" FBA SKUs it created were each
+    already active on SellerCloud under a different ASIN."""
+    if sess.get("index") is not None and sess.get("index_company") == company:
+        return sess["index"], sess["mapping"]
+    index, mapping, _src = _catalog_source(company)
+    sess["index"], sess["mapping"], sess["index_company"] = index, mapping, company
+    return index, mapping
+
 # token -> accumulating wizard session (rows, config, derived state). In-memory is
 # fine for this local single-user app.
 _SESS: dict[str, dict] = {}
@@ -195,10 +220,7 @@ def check_sku(body: dict = Body(...)) -> dict:
     sess = _require(body.get("token", ""))
     sku = _v(body.get("sku"))
     field = _v(body.get("field")) or "main"
-    index = sess.get("index")
-    if index is None:
-        index, mapping, _src = _catalog_source(sess.get("config", {}).get("company", "Ford Medical"))
-        sess["index"], sess["mapping"] = index, mapping
+    index, _mapping = _session_index(sess, sess.get("config", {}).get("company", "Ford Medical"))
     on_sc = bool(sku) and index.sku_exists(sku)
     return {
         "sku": sku, "field": field, "on_sc": on_sc,
@@ -221,9 +243,7 @@ def brands(body: dict = Body(...)) -> dict:
         items = [{"brand": cp._s(r.get(col))} for r in rows]
         items = [it for it in items if it["brand"]]
 
-    index, mapping, _src = _catalog_source(body.get("company", "Ford Medical"))
-    sess["index"] = index
-    sess["mapping"] = mapping
+    index, mapping = _session_index(sess, body.get("company", "Ford Medical"))
 
     resolved = cp.resolve_brands(
         items, index=index, catalog_brand_names=index.brand_names,
@@ -251,12 +271,7 @@ def generate(body: dict = Body(...)) -> dict:
         for it in items:
             it["brand"] = config.get("single_brand", "")
 
-    index = sess.get("index")
-    mapping = sess.get("mapping")
-    if index is None or mapping is None:
-        index, mapping, _src = _catalog_source(config.get("company", "Ford Medical"))
-    sess["index"] = index
-    sess["mapping"] = mapping
+    index, mapping = _session_index(sess, config.get("company", "Ford Medical"))
     brands_info = cp.resolve_brands(
         items, index=index, catalog_brand_names=index.brand_names,
         overrides=config.get("brand_overrides"), ai_suggest=_ai_manufacturer,
@@ -399,14 +414,15 @@ def export(body: dict = Body(...)) -> dict:
     if body.get("clean_titles", True):
         _apply_ai_titles(sess["items"])   # sets item['clean_name']; read by build_files
     edits = body.get("edits") or {}
+    index, _mapping = _session_index(sess, sess["config"].get("company", "Ford Medical"))
     results = cp.derive_rows(sess["items"], config=sess["config"],
-                             index=sess.get("index"), brands=sess["brands"], edits=edits)
+                             index=index, brands=sess["brands"], edits=edits)
 
     # Tag each batch with a unique ID + today's date → filenames "Bulk_<ID>_<date>.xlsx"
     export_id = uuid.uuid4().hex[:6].upper()
     export_date = datetime.date.today().isoformat()
     files = cp.build_files(results, sess["config"], tag=f"{export_id}_{export_date}",
-                           index=sess.get("index"))
+                           index=index)
 
     cfg = sess["config"]
     # Remember NEW brands we just exported (prefix + manufacturer) so they resolve

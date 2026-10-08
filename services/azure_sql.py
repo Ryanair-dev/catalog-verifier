@@ -44,12 +44,30 @@ _OPTIONAL_COLS = ["ProductName"]
 # label maps to the CompanyName stored in the view.
 _COMPANY_NAME = {"Ford Medical": "Ford Medical, LLC", "Turba": "Turba"}
 
+# Turba's catalog is mostly an ADDITIVE OVERLAY on top of Ford Medical's, not a fully
+# separate one: confirmed live (2026-10-08) that most of a shared product's real MAIN
+# SKU lives under CompanyName='Ford Medical, LLC', while only Turba's OWN listings --
+# notably its '-FBATRB'/'-FBMTRB' shadows -- are tagged CompanyName='Turba' (only 33 of
+# Turba's 1,417 rows are genuinely standalone Turba-only mains). A Turba batch scoped
+# to 'Turba' alone therefore can't see either its own shared main (wrongly flagged
+# "new") or, if scoped to 'Ford Medical' alone instead, its own already-existing
+# -FBATRB/-FBMTRB shadows (the actual bug found: the collision-avoidance ladder
+# silently minted FBA SKU names that were already assigned to a DIFFERENT ASIN,
+# because that existing shadow lives under CompanyName='Turba', invisible to a
+# Ford-Medical-only pull). A Turba batch needs the UNION of both scopes. Ford Medical
+# itself stays scoped to its own company only, by the original design intent (a
+# brand that lives only under Turba should still be "new" for a Ford Medical batch).
+_COMPANY_UNION = {"Turba": ("Ford Medical, LLC", "Turba")}
+
 
 def _co_key(s) -> str:
     return "".join(c for c in str(s or "").lower() if c.isalnum())
 
 
 def _rows_for_company(rows: list[dict], company: str) -> list[dict]:
+    if company in _COMPANY_UNION:
+        targets = {_co_key(c) for c in _COMPANY_UNION[company]}
+        return [r for r in rows if _co_key(r.get("CompanyName")) in targets]
     target = _co_key(_COMPANY_NAME.get(company, company))
     if not target:
         return rows
