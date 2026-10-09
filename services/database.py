@@ -1707,6 +1707,19 @@ def reset_orphaned_running_states() -> None:
     process is now an orphan — the thread that drove it is dead.  Reset them to
     'Stopped' so the UI doesn't show a永 spinner and the stop button works."""
     with _LOCK, _connect() as conn:
+        # Offer Analysis (analytics_runs) itself — found live 2026-10-09: a run
+        # mid-search when the server restarts was the ONE orphan-able state
+        # this function never covered (only its ai_check_status sub-process,
+        # and brand_analytics_runs, were handled below) — it stayed stuck at
+        # status='Searching' forever, which `resume_run()` explicitly refuses
+        # to touch (only Paused/Stopped are resumable), so there was no way to
+        # recover it without a manual stop+resume via the API. Reset it the
+        # same way brand_analytics_runs already is, so a resume is possible
+        # with no manual intervention after a restart.
+        conn.execute(
+            "UPDATE analytics_runs SET status='Stopped' "
+            "WHERE status IN ('Searching','Pending','Vetting')"
+        )
         conn.execute(
             "UPDATE analytics_runs SET ai_check_status='Stopped' "
             "WHERE ai_check_status='Running'"
