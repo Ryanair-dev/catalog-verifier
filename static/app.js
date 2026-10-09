@@ -600,7 +600,6 @@
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
       "po-analytics":   $("#view-po-analytics"),
-      "settings-page":  $("#view-settings-page"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -643,28 +642,31 @@
     // finished. _pollPoAnalytics's own tick() stops scheduling itself once the job
     // is complete/errored, so there's nothing to leak by leaving it running.
     if (view === "po-analytics" && typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
-    if (view === "settings-page" && typeof loadAutomationSettings === "function") loadAutomationSettings();
+    if (view === "po-analytics" && typeof loadAutomationSettings === "function") loadAutomationSettings();
   }
 
   // ========================================================================
-  //  Automation Settings — per-tool automated-email recipients (2026-10-09)
+  //  PO Analytics automation — per-tool automated-email recipients (2026-10-09)
+  //  Lives directly on the PO Analytics page (was a separate "Automation
+  //  Settings" page/nav-item — combined since there's only ever one
+  //  automation today; the backend endpoint stays generic by `tool` in case
+  //  another one is added later, each presumably on its own tool's page).
   // ========================================================================
 
   async function loadAutomationSettings() {
-    const list = $("#auto-settings-list");
-    if (!list) return;
-    list.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    const container = $("#poa-automation-card");
+    if (!container) return;
+    container.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
     let data;
     try {
       data = await api("/api/settings/automation");
     } catch (e) {
-      list.innerHTML = `<div style="font-size:12px;color:#c0392b;">Couldn't load settings: ${e.message || e}</div>`;
+      container.innerHTML = `<div style="font-size:12px;color:#c0392b;">Couldn't load settings: ${e.message || e}</div>`;
       return;
     }
-    list.innerHTML = "";
-    for (const tool of (data.tools || [])) {
-      list.appendChild(await _renderAutomationToolCard(tool));
-    }
+    const tool = (data.tools || []).find(t => t.tool === "po_analytics");
+    container.innerHTML = "";
+    if (tool) container.appendChild(await _renderAutomationToolCard(tool));
   }
 
   function _fmtNextRun(iso) {
