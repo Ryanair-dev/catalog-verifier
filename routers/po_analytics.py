@@ -104,3 +104,25 @@ async def po_analytics_download(job_id: str) -> StreamingResponse:
     if job["status"] != "complete" or not job["blob"]:
         raise HTTPException(status_code=409, detail=f"Not ready ({job['status']}).")
     return _xlsx_response(job["blob"], job.get("filename") or "po_analytics.xlsx")
+
+
+# --------------------------------------------------------------------------- #
+# Day-before-ETA automation (2026-10-09) — driven by Azure's own Monday.com
+# mirror (services.monday_eta), zero Monday API calls. Recipient on/off config
+# lives in routers/settings.py (GET/POST /api/settings/automation/po_analytics)
+# since it's shared, generic storage; these two endpoints are specific to this
+# automation's own scheduler/trigger.
+# --------------------------------------------------------------------------- #
+
+@router.get("/po-analytics/automation/status")
+async def po_analytics_automation_status() -> dict:
+    from services import po_automation
+    return po_automation.scheduler_status()
+
+
+@router.post("/po-analytics/automation/check-now")
+async def po_analytics_automation_check_now() -> dict:
+    """Run one check cycle immediately instead of waiting for the next hourly
+    tick — e.g. to verify a just-added recipient actually works."""
+    from services import po_automation
+    return await run_in_threadpool(po_automation.check_and_trigger)

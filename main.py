@@ -84,6 +84,15 @@ async def _lifespan(app: FastAPI):
         sc_catalog_index.start_scheduler()
     except Exception:
         pass
+    # PO Analytics day-before-ETA automation: hourly check against Azure's own
+    # Monday.com mirror (zero Monday API calls — services/monday_eta.py).
+    # Dormant until a real recipient list is configured on the Settings page
+    # (see services/po_automation.py — check_and_trigger() no-ops otherwise).
+    try:
+        from services import po_automation
+        po_automation.start_scheduler()
+    except Exception:
+        pass
     yield
     try:
         from services import health_check
@@ -98,6 +107,11 @@ async def _lifespan(app: FastAPI):
     try:
         from services import mpn_check_sync
         mpn_check_sync.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import po_automation
+        po_automation.stop_scheduler()
     except Exception:
         pass
 

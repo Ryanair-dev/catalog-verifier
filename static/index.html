@@ -101,6 +101,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </div>
+      <div class="nav-item" data-view="settings-page">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 17H2a3 3 0 0 0 3-3V9a7 7 0 0 1 14 0v5a3 3 0 0 0 3 3z"/><path d="M8 17v1a4 4 0 0 0 8 0v-1"/></svg>
+        Automation Settings
+      </div>
 
       <div class="mt-auto pt-10 px-2 text-xs" style="color:var(--grey-500);">
         <div>Local mode</div>
@@ -207,6 +211,22 @@
             <div id="poa-error" class="hidden" style="font-size:12px;color:#c0392b;margin-top:10px;"></div>
             <div id="poa-skipped" class="hidden" style="font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-top:10px;"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- ===== View: Automation Settings — per-tool automated-email recipients. -->
+      <!-- Global/shared for now (no per-user login yet); per-user is planned once -->
+      <!-- Microsoft Entra ID is added, per the user's own stated roadmap. -->
+      <div id="view-settings-page" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Automation Settings</h1>
+            <p class="view-subtitle">Who gets emailed when an automated report runs, per tool. These are shared app-wide settings for now — per-person settings are planned once Microsoft Entra ID sign-in is added.</p>
+          </div>
+        </header>
+
+        <div style="max-width:720px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px;">
+          <div id="auto-settings-list" style="display:flex;flex-direction:column;gap:16px;"></div>
         </div>
       </div>
 
@@ -2909,7 +2929,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=57"></script>
+  <script src="/static/app.js?v=58"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

@@ -600,6 +600,7 @@
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
       "po-analytics":   $("#view-po-analytics"),
+      "settings-page":  $("#view-settings-page"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -642,6 +643,113 @@
     // finished. _pollPoAnalytics's own tick() stops scheduling itself once the job
     // is complete/errored, so there's nothing to leak by leaving it running.
     if (view === "po-analytics" && typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
+    if (view === "settings-page" && typeof loadAutomationSettings === "function") loadAutomationSettings();
+  }
+
+  // ========================================================================
+  //  Automation Settings — per-tool automated-email recipients (2026-10-09)
+  // ========================================================================
+
+  async function loadAutomationSettings() {
+    const list = $("#auto-settings-list");
+    if (!list) return;
+    list.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    let data;
+    try {
+      data = await api("/api/settings/automation");
+    } catch (e) {
+      list.innerHTML = `<div style="font-size:12px;color:#c0392b;">Couldn't load settings: ${e.message || e}</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const tool of (data.tools || [])) {
+      list.appendChild(await _renderAutomationToolCard(tool));
+    }
+  }
+
+  async function _renderAutomationToolCard(tool) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.style.cssText = "padding:16px;display:flex;flex-direction:column;gap:10px;";
+
+    let statusHtml = "";
+    let checkNowBtn = "";
+    if (tool.tool === "po_analytics") {
+      try {
+        const st = await api("/api/po-analytics/automation/status");
+        statusHtml = `<div style="font-size:11px;color:#94a3b8;">
+          Hourly check ${st.scheduler_alive ? "running" : "not running"} ·
+          ${st.tracked_pos} PO${st.tracked_pos === 1 ? "" : "s"} tracked ·
+          ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far
+        </div>`;
+      } catch { /* best-effort status line */ }
+      checkNowBtn = `<button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>`;
+    }
+
+    card.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">${tool.label}</div>
+        <label class="toggle-pill">
+          <input type="checkbox" data-role="enabled" ${tool.enabled ? "checked" : ""} />
+          <span class="slider"></span>
+        </label>
+      </div>
+      ${statusHtml}
+      <div style="font-size:11px;color:#94a3b8;">Recipients — one email per line.</div>
+      <textarea data-role="recipients" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">${(tool.recipients || []).join("\n")}</textarea>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-primary text-xs" data-act="save" data-tool="${tool.tool}">Save</button>
+        ${checkNowBtn}
+        <span class="auto-save-feedback" style="font-size:11px;"></span>
+      </div>
+    `;
+
+    card.querySelector('[data-act="save"]').addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      const feedback = card.querySelector(".auto-save-feedback");
+      const recipients = card.querySelector('[data-role="recipients"]').value
+        .split("\n").map(s => s.trim()).filter(Boolean);
+      const enabled = card.querySelector('[data-role="enabled"]').checked;
+      btn.disabled = true;
+      feedback.textContent = "Saving…";
+      feedback.style.color = "#94a3b8";
+      try {
+        await api(`/api/settings/automation/${btn.dataset.tool}`, {
+          method: "POST",
+          body: { recipients, enabled },
+        });
+        feedback.textContent = "Saved.";
+        feedback.style.color = "var(--green-500,#16a34a)";
+        showToast("Automation settings saved.", "success");
+      } catch (err) {
+        feedback.textContent = err.message || "Failed to save.";
+        feedback.style.color = "#c0392b";
+        showToast(`Couldn't save: ${err.message || err}`, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    const checkBtn = card.querySelector('[data-act="check-now"]');
+    if (checkBtn) {
+      checkBtn.addEventListener("click", async () => {
+        checkBtn.disabled = true;
+        checkBtn.textContent = "Checking…";
+        try {
+          const r = await api("/api/po-analytics/automation/check-now", { method: "POST" });
+          showToast(`Checked ${r.checked} items — ${r.due} due, ${r.sent} sent${r.errors.length ? `, ${r.errors.length} errored` : ""}.`,
+            r.errors.length ? "warning" : "success");
+        } catch (err) {
+          showToast(`Check failed: ${err.message || err}`, "error");
+        } finally {
+          checkBtn.disabled = false;
+          checkBtn.textContent = "Check now";
+          loadAutomationSettings();
+        }
+      });
+    }
+
+    return card;
   }
 
   // ========================================================================

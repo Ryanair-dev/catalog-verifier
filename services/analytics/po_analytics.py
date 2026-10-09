@@ -184,43 +184,70 @@ def _resolve_received_pos(client, po_id: int, visited: set[int], skipped: list[d
     return out
 
 
-def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
+def gather(po_numbers: list[int], company: str = "Ford Medical",
+           require_received: bool = True) -> dict:
     """Fast phase: pull the PO(s) from SellerCloud, resolve every Main SKU to
     its FBA/FBM children via the local catalog snapshot, and build the base
     (un-enriched) row list + the raw PO-sheet rows. No Keepa/SP-API calls.
 
-    Only a RECEIVED PO's items are ever used (per user 2026-10-08: a split PO's
-    cancelled parent must never be used, and any other split that hasn't itself
-    been received yet must be left out). Entering a cancelled/not-yet-received
-    PO number now automatically follows its real split(s) instead of just
-    erroring — see `_resolve_received_pos`. Every PO actually skipped along the
-    way (the cancelled parent, and any split that also didn't pan out) is
-    reported back in `skipped_pos` so the caller/UI can show exactly what was
-    left out and why, instead of a silent row-count mismatch."""
+    `require_received=True` (default, the manual UI tool): only a RECEIVED
+    PO's items are ever used (per user 2026-10-08: a split PO's cancelled
+    parent must never be used, and any other split that hasn't itself been
+    received yet must be left out). Entering a cancelled/not-yet-received PO
+    number automatically follows its real split(s) instead of just erroring —
+    see `_resolve_received_pos`. Every PO actually skipped along the way (the
+    cancelled parent, and any split that also didn't pan out) is reported back
+    in `skipped_pos` so the caller/UI can show exactly what was left out and
+    why, instead of a silent row-count mismatch.
+
+    `require_received=False` (the automated day-before-ETA pipeline, added
+    2026-10-09): the PO is used exactly as given, in whatever SellerCloud
+    status it's currently in (Ordered/Pending/Received) — the PO number comes
+    straight from the Inbound Shipments Monday board's own `link` field, which
+    a human has already pointed at the real current PO (including any split),
+    so no further split-resolution is needed here. A Cancelled PO is still
+    skipped (nothing to analyze). Per-line `po_qty` switches from the received
+    quantity to the ORDERED quantity (`TotalCases * QtyPerCase`) in this mode,
+    since the whole point of running this a day before arrival is that nothing
+    has been received yet — see the `po_qty` computation below."""
     client = get_sellercloud_client()
     all_items: list[dict] = []
     vendor_ids: set[int] = set()
-    visited: set[int] = set()
     skipped_pos: list[dict] = []
     pos: list[dict] = []
-    for num in po_numbers:
-        pos.extend(_resolve_received_pos(client, num, visited, skipped_pos))
+
+    if require_received:
+        visited: set[int] = set()
+        for num in po_numbers:
+            pos.extend(_resolve_received_pos(client, num, visited, skipped_pos))
+        if not pos:
+            reasons = ", ".join(
+                f"PO {s['po']} ({s['status']}" + (f" — {s['note']}" if s.get("note") else "") + ")"
+                for s in skipped_pos
+            )
+            raise RuntimeError(
+                f"None of the requested PO(s) (or their splits) are Received, so "
+                f"there's nothing to analyze: {reasons}."
+            )
+    else:
+        for num in po_numbers:
+            po = client.get_purchase_order(num)
+            status = (po.get("Statuses") or {}).get("Status")
+            if status == 4:  # Cancelled
+                skipped_pos.append({"po": num, "status": "Cancelled"})
+                continue
+            pos.append(po)
+        if not pos:
+            raise RuntimeError(
+                f"PO(s) {po_numbers} are Cancelled — nothing to analyze."
+            )
+
     for po in pos:
         items = po.get("Items") or []
         all_items.extend(items)
         vid = (po.get("Purchase") or {}).get("VendorId")
         if vid:
             vendor_ids.add(vid)
-
-    if not pos:
-        reasons = ", ".join(
-            f"PO {s['po']} ({s['status']}" + (f" — {s['note']}" if s.get("note") else "") + ")"
-            for s in skipped_pos
-        )
-        raise RuntimeError(
-            f"None of the requested PO(s) (or their splits) are Received, so "
-            f"there's nothing to analyze: {reasons}."
-        )
 
     brand_label = _resolve_brand_label(client, all_items, vendor_ids, company)
 
@@ -245,7 +272,14 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
         main_sku = str(it.get("ProductID") or "").strip()
         if not main_sku:
             continue
-        po_qty = _f(it.get("QtyReceived")) or 0
+        if require_received:
+            po_qty = _f(it.get("QtyReceived")) or 0
+        else:
+            # Ordered mode: nothing has arrived yet, so the received qty is
+            # genuinely 0 — use what was actually ordered instead.
+            total_cases = _f(it.get("TotalCases")) or 0
+            qty_per_case = _f(it.get("QtyPerCase")) or 0
+            po_qty = total_cases * qty_per_case
         product_cost = _f(it.get("AdjustedPrice"))
         vendor_title = it.get("ProductName") or it.get("ProductNameFromProductTable") or ""
         upc = str(it.get("UPC") or "").strip()
@@ -318,6 +352,7 @@ def gather(po_numbers: list[int], company: str = "Ford Medical") -> dict:
         "brand_label": brand_label,
         "rows": base_rows, "po_rows": po_rows,
         "skipped_pos": skipped_pos,
+        "require_received": require_received,
     }
 
 
@@ -402,6 +437,11 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
 
     wb = load_workbook(_TEMPLATE)
     ws = wb["Analytics"]      # headers (row 1) + a per-column style swatch (row 2) already in place
+    if not gathered.get("require_received", True):
+        # Automated day-before-ETA report: "PO qty" means ordered qty here,
+        # not received qty (nothing has arrived yet) — relabel so nobody
+        # confuses it with a post-arrival manual run's "PO qty" column.
+        ws.cell(row=1, column=COL["PO qty"], value="PO qty (Ordered)")
 
     def _copy_row_style(dest_row: int) -> None:
         if dest_row == _STYLE_ROW:
