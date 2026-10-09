@@ -4463,7 +4463,114 @@
         eligBtn.disabled = false; eligBtn.style.opacity = "1";
       }
     }
+
+    // Filter Brands button — same visibility rule as Re-score/Eligibility
+    // (post-search cleanup, same as Brand Analytics' own Filter Categories).
+    const filterBrandsBtn = $("#analytics-run-filter-brands");
+    if (filterBrandsBtn) {
+      const s4 = (run.status || "").toLowerCase();
+      const canFilterBrands = s4 === "complete" || s4 === "paused" || s4 === "stopped" || s4 === "error";
+      filterBrandsBtn.classList.toggle("hidden", !canFilterBrands);
+    }
   }
+
+  // ---- Offer Analysis: Brand filter modal (mirrors Brand Analytics' own
+  //      category filter exactly, scoped to Amazon brand instead of BSR
+  //      category) ---------------------------------------------------------
+  let _analyticsBrandFilterBrands = [];  // [{brand, count, checked}]
+
+  async function _openAnalyticsBrandFilter() {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const modal = $("#analytics-brand-filter-modal");
+    const body  = $("#analytics-brand-filter-body");
+    const sumEl = $("#analytics-brand-filter-summary");
+    if (!modal || !body) return;
+
+    body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:24px 0;">Loading brands…</div>`;
+    sumEl.textContent = "—";
+    modal.classList.remove("hidden");
+
+    try {
+      const j = await api(`/api/analytics/runs/${id}/brands`);
+      // Default: all unchecked (checked = "mark for removal")
+      _analyticsBrandFilterBrands = (j.brands || []).map(b => ({...b, checked: false}));
+      _renderAnalyticsBrandFilterBody();
+    } catch (e) {
+      body.innerHTML = `<div class="text-sm" style="color:#b91c1c;">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderAnalyticsBrandFilterBody() {
+    const body  = $("#analytics-brand-filter-body");
+    const sumEl = $("#analytics-brand-filter-summary");
+    if (!body) return;
+
+    const brands  = _analyticsBrandFilterBrands;
+    const total   = brands.reduce((s, b) => s + b.count, 0);
+    const removed = brands.filter(b => b.checked).reduce((s, b) => s + b.count, 0);
+    const kept    = total - removed;
+
+    sumEl.textContent = removed > 0
+      ? `${removed.toLocaleString()} candidate${removed !== 1 ? "s" : ""} will be removed · ${kept.toLocaleString()} kept`
+      : `No brands selected for removal`;
+
+    if (!brands.length) {
+      body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:16px 0;">No brands found.</div>`;
+      return;
+    }
+
+    body.innerHTML = brands.map((b, i) => `
+      <label class="ba-cat-row" data-brand-idx="${i}" style="${b.checked ? 'background:#fff7ed;' : ''}">
+        <input type="checkbox" class="analytics-brand-chk" data-brand-idx="${i}" ${b.checked ? "checked" : ""} />
+        <span class="ba-cat-name" style="${b.checked ? 'text-decoration:line-through;color:#b45309;' : ''}">${escapeHtml(b.brand) || "<em style='color:#94a3b8'>(Blanks)</em>"}</span>
+        <span class="ba-cat-count">${b.count.toLocaleString()}</span>
+      </label>
+    `).join("");
+
+    body.querySelectorAll(".analytics-brand-chk").forEach(chk => {
+      chk.addEventListener("change", () => {
+        const idx = parseInt(chk.dataset.brandIdx);
+        _analyticsBrandFilterBrands[idx].checked = chk.checked;
+        _renderAnalyticsBrandFilterBody();
+      });
+    });
+  }
+
+  function _closeAnalyticsBrandFilter() {
+    $("#analytics-brand-filter-modal")?.classList.add("hidden");
+  }
+
+  $("#analytics-run-filter-brands")?.addEventListener("click", _openAnalyticsBrandFilter);
+  $("#analytics-brand-filter-close")?.addEventListener("click",  _closeAnalyticsBrandFilter);
+  $("#analytics-brand-filter-cancel")?.addEventListener("click", _closeAnalyticsBrandFilter);
+
+  $("#analytics-brand-filter-apply")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const toRemove = _analyticsBrandFilterBrands.filter(b => b.checked).map(b => b.brand);
+    if (!toRemove.length) {
+      _closeAnalyticsBrandFilter();
+      return;
+    }
+    const applyBtn = $("#analytics-brand-filter-apply");
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Removing…"; }
+    try {
+      const j = await api(`/api/analytics/runs/${id}/filter-brands`, {
+        method: "POST",
+        body: { remove_brands: toRemove },
+      });
+      _closeAnalyticsBrandFilter();
+      showToast(`Removed ${j.deleted.toLocaleString()} candidate${j.deleted !== 1 ? "s" : ""} · ${j.remaining.toLocaleString()} remaining`, "success");
+      state.analyticsRun.tabPageData = {};
+      state.analyticsRun.page = 1;
+      await fetchAnalyticsRunDetail();
+    } catch (e) {
+      showToast(`Filter failed: ${e.message}`, "error");
+    } finally {
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = "Remove Checked"; }
+    }
+  });
 
   function _renderPagination(page, totalPages, totalRows) {
     const el = $("#analytics-run-pagination");

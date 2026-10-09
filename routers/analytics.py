@@ -28,6 +28,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.cell import WriteOnlyCell
@@ -1257,6 +1258,93 @@ def apply_ai_decisions(run_id: int) -> dict[str, Any]:
         )
 
     return {"ok": True, "approved": approved, "rejected": rejected, "counts": counts}
+
+
+# --------------------------------------------------------------------------- #
+# GET /runs/{run_id}/brands + POST /runs/{run_id}/filter-brands
+# Post-search brand removal — mirrors Brand Analytics' "Filter Categories"
+# (routers/brand_analytics.py get_run_categories/filter_run_categories)
+# exactly, scoped to analytics_candidates' Amazon brand instead of
+# brand_analytics_items' bsr_category.
+# --------------------------------------------------------------------------- #
+
+_AMZ_BRAND_EXPR = (
+    "COALESCE(json_extract(data_json,'$.amazon.brand'), "
+    "json_extract(data_json,'$.amazon.manufacturer'))"
+)
+
+
+@router.get("/runs/{run_id}/brands")
+def get_run_brands(run_id: int) -> dict[str, Any]:
+    """Distinct Amazon brand values present among this run's candidates, with
+    counts, for the "Remove Brands" picker. NULL/blank -> '(Blanks)'."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        rows = conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF({_AMZ_BRAND_EXPR}, ''), '(Blanks)') AS brand,
+                   COUNT(*) AS count
+            FROM analytics_candidates
+            WHERE run_id=?
+            GROUP BY brand
+            ORDER BY count DESC
+            """,
+            (run_id,),
+        ).fetchall()
+    return {"brands": [dict(r) for r in rows]}
+
+
+class FilterBrandsBody(BaseModel):
+    remove_brands: list[str]
+
+
+@router.post("/runs/{run_id}/filter-brands")
+def filter_run_brands(run_id: int, body: FilterBrandsBody) -> dict[str, Any]:
+    """Permanently delete candidates whose Amazon brand is in remove_brands.
+    '(Blanks)' removes both NULL and empty-string brand rows."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if not body.remove_brands:
+        return {"deleted": 0, "remaining": 0}
+
+    remove_set = [b for b in body.remove_brands if b != "(Blanks)"]
+    remove_blank = "(Blanks)" in body.remove_brands
+
+    with database._LOCK, database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        deleted = 0
+        if remove_set:
+            placeholders = ",".join("?" * len(remove_set))
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? AND {_AMZ_BRAND_EXPR} IN ({placeholders})",
+                [run_id] + remove_set,
+            )
+            deleted += cur.rowcount
+        if remove_blank:
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? "
+                f"AND ({_AMZ_BRAND_EXPR} IS NULL OR {_AMZ_BRAND_EXPR} = '')",
+                (run_id,),
+            )
+            deleted += cur.rowcount
+
+        # Keep the run's cached tab-badge counts (Approved/Review/Not Approved)
+        # in sync — the same guard every other bulk candidate mutation in this
+        # file already applies (_recompute_run_counts).
+        counts = _recompute_run_counts(conn, run_id)
+        remaining_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM analytics_candidates WHERE run_id=?", (run_id,)
+        ).fetchone()
+        remaining = remaining_row["n"] if remaining_row else 0
+
+    return {"deleted": deleted, "remaining": remaining, "counts": counts}
 
 
 # --------------------------------------------------------------------------- #
