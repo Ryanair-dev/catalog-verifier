@@ -667,6 +667,14 @@
     }
   }
 
+  function _fmtNextRun(iso) {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+    } catch { return iso; }
+  }
+
   async function _renderAutomationToolCard(tool) {
     const card = document.createElement("div");
     card.className = "card";
@@ -674,16 +682,31 @@
 
     let statusHtml = "";
     let checkNowBtn = "";
+    let watchlistSection = "";
     if (tool.tool === "po_analytics") {
       try {
         const st = await api("/api/po-analytics/automation/status");
-        statusHtml = `<div style="font-size:11px;color:#94a3b8;">
-          Hourly check ${st.scheduler_alive ? "running" : "not running"} ·
-          ${st.tracked_pos} PO${st.tracked_pos === 1 ? "" : "s"} tracked ·
+        statusHtml = `<div class="auto-status-line" style="font-size:11px;color:#94a3b8;">
+          Daily check at 12:00 ${st.timezone || "America/New_York"}, next ${_fmtNextRun(st.next_run)} ·
+          ${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched ·
           ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far
         </div>`;
       } catch { /* best-effort status line */ }
       checkNowBtn = `<button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>`;
+      watchlistSection = `
+        <div class="auto-watchlist-section">
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">
+            Watched PO numbers — the Inbound Shipments board tracks the whole company, not just ecommerce,
+            so only the POs you save here are ever checked or reported on.
+          </div>
+          <div style="display:flex;gap:8px;">
+            <input type="text" class="auto-watch-input" placeholder="49932, 49933"
+              style="flex:1;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+            <button class="btn btn-secondary text-xs" data-act="watch-add">Add</button>
+          </div>
+          <div class="auto-watch-list" style="display:flex;flex-direction:column;gap:4px;margin-top:8px;"></div>
+        </div>
+      `;
     }
 
     card.innerHTML = `
@@ -695,6 +718,7 @@
         </label>
       </div>
       ${statusHtml}
+      ${watchlistSection}
       <div style="font-size:11px;color:#94a3b8;">Recipients — one email per line.</div>
       <textarea data-role="recipients" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">${(tool.recipients || []).join("\n")}</textarea>
       <div style="display:flex;gap:8px;align-items:center;">
@@ -703,6 +727,14 @@
         <span class="auto-save-feedback" style="font-size:11px;"></span>
       </div>
     `;
+
+    if (tool.tool === "po_analytics") {
+      await _refreshWatchlistUI(card);
+      card.querySelector('[data-act="watch-add"]').addEventListener("click", () => _addToWatchlist(card));
+      card.querySelector(".auto-watch-input").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); _addToWatchlist(card); }
+      });
+    }
 
     card.querySelector('[data-act="save"]').addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -750,6 +782,84 @@
     }
 
     return card;
+  }
+
+  async function _refreshWatchlistUI(card) {
+    const list = card.querySelector(".auto-watch-list");
+    if (!list) return;
+    list.innerHTML = `<div style="font-size:11px;color:#94a3b8;">Loading…</div>`;
+    let data;
+    try {
+      data = await api("/api/po-analytics/automation/watchlist");
+    } catch (e) {
+      list.innerHTML = `<div style="font-size:11px;color:#c0392b;">Couldn't load watchlist: ${e.message || e}</div>`;
+      return;
+    }
+    const rows = data.watchlist || [];
+    if (!rows.length) {
+      list.innerHTML = `<div style="font-size:11px;color:#94a3b8;font-style:italic;">No POs watched yet.</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const r of rows) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:12px;";
+      const bits = [`<b>PO ${r.po_number}</b>`];
+      if (r.last_eta) bits.push(`eta ${r.last_eta}`);
+      if (r.status) bits.push(r.status);
+      if (r.sent_at) bits.push(`<span style="color:var(--green-500,#16a34a);">sent</span>`);
+      row.innerHTML = `
+        <span style="color:#37404c;">${bits.join(" · ")}</span>
+        <button class="icon-btn" data-po="${r.po_number}" title="Remove from watchlist" style="width:22px;height:22px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      `;
+      row.querySelector("button").addEventListener("click", async (e) => {
+        const po = e.currentTarget.dataset.po;
+        try {
+          await api(`/api/po-analytics/automation/watchlist/${po}`, { method: "DELETE" });
+          showToast(`Removed PO ${po} from the watchlist.`, "success");
+          await _refreshWatchlistUI(card);
+          _refreshAutomationStatusLine(card);
+        } catch (err) {
+          showToast(`Couldn't remove PO ${po}: ${err.message || err}`, "error");
+        }
+      });
+      list.appendChild(row);
+    }
+  }
+
+  async function _refreshAutomationStatusLine(card) {
+    // Re-fetch just the watched/sent counts without rebuilding the whole card
+    // (keeps the recipients textarea/focus state intact).
+    try {
+      const st = await api("/api/po-analytics/automation/status");
+      const statusEl = card.querySelector(".auto-status-line");
+      if (statusEl) {
+        statusEl.textContent =
+          `Daily check at 12:00 ${st.timezone || "America/New_York"}, next ${_fmtNextRun(st.next_run)} · ` +
+          `${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched · ` +
+          `${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far`;
+      }
+    } catch { /* best-effort */ }
+  }
+
+  async function _addToWatchlist(card) {
+    const input = card.querySelector(".auto-watch-input");
+    const raw = input.value.trim();
+    if (!raw) return;
+    try {
+      const r = await api("/api/po-analytics/automation/watchlist", {
+        method: "POST",
+        body: { po_numbers: raw },
+      });
+      input.value = "";
+      showToast(`Added ${r.added} of ${r.requested} PO(s) to the watchlist.`, r.added ? "success" : "info");
+      await _refreshWatchlistUI(card);
+      _refreshAutomationStatusLine(card);
+    } catch (err) {
+      showToast(`Couldn't add: ${err.message || err}`, "error");
+    }
   }
 
   // ========================================================================

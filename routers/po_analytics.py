@@ -15,6 +15,7 @@ import uuid
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from services.analytics import po_analytics as poa
 
@@ -122,7 +123,40 @@ async def po_analytics_automation_status() -> dict:
 
 @router.post("/po-analytics/automation/check-now")
 async def po_analytics_automation_check_now() -> dict:
-    """Run one check cycle immediately instead of waiting for the next hourly
-    tick — e.g. to verify a just-added recipient actually works."""
+    """Run one check cycle immediately instead of waiting for the next daily
+    12pm tick — e.g. to verify a just-added recipient/watched PO actually
+    works."""
     from services import po_automation
     return await run_in_threadpool(po_automation.check_and_trigger)
+
+
+@router.get("/po-analytics/automation/watchlist")
+async def po_analytics_watchlist() -> dict:
+    """The user-curated list of PO numbers this automation actually watches —
+    the Inbound Shipments board tracks the whole company's POs, not just
+    ecommerce, so only POs explicitly saved here are ever checked/analyzed."""
+    from services import po_automation
+    return {"watchlist": po_automation.get_watchlist()}
+
+
+class WatchlistAdd(BaseModel):
+    po_numbers: str   # free text: "49932, 49933" / "49932 49933" / "49932"
+
+
+@router.post("/po-analytics/automation/watchlist")
+async def po_analytics_watchlist_add(body: WatchlistAdd) -> dict:
+    from services import po_automation
+    nums = poa._parse_po_numbers(body.po_numbers)
+    if not nums:
+        raise HTTPException(status_code=400, detail="No PO number(s) found in input.")
+    added = po_automation.add_to_watchlist(nums)
+    return {"added": added, "requested": len(nums), "watchlist": po_automation.get_watchlist()}
+
+
+@router.delete("/po-analytics/automation/watchlist/{po_number}")
+async def po_analytics_watchlist_remove(po_number: int) -> dict:
+    from services import po_automation
+    removed = po_automation.remove_from_watchlist(po_number)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"PO {po_number} isn't on the watchlist.")
+    return {"removed": po_number, "watchlist": po_automation.get_watchlist()}
