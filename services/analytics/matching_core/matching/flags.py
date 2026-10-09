@@ -28,4 +28,4 @@ CLEAN_TITLES = _on("MATCH_CLEAN_TITLES", default=False)
 
 # Read "4PCS", "12 ct", "4 Count" as pack counts on BOTH sides (not just "Pack of 4"),
 # and use Amazon's own pack-quantity field when the Amazon title has no count.
-EXTENDED_COUNTS = _on("MATCH_EXTENDED_COUNTS")
+EXTENDED_COUNTS = _on("MATCH_EXTENDED_COUNTS", default=False)
