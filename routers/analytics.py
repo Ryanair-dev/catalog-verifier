@@ -54,6 +54,21 @@ from services.analytics.eligibility_check import (
 from services.spapi import sp_api_configured, get_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
 
+import logging
+ 
+from services.analytics.file_validation import (
+    CatalogRejected,
+    MAX_CATALOG_ROWS,
+    SUPPORTED_EXTENSIONS,
+    check_row_limit,
+    describe_parse_error,
+    sniff_file,
+    validate_catalog,
+)
+from services.safety import _max_upload_bytes
+ 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/analytics")
 
 
@@ -97,33 +112,34 @@ async def analytics_preview(
     sheet_name: str = Form(""),
 ) -> dict[str, Any]:
     """Return the first N raw rows so the wizard can render a header-row picker.
-
-    Also returns ``sheets`` — the list of sheet names for Excel workbooks so
-    the wizard can offer a sheet-selector dropdown when the file has multiple tabs.
-    Pass ``sheet_name`` to re-preview a specific sheet; omit to use the active sheet.
+ 
+    Also returns ``sheets`` (sheet names for Excel workbooks) so the wizard can offer
+    a sheet selector. Pass ``sheet_name`` to re-preview a specific sheet.
+    Bad files are rejected here with a message a person can act on.
     """
+    filename = catalog_file.filename or ""
     try:
         data = await read_upload_limited(catalog_file)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
-
-    # Collect sheet names before parsing so we can surface them to the UI.
-    filename = catalog_file.filename or ""
-    sheets = _get_sheet_names(filename, data)
-
-    # Resolve requested sheet — fall back to active if name not found.
-    resolved_sheet = sheet_name if (sheet_name and sheet_name in sheets) else ""
-
+ 
     try:
+        sniff_file(filename, data)
+        sheets = _get_sheet_names(filename, data)
+        resolved_sheet = sheet_name if (sheet_name and sheet_name in sheets) else ""
         rows = _parse_raw_rows(filename, data, sheet_name=resolved_sheet)
+        if not rows:
+            raise CatalogRejected("File appears to be empty.")
+        # slack = junk rows above the header; the exact check runs when the run is created
+        check_row_limit(len(rows), slack=1000)
+    except CatalogRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
-
-    if not rows:
-        raise HTTPException(status_code=400, detail="File appears to be empty")
-
+        log.exception("Preview failed for %s", filename)
+        raise HTTPException(status_code=400, detail=describe_parse_error(exc, filename))
+ 
     preview = rows[:_PREVIEW_LIMIT]
     normalised = []
     max_cols = 0
@@ -134,18 +150,27 @@ async def analytics_preview(
     for row in normalised:
         if len(row["cells"]) < max_cols:
             row["cells"] += [""] * (max_cols - len(row["cells"]))
-
+ 
     # The active sheet name: prefer the requested one, otherwise the first sheet.
     active_sheet = resolved_sheet or (sheets[0] if sheets else "")
-
+ 
     return {
         "filename": filename,
         "size": len(data),
         "total_rows": len(rows),
+        "max_rows": MAX_CATALOG_ROWS,
         "rows": normalised,
         "max_cols": max_cols,
         "sheets": sheets,
         "active_sheet": active_sheet,
+    }
+
+@router.get("/limits")
+def analytics_limits() -> dict[str, Any]:
+    return {
+        "formats": list(SUPPORTED_EXTENSIONS),
+        "max_upload_mb": _max_upload_bytes() // (1024 * 1024),
+        "max_rows": MAX_CATALOG_ROWS,
     }
 
 
@@ -1500,7 +1525,7 @@ async def estimate_run(
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
-
+ 
     try:
         mapping_dict = json.loads(mapping)
         methods = set(json.loads(search_methods))
@@ -1508,21 +1533,29 @@ async def estimate_run(
         raise HTTPException(status_code=400, detail="Bad mapping / search_methods JSON")
     if not isinstance(mapping_dict, dict):
         raise HTTPException(status_code=400, detail="mapping must be a JSON object")
-
+ 
     try:
+        sniff_file(catalog_file.filename or "", data)
         rows = parse_source_rows(
             filename=catalog_file.filename or "catalog.xlsx", data=data,
             header_row_idx=int(header_row), mapping=mapping_dict,
             brand=brand or "", sheet_name=sheet_name or "",
         )
+        rows, _report = validate_catalog(rows)   # same cleaning as the real run
+    except CatalogRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
-
+        log.exception("Estimate: could not parse %s", catalog_file.filename)
+        raise HTTPException(
+            status_code=400,
+            detail=describe_parse_error(exc, catalog_file.filename or ""),
+        )
+ 
     unlimited = pages_per_title <= 0
     cap = min(3 if unlimited else pages_per_title, MAX_TITLE_PAGES)
     pages_by_scen = (1, min(2, cap), cap)
     n_rows = len(rows)
-
+ 
     upcs: set[str] = set()
     for r in rows:
         u = (r.upc or "").strip()
@@ -1534,14 +1567,14 @@ async def estimate_run(
     e13 = sum(1 for u in upcs if u.isdigit() and len(u) == 13)
     ids = {(r.itemid or "").strip() for r in rows if (r.itemid or "").strip()}
     terms = {t for t in (_clean_search_query(r.search_term) for r in rows if r.search_term) if t}
-
+ 
     # best identifier per row decides how many rows will reach the LLM agent
     n_upc_rows = sum(1 for r in rows if (r.upc or "").strip())
     n_id_rows = sum(1 for r in rows
                     if not (r.upc or "").strip() and (r.itemid or "").strip())
     class_rows = {"upc": n_upc_rows, "id": n_id_rows,
                   "none": n_rows - n_upc_rows - n_id_rows}
-
+ 
     def agent_estimate(i: int) -> tuple[int, float, float]:
         """(rows reaching the agent, seconds, dollars) for scenario i."""
         n = secs = usd = 0.0
@@ -1551,13 +1584,13 @@ async def estimate_run(
             secs += a * EST_AGENT_SEC[k]
             usd += a * EST_AGENT_COST_ROW[i]
         return round(n), secs, usd
-
+ 
     cal = _timing_calibration(max(0, pages_per_title))
-
+ 
     def build(i: int) -> list[dict]:
         spc, pg = EST_SEC_PER_CALL[i], pages_by_scen[i]
         out: list[dict] = []
-
+ 
         def add(key: str, label: str, work: str, units: int, model_secs: float) -> None:
             if key in cal:      # measured seconds-per-unit beats the built-in guess
                 secs, meas = units * cal[key][0] * CAL_SPREAD[i], True
@@ -1565,7 +1598,7 @@ async def estimate_run(
                 secs, meas = model_secs, False
             out.append({"key": key, "label": label, "work": work,
                         "seconds": secs, "measured": meas})
-
+ 
         if ai_clean_titles:
             add("clean", "AI title cleaning", f"{n_rows:,} titles",
                 n_rows, n_rows * EST_CLEAN_SEC_ROW)
@@ -1595,7 +1628,7 @@ async def estimate_run(
             add("scoring", "Scoring & saving", f"{n_rows:,} rows",
                 n_rows, n_rows * EST_SCORING_SEC_ROW[i])
         return out
-
+ 
     scen = [build(0), build(1), build(2)]
     stages = [{
         "key": m["key"], "label": m["label"], "work": m["work"], "measured": m["measured"],
@@ -1603,7 +1636,7 @@ async def estimate_run(
         "high": round(scen[2][k]["seconds"]),
     } for k, m in enumerate(scen[1])]
     total = {k: sum(s[k] for s in stages) for k in ("low", "mid", "high")}
-
+ 
     def cost(i: int) -> float:
         c = 0.0
         if use_query_agent:
@@ -1611,7 +1644,7 @@ async def estimate_run(
         if use_llm_verifier:
             c += round(n_rows * EST_APPROVE_RATE[i]) * (500 * 3 + 60 * 15) / 1_000_000
         return round(c, 4)
-
+ 
     return {
         "rows": n_rows,
         "stages": stages,
@@ -1622,6 +1655,7 @@ async def estimate_run(
             (not s["measured"]) and s["key"] in ("itemid", "title") for s in stages),
         "calibrated_runs": max((v[1] for v in cal.values()), default=0),
     }
+ 
 
 # --------------------------------------------------------------------------- #
 # GET /runs/{run_id}/export — multi-sheet Excel download
@@ -1849,192 +1883,187 @@ def export_analytics_run(
 # Quick Search — transient single-item ASIN search, no DB writes
 # --------------------------------------------------------------------------- #
 
-@router.post("/quick-search")
-def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
+@router.post("/runs")
+async def create_analytics_run(
+    catalog_file: UploadFile = File(...),
+    name: str = Form(...),
+    marketplace: str = Form("US"),
+    header_row: int = Form(...),
+    mapping: str = Form(...),           # JSON-encoded {"upc": "3", ...}
+    brand: str = Form(""),
+    search_methods: str = Form(...),    # JSON-encoded list
+    pages_per_title: int = Form(5),
+    ai_clean_titles: bool = Form(False),
+    max_rank: int = Form(0),
+    min_rank: int = Form(0),
+    vetting_mode: str = Form("cpg"),
+    scoring_method: str = Form("weighted"),
+    use_query_agent: bool = Form(False),
+    use_llm_verifier: bool = Form(False),
+    sheet_name: str = Form(""),
+    passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
+) -> dict[str, Any]:
     """
-    Synchronous single-item ASIN search with full confidence scoring.
-    No DB writes — results are returned directly and not persisted.
-
-    Body fields (all optional, at least one required):
-      upc:          UPC / EAN barcode string
-      itemid:       Item ID / MPN / SKU
-      title:        Product title for keyword search
-      brand:        Brand name applied to every candidate during scoring
-      vetting_mode: "cpg" | "medical"  (default "cpg")
-      scoring_method: "weighted" | "cascade" | "classifier" (default "weighted")
-      max_rank:     int — BSR cap  (0 = disabled)
-      min_rank:     int — BSR floor (0 = disabled)
+    Create a new Analytics run.
+ 
+    The wizard sends us a multipart POST with the raw catalog file plus
+    every decision the user made in steps 1-4. We check the file, parse it with
+    their chosen header row + column mapping, persist the resulting
+    source rows, and kick off a background thread that runs the
+    3-tier SP-API search + vetting.
+ 
+    Response shape:
+        {"run_id": 17, "total_catalog_items": 142, "status": "Searching",
+         "warnings": [...], "warning_summary": "..."}
     """
-    if not sp_api_configured():
-        raise HTTPException(status_code=503, detail="SP-API credentials not configured")
-
-    upc      = str(body.get("upc")    or "").strip()
-    itemid   = str(body.get("itemid") or "").strip()
-    title    = str(body.get("title")  or "").strip()
-    brand    = str(body.get("brand")  or "").strip()
-    mode     = str(body.get("vetting_mode") or "cpg").lower()
-    scoring_method = str(body.get("scoring_method") or "weighted").strip().lower()
-    max_rank = int(body.get("max_rank") or 0)
-    min_rank = int(body.get("min_rank") or 0)
-
+    try:
+        data = await read_upload_limited(catalog_file)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
+ 
+    mapping_dict = _parse_json_field(mapping, {})
+    methods_list = _parse_json_field(search_methods, [])
+    if not isinstance(mapping_dict, dict):
+        raise HTTPException(status_code=400, detail="mapping must be a JSON object")
+    if not isinstance(methods_list, list) or not methods_list:
+        raise HTTPException(status_code=400, detail="search_methods must be a non-empty JSON array")
+    scoring_method = scoring_method.strip().lower()
     if scoring_method not in SCORING_METHODS:
         raise HTTPException(
             status_code=400,
             detail="scoring_method must be one of: weighted, cascade, classifier",
         )
-    if not upc and not itemid and not title:
+    if (use_query_agent or use_llm_verifier) and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=400,
-            detail="At least one of upc, itemid, or title is required",
+            detail="Set ANTHROPIC_API_KEY in .env to enable the matcher agents",
         )
-
-    # Zero-pad 11-digit UPCs → UPC-A
-    if len(upc) == 11 and upc.isdigit():
-        upc = "0" + upc
-
-    source_rows, extracted_by_row = _normalize_source_rows(
-        [_SourceRow(
-            row_idx=0, upc=upc, itemid=itemid, title=title,
-            search_title=title, brand=brand,
-        )],
-        database.flat_library(),
+ 
+    # Check the file, parse it with the wizard's picks, clean the UPC column.
+    try:
+        sniff_file(catalog_file.filename or "", data)
+        rows = parse_source_rows(
+            filename=catalog_file.filename or "catalog.xlsx",
+            data=data,
+            header_row_idx=int(header_row),
+            mapping=mapping_dict,
+            brand=brand or "",
+            sheet_name=sheet_name or "",
+        )
+        rows, report = validate_catalog(rows)
+    except CatalogRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Could not parse %s", catalog_file.filename)
+        raise HTTPException(
+            status_code=400,
+            detail=describe_parse_error(exc, catalog_file.filename or ""),
+        )
+ 
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="No catalog rows found after applying your column mapping. "
+                   "Check the header row and UPC / Item ID / Title columns.",
+        )
+ 
+    # ── Deduplicate catalog rows ─────────────────────────────────────────────
+    # Vendor catalogs frequently repeat the same SKU on multiple lines.  A row is
+    # treated as a duplicate only when it repeats a STRONG identity, keeping the
+    # FIRST occurrence (its original row_idx is preserved so UI row numbers stay
+    # meaningful).
+    #
+    # Key priority: UPC (the globally-unique per-product identifier) is preferred;
+    # when an Item ID is also present, BOTH must match.  This is deliberate — some
+    # vendor files leave the real "Item #" column blank and the wizard's Item ID
+    # ends up mapped to a low-cardinality column (Manufacturer, Category).  Keying
+    # on Item ID alone then collapses thousands of distinct products onto one row
+    # per manufacturer.  Requiring the UPC (or UPC+ItemID together) prevents that,
+    # while also never merging two genuinely different SKUs that share a case UPC.
+    # Only when there is NO UPC do we fall back to Item ID — and even then we pair
+    # it with the title so a low-cardinality Item ID can't collapse the file.
+    def _dedup_key(r):
+        norm_upc   = r.upc.strip()
+        norm_id    = r.itemid.strip().upper().replace("-", "").replace(" ", "")
+        norm_title = r.title.strip().lower()
+        if norm_upc and norm_id:
+            return ("upc+id", norm_upc, norm_id)
+        if norm_upc:
+            return ("upc", norm_upc)
+        if norm_id and norm_title:
+            return ("id+title", norm_id, norm_title)
+        if norm_id:
+            return ("id", norm_id)
+        return ("title", norm_title)
+ 
+    seen_keys: set = set()
+    deduped = []
+    for row in rows:
+        k = _dedup_key(row)
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        deduped.append(row)
+ 
+    duplicates_removed = len(rows) - len(deduped)
+    rows = deduped
+ 
+    # Determine brand column/mode for storage so the rescore modal can pre-populate.
+    # When brand text is non-empty the wizard was in text mode; otherwise the brand
+    # column name comes from mapping["brand"].
+    saved_brand_col  = brand.strip() if brand.strip() else (mapping_dict.get("brand") or "")
+    saved_brand_mode = "text" if brand.strip() else "col"
+ 
+    # 0 = unlimited (walk every page Amazon returns); the runner bounds it with a
+    # safety cap. Positive values are capped at MAX_TITLE_PAGES.
+    pages_per_title = clamp_int(pages_per_title, 0, MAX_TITLE_PAGES, 5)
+ 
+    # Validate passthrough_cols — must be a JSON array of strings if provided.
+    pt_cols_raw = (passthrough_cols or "").strip()
+    pt_cols_validated: list[str] = []
+    if pt_cols_raw:
+        try:
+            parsed_pt = json.loads(pt_cols_raw)
+            if isinstance(parsed_pt, list):
+                pt_cols_validated = [str(c) for c in parsed_pt if c]
+        except (ValueError, TypeError):
+            pass  # ignore malformed input — passthrough is optional
+ 
+    run_id = start_analytics_run(
+        name=name.strip() or (catalog_file.filename or "Untitled run"),
+        marketplace=marketplace or "US",
+        search_methods=[str(m) for m in methods_list],
+        pages_per_title=pages_per_title,
+        ai_clean_titles=bool(ai_clean_titles),
+        source_rows=rows,
+        max_rank=int(max_rank),
+        min_rank=int(min_rank),
+        mode=vetting_mode if vetting_mode in ("cpg", "medical") else "cpg",
+        scoring_method=scoring_method,
+        use_query_agent=bool(use_query_agent),
+        use_llm_verifier=bool(use_llm_verifier),
+        brand_col=saved_brand_col,
+        brand_mode=saved_brand_mode,
+        passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",
     )
-    row = source_rows[0]
-    extracted = extracted_by_row[0]
-    source_dict = row.as_source_dict()
-    api = get_catalog_api()
-
-    # Collect (normalized_item, source_label) from all tiers.
-    raw_candidates: list[tuple[dict, str]] = []
-
-    if upc:
-        # _tier1_upc returns (matched, kw_unverified) -- barcode-confirmed hits
-        # vs. Pass-4 keyword-fallback hits whose barcode does NOT match the
-        # searched UPC (often the same product under a different Amazon
-        # UPC/ASIN). This caller was still unpacking it as a single dict (a
-        # pre-tuple calling convention -- confirmed live 2026-09-22: crashed
-        # with AttributeError on every UPC search), while the full Analytics
-        # run's caller (services/analytics/runner.py ~line 1691) already
-        # unpacks and tags both halves correctly. Matched here to that
-        # standard: "UPC" gets full UPC credit in scoring below, "UPC-KW"
-        # does not (still barcode/UPC-string-scoped search either way -- no
-        # title/brand tier is involved, matching "only the UPC was searched").
-        tier1_matched, tier1_kw = _tier1_upc(api, [row], run_id=0)
-        for items in tier1_matched.values():
-            for it in items:
-                raw_candidates.append((it, "UPC"))
-        for items in tier1_kw.values():
-            for it in items:
-                raw_candidates.append((it, "UPC-KW"))
-
-    if itemid:
-        tier2 = _tier2_itemid(api, [row], run_id=0)
-        for items in tier2.values():
-            for it in items:
-                raw_candidates.append((it, "ItemID"))
-
-    if title:
-        tier3 = _tier3_title(api, [row], max_pages=3, run_id=0)
-        for items in tier3.values():
-            for it in items:
-                raw_candidates.append((it, "Title"))
-
-    # Deduplicate by ASIN, union sources.
-    by_asin: dict[str, tuple[dict, list[str]]] = {}
-    for item, src_label in raw_candidates:
-        asin = (item.get("asin") or "").strip().upper()
-        if not asin:
-            continue
-        if asin in by_asin:
-            prev_item, prev_srcs = by_asin[asin]
-            merged_srcs = list(dict.fromkeys(prev_srcs + [src_label]))
-            by_asin[asin] = (prev_item, merged_srcs)
-        else:
-            by_asin[asin] = (item, [src_label])
-
-    # Score each unique ASIN in-memory (mirrors _upsert_candidate logic, no DB).
-    results: list[dict] = []
-    for asin, (normalized, sources) in by_asin.items():
-        scores, verdict = score_pair(
-            source_dict, normalized,
-            method=scoring_method,
-            mode=mode,
-            extracted=extracted,
-            sources=sources,
-        )
-        conf = scores["confidence_score"]
-
-        sales_rank = normalized.get("sales_rank")
-        if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
-            continue
-        # A configured floor excludes unranked items, matching the full-run filter.
-        if min_rank > 0 and (sales_rank is None or int(sales_rank) < min_rank):
-            continue
-
-        # Dimensions, storage fee, and list price all come from the SAME raw
-        # SP-API item this search already fetched (normalize_amazon_item keeps
-        # the full response as `_raw`) -- no extra API call, same approach
-        # services/analytics/eligibility_check.py already uses for a full
-        # Analytics run's storage-fee enrichment (its own docstring: "computed
-        # from the Amazon dimensions ALREADY stored ... no extra API call").
-        # Quick Search fetches the identical data but was discarding it.
-        raw_attrs = ((normalized.get("_raw") or {}).get("attributes") or {})
-        dims = extract_dimensions(raw_attrs)
-        storage_offpeak = storage_peak = None
-        if all(dims.get(k) is not None for k in ("length_cm", "width_cm", "height_cm", "weight_g")):
-            storage_offpeak, storage_peak = calc_storage_fee(
-                dims["length_cm"], dims["width_cm"], dims["height_cm"], dims["weight_g"],
+ 
+    # Persist the duplicate count so the run detail banner can show it.
+    if duplicates_removed > 0:
+        with database._LOCK, database._connect() as conn:
+            conn.execute(
+                "UPDATE analytics_runs SET duplicate_rows_removed=? WHERE id=?",
+                (duplicates_removed, run_id),
             )
-        list_price = None
-        lp_list = raw_attrs.get("list_price") or []
-        if isinstance(lp_list, list) and lp_list and isinstance(lp_list[0], dict):
-            list_price = lp_list[0].get("value")
-
-        results.append({
-            "asin":              asin,
-            "title":             normalized.get("title") or "",
-            "brand":             normalized.get("brand") or "",
-            "manufacturer":      normalized.get("manufacturer") or "",
-            "upc":               normalized.get("upc") or "",
-            "ean":               normalized.get("ean") or "",
-            "gtin":              normalized.get("gtin") or "",
-            "mpn":               normalized.get("mpn") or "",
-            "sales_rank":        sales_rank,
-            "sales_rank_category": normalized.get("sales_rank_category") or "",
-            "confidence":        round(conf, 1),
-            "verdict":           verdict,
-            "sources":           sources,
-            "scores":            scores,
-            "list_price":        list_price,
-            "length_in":         dims["length_in"],
-            "width_in":          dims["width_in"],
-            "height_in":         dims["height_in"],
-            "weight_lb":         dims["weight_lb"],
-            "storage_fee_offpeak": storage_offpeak,
-            "storage_fee_peak":    storage_peak,
-        })
-
-    # Context filter: when the user provides a brand or title, keep only
-    # candidates where ALL significant words (>2 chars) from that context
-    # appear in the Amazon brand + title.  This prevents the search from
-    # returning unrelated products that happened to carry the same MPN/UPC.
-    # Example: title="smith & nephew" → only keep listings that contain
-    # both "smith" and "nephew" somewhere in the Amazon brand or title.
-    context_text = (brand or title or "").strip().lower()
-    if context_text:
-        import re as _re
-        context_words = [w for w in _re.findall(r'\b[a-z]{3,}\b', context_text)]
-        if context_words:
-            def _context_matches(r: dict) -> bool:
-                haystack = (
-                    (r.get("brand") or "") + " " +
-                    (r.get("manufacturer") or "") + " " +
-                    (r.get("title") or "")
-                ).lower()
-                return all(w in haystack for w in context_words)
-            results = [r for r in results if _context_matches(r)]
-
-    results.sort(key=lambda x: x["confidence"], reverse=True)
-    return {"candidates": results, "total": len(results)}
-
-
+ 
+    return {
+        "run_id": run_id,
+        "total_catalog_items": len(rows),
+        "duplicate_rows_removed": duplicates_removed,
+        "status": "Searching" if sp_api_configured() else "Error",
+        "sp_api_configured": sp_api_configured(),
+        "warnings": report.as_dict()["issues"],
+        "warning_summary": report.summary(),
+    }
+ 

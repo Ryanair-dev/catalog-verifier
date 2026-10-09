@@ -20,6 +20,7 @@ import csv
 import io
 from dataclasses import dataclass, field
 from typing import Any
+from services.file_parser import parse_raw_rows
 
 from openpyxl import load_workbook
 
@@ -75,27 +76,8 @@ class SourceRow:
 # Raw rows (xlsx / csv)
 # --------------------------------------------------------------------------- #
 
-
 def _raw_rows(filename: str, data: bytes, sheet_name: str = "") -> list[list[Any]]:
-    """Pull rows-as-arrays. No header assumption.
-
-    Pass ``sheet_name`` to read a specific Excel sheet; omit to use the active sheet.
-    """
-    name = (filename or "").lower()
-    if name.endswith(".csv") or name.endswith(".tsv"):
-        text = data.decode("utf-8-sig", errors="replace")
-        dialect = "excel-tab" if name.endswith(".tsv") else "excel"
-        reader = csv.reader(io.StringIO(text), dialect=dialect)
-        return [list(r) for r in reader]
-
-    # Default: Excel via openpyxl (.xlsx / .xlsm). Legacy binary .xls is not supported.
-    wb = load_workbook(io.BytesIO(data), data_only=True)
-    if sheet_name and sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-    else:
-        ws = wb.active
-    return [list(r) for r in ws.iter_rows(values_only=True)]
-
+    return parse_raw_rows(filename, data, sheet_name=sheet_name)
 
 # --------------------------------------------------------------------------- #
 # Cell cleanup
