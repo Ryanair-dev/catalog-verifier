@@ -195,7 +195,11 @@ def build_pair(
         upc=str(source.get("upc") or "") or None,
         mpn=str(source.get("mpn") or source.get("itemid") or "") or None,
     )
-    candidate_attrs = normalized.get("attributes") or {}
+    candidate_attrs = dict(normalized.get("attributes") or {})
+    for pack_key in ("item_package_quantity", "number_of_items"):
+        pack_value = normalized.get(pack_key)
+        if pack_value not in (None, "", 0, "0"):
+            candidate_attrs[pack_key] = pack_value
     candidate = Candidate(
         asin=str(normalized.get("asin") or ""),
         title=str(normalized.get("title") or ""),
@@ -215,6 +219,7 @@ def build_pair(
         found_via=",".join(sources or []),
     )
     return offer, candidate
+ 
 
 
 def score_models(offer: Offer, candidate: Candidate, *, method: str, mode: str = "cpg") -> MatchResult:

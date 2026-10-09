@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import re
+
+from rapidfuzz import fuzz
+
+from services.analytics.matching_core.matching.flags import CLEAN_TITLES
 from services.analytics.matching_core.matching.patterns import (
     APOSTROPHE_RE,
     BRAND_NOISE_WORDS,
@@ -49,6 +54,43 @@ def normalize_text(text: str | None) -> str:
     if not text:
         return ""
     return WHITESPACE_RE.sub(" ", str(text).lower().strip())
+
+
+# --------------------------------------------------------------------------- #
+# Title comparison - ONE place, used by the weighted, cascade and classifier
+# scorers so both sides of every pair are cleaned the same way.
+# --------------------------------------------------------------------------- #
+
+# a number (decimals kept: "6.5") or a run of letters. Splitting digits from letters
+# turns "4PCS" into "4 pcs" and "56oz" into "56 oz", which is how Amazon writes them.
+_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?|[^\W\d_]+")
+
+
+def clean_for_compare(text: str | None) -> str:
+    """Lowercase; punctuation, hyphens and pipes become spaces; numbers and words
+    are split apart.
+
+        'Oral-B CrossAction, Pack of 4 | Black' -> 'oral b crossaction pack of 4 black'
+        'ORAL B HEADS 4PCS'                     -> 'oral b heads 4 pcs'
+    """
+    if not text:
+        return ""
+    return " ".join(_TOKEN_RE.findall(str(text).lower()))
+
+
+def title_similarity(a: str | None, b: str | None) -> float:
+    """Title similarity on a 0-100 scale. With MATCH_CLEAN_TITLES=0 this is the old
+    behaviour (lowercase only)."""
+    if not a or not b:
+        return 0.0
+    if CLEAN_TITLES:
+        a, b = clean_for_compare(a), clean_for_compare(b)
+    else:
+        a, b = str(a).lower(), str(b).lower()
+    if not a or not b:
+        return 0.0
+    return float(fuzz.token_set_ratio(a, b))
+
 
 def _ean13_check_digit(d12: str) -> str:
     total = sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(d12))
@@ -145,7 +187,6 @@ def brands_match(a: str | None, b: str | None) -> bool:
     """True when two brand strings are the same brand once normalized -
     handles spacing ('Shea Moisture'='SheaMoisture'), corporate suffixes
     ('Cardinal Health'='Cardinal'), and minor spelling variants (fuzzy>=88)."""
-    from rapidfuzz import fuzz
     na, nb = normalize_brand(a), normalize_brand(b)
     if not na or not nb:
         return False

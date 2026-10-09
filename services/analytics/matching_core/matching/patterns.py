@@ -117,4 +117,14 @@ BUNDLE_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Wider bundle notation, used when MATCH_EXTENDED_COUNTS is on: the same forms as
+# above plus "4PCS", "4 pc", "2 pieces", "12 ct", "4 Count". "cs" (vendor cases per
+# carton) is still deliberately left out - see cmp_count.
+BUNDLE_COUNT_EXT_RE = re.compile(
+    r'\bpack\s+of\s+(\d+)\b|\bbox\s+of\s+(\d+)\b'
+    r'|\b(\d+)\s*[-\s]?pack\b|\b(\d+)\s*[-\s]?pk\b'
+    r'|\b(\d+)\s*[-\s]?(?:pcs?|pieces?|ct|count)\b',
+    re.IGNORECASE,
+)
+
 TRANSPARENCY_WORDS: frozenset[str] = frozenset({"clear", "transparent", "translucent"})

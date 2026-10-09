@@ -16,12 +16,10 @@ Verifying Medical - if:
 4. ALL attributes + fuzzy > 70(?) <- lets try with 65-70% = 90% correct
 5. fuzzy > 90% = 90% correct
 6. all attributes match = 90% correct
-7. MPN/Partnumber found in the AMZ title and/or in the bullet points and/or in the long description 
+7. MPN/Partnumber found in the AMZ title and/or in the bullet points and/or in the long description
 = 85% (if at least 1 attribute matches score increase to 95%)
 """
 from __future__ import annotations
-
-from rapidfuzz import fuzz
 
 from services.analytics.matching_core.matching.attribute_compare import (
     Cmp,
@@ -32,6 +30,7 @@ from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     brands_match,
     normalize_upc,
+    title_similarity,
     upc_matches,
 )
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
@@ -53,7 +52,7 @@ def _fuzzy(offer: Offer, cand: Candidate) -> float:
     amz = cand.title or ""
     if not src or not amz:
         return 0.0
-    return float(fuzz.token_set_ratio(src.lower(), amz.lower()))
+    return title_similarity(src, amz)
 
 
 def _mpn_in_amazon_text(offer: Offer, cand: Candidate) -> bool:

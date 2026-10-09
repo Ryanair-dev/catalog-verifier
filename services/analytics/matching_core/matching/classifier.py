@@ -18,6 +18,7 @@ from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     brands_match,
     normalize_upc,
+    title_similarity,
     upc_matches,
 )
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
@@ -51,11 +52,7 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
 
     source_title = offer.title or offer.raw_text or ""
     candidate_title = candidate.title or ""
-    title_ratio = (
-        float(fuzz.token_set_ratio(source_title.lower(), candidate_title.lower()))
-        if source_title and candidate_title
-        else 0.0
-    )
+    title_ratio = title_similarity(source_title, candidate_title)
     size_mm = bool(size_mismatch(offer, candidate))
     apparel_mm = bool(apparel_size_mismatch(offer, candidate))
     linear_mm = bool(linear_size_mismatch(offer, candidate))

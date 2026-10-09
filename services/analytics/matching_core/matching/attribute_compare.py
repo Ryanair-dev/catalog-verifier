@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
+from services.analytics.matching_core.matching.flags import EXTENDED_COUNTS
 from services.analytics.matching_core.matching.patterns import (
     COLOR_WORDS,
     GARMENT_NORM,
@@ -13,11 +14,15 @@ from services.analytics.matching_core.matching.patterns import (
     SIZE_RE,
     TRANSPARENCY_WORDS,
     VOLUME_TO_ML,
-    BUNDLE_COUNT_RE
+    BUNDLE_COUNT_RE,
+    BUNDLE_COUNT_EXT_RE,
 )
 from services.analytics.matching_core.models import Candidate, Offer
 
 TOLERANCE = 0.10
+
+# Amazon's own pack fields. adapter.build_pair copies them into Candidate.attributes.
+_AMAZON_PACK_KEYS = ("item_package_quantity", "number_of_items")
 
 
 class Cmp(str, Enum):
@@ -107,6 +112,35 @@ def _bundle_count(text: str) -> int | None:
     return None
 
 
+def bundle_counts(text: str) -> set[int]:
+    """EVERY bundle count written in a text, e.g. '3-Pack, 80 Count' -> {3, 80}.
+    Wider notation than _bundle_count: also 4PCS, 4 pc, 2 pieces, 12 ct, 4 Count.
+    Vendor case quantity ('40cs') is still not read."""
+    out: set[int] = set()
+    for m in BUNDLE_COUNT_EXT_RE.finditer(text or ""):
+        n = next((g for g in m.groups() if g is not None), None)
+        if n and int(n) > 0:
+            out.add(int(n))
+    return out
+
+
+def _amazon_pack_numbers(cand: Candidate) -> set[int]:
+    """Amazon's item_package_quantity / number_of_items, when present."""
+    out: set[int] = set()
+    for key in _AMAZON_PACK_KEYS:
+        values = (cand.attributes or {}).get(key) or []
+        if not isinstance(values, (list, tuple)):
+            values = [values]
+        for v in values:
+            try:
+                n = int(float(str(v).strip()))
+            except (TypeError, ValueError):
+                continue
+            if n > 0:
+                out.add(n)
+    return out
+
+
 def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
     """Vendor case-quantity ("100cs", "20cs") and Amazon bundle-size
     ("3-Pack") are different concepts - the vendor number is how many units
@@ -116,13 +150,29 @@ def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
 
     Only compare when BOTH sides use bundle-style notation. A vendor
     case-quantity yields UNKNOWN.
+
+    With MATCH_EXTENDED_COUNTS on (default), "4PCS", "12 ct" and "4 Count" also
+    count as bundle notation, every count in the text is collected (not just the
+    first), and Amazon's own pack-quantity field is used when the Amazon title
+    states no count. A MISMATCH needs exactly one count on each side and the two
+    numbers must differ; if either side states several ("Pack of 6, 2 Count
+    each") the answer is UNKNOWN, so multipacks are not rejected by mistake.
     """
     s, a = _texts(offer, cand)
-    sp = _bundle_count(s)   # excludes the "Ncs" case-quantity form
-    ap = _bundle_count(a)
-    if sp is None or ap is None:
+    if not EXTENDED_COUNTS:
+        sp = _bundle_count(s)   # excludes the "Ncs" case-quantity form
+        ap = _bundle_count(a)
+        if sp is None or ap is None:
+            return Cmp.UNKNOWN
+        return Cmp.MATCH if sp == ap else Cmp.MISMATCH
+
+    sp = bundle_counts(s)
+    ap = bundle_counts(a) or _amazon_pack_numbers(cand)
+    if not sp or not ap:
         return Cmp.UNKNOWN
-    return Cmp.MATCH if sp == ap else Cmp.MISMATCH
+    if sp & ap:
+        return Cmp.MATCH
+    return Cmp.MISMATCH if (len(sp) == 1 and len(ap) == 1) else Cmp.UNKNOWN
 
 
 ATTRIBUTE_COMPARERS = {

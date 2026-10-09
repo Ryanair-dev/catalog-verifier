@@ -13,6 +13,7 @@ from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     brands_match,
     normalize_upc,
+    title_similarity,
     upc_matches,
 )
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
@@ -57,8 +58,7 @@ def _title_score(offer: Offer, cand: Candidate) -> float:
     amz = cand.title or ""
     if not src or not amz:
         return 0.0
-    ratio = fuzz.token_set_ratio(src.lower(), amz.lower())
-    return (ratio / 100.0) * TITLE_MAX
+    return (title_similarity(src, amz) / 100.0) * TITLE_MAX
 
 
 def _mpn_score(offer: Offer, cand: Candidate) -> float:
