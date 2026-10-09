@@ -4,7 +4,7 @@ A local web app that automates the vetting of CPG vendor catalog products agains
 
 Two tabs, two workflows:
 
-- **Verification** — attach a vendor catalog + Keepa/Amazon export, run the confidence engine, review and export results.
+- **Verification** — attach a vendor catalog + Keepa/Amazon export, choose a new matcher scorer, review and export results.
 - **Analytics** — upload a catalog file, let the SP-API search engine find the ASINs for you, then vet the matches.
 
 ---
@@ -39,6 +39,17 @@ Open `http://127.0.0.1:8000`.
 
 All are optional. Features that need a missing key are disabled with a clear UI message.
 
+### Analytics matcher and optional agents
+
+Verification scans and Analytics keep their existing candidate retrieval and use the new matcher for scoring. Each scan/run can select **Weighted**, **Cascade**, or **Classifier**. Analytics' two LLM agents remain optional and off by default:
+
+- The selected scorer is the source of automatic match verdicts in Verification, Match-from-Keepa, and Analytics. The older confidence-scoring engine is not used for these results. Pair Manager blacklist/verified records do not change automatic scan verdicts; blacklist status can still be shown. Explicit user verdict actions remain separate.
+- Every Analytics offer title is normalized using the matcher’s `normalize_text()` before retrieval and scoring (lowercase, trim, collapse whitespace). The matcher’s own scoring code parses measurements, sizes, colors, and bundle counts from the title. The original uploaded title remains unchanged in catalog data and UI; abbreviation expansion is only done by the optional query agent on fallback rows.
+- **LLM query fallback** runs only for catalog rows where regular retrieval returned no candidates. It expands abbreviated titles, searches Amazon, and can retry once with a revised query. Per-row queries, token use, and results are saved with the run.
+- **LLM approval verifier** audits scorer-approved matches only. A flagged approval is downgraded to Review; review and rejected candidates are not sent for verification.
+
+Both use Anthropic Claude and require `ANTHROPIC_API_KEY`. The run detail shows query-fallback token use and estimated cost per 10 fallback offers.
+
 ---
 
 ## Verification tab
@@ -53,25 +64,7 @@ All are optional. Features that need a missing key are disabled with a clear UI 
 
 ### Confidence signals
 
-| Signal | Weight | Notes |
-|---|---|---|
-| UPC / EAN | 55 pts | Exact match. No-UPC items score 0 here but aren't penalised further. |
-| Item ID | 10 pts | Allows minor suffix variants; fuzzy fallback. |
-| Brand | 5 pts | Exact or fuzzy match against Amazon Brand or Manufacturer. |
-| Title alignment | 25 pts | Fuzzy token match across all Amazon text fields (title, bullets, description) + dedicated attribute columns (Color, Scent, Size). Size / pack / variant bonuses and penalties applied. |
-| Pack count | 5 pts | Catalog pack vs Amazon `Unit Details: Unit Value`. Multiples detected and flagged. |
-
-**ASIN floor** — when the catalog supplies an ASIN and the title similarity is ≥ 40%, the confidence is floored at the Approved threshold regardless of UPC, so pre-researched ASINs are never incorrectly downgraded just because the UPC was missing or changed.
-
-**No-ASIN skip** — rows with no ASIN in the catalog are skipped entirely.
-
-### Verdict thresholds (adjustable in Settings)
-
-| Verdict | Default |
-|---|---|
-| Approved | ≥ 85 |
-| Review | ≥ 35 |
-| Not Approved | < 35 |
+Select **Weighted**, **Cascade**, or **Classifier** in the scan wizard. These are the same matcher scorers used in Analytics; their own signals and verdict rules determine the automatic result. Existing Verify scans still compare catalog rows with their supplied ASINs, while Match-from-Keepa still retrieves candidates from the attached Keepa export.
 
 ### Override actions
 
@@ -165,7 +158,8 @@ catalog-verifier/
 │   ├── database.py                 # SQLite layer (auto-created on first run)
 │   ├── analytics/
 │   │   ├── runner.py               # SP-API search orchestration
-│   │   ├── matcher.py              # Candidate scoring for analytics runs
+│   │   ├── matching_core/          # Weighted, Cascade, Classifier scorers + adapters
+│   │   ├── matcher.py              # Legacy matcher helpers; not used for scan verdicts
 │   │   └── parser.py              # Catalog file parsing
 │   └── spapi/
 │       ├── client.py               # SP-API HTTP client
@@ -222,7 +216,7 @@ catalog-verifier/
 | `GET` | `/api/scans/{id}` | Scan detail + results |
 | `DELETE` | `/api/scans/{id}` | Delete a scan |
 | `POST` | `/api/scans/{id}/amazon` | Attach an Amazon/Keepa export to a scan |
-| `POST` | `/api/scans/{id}/verify` | Run the confidence engine |
+| `POST` | `/api/scans/{id}/verify` | Score supplied ASINs with the selected matcher |
 | `POST` | `/api/scans/{id}/verdict` | Update a single row verdict |
 | `POST` | `/api/scans/{id}/bulk-verdict` | Update multiple row verdicts |
 | `POST` | `/api/scans/{id}/mark-exported` | Mark scan as exported |

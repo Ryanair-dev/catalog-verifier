@@ -44,8 +44,8 @@ from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from services import ai_recheck, database
-from services.confidence import score_row
 from services.extractor import ai_extract, apply_abbreviations, rule_extract
+from services.analytics.matching_core.adapter import SCORING_METHODS, score_export_pair
 from services.file_parser import parse_file
 from services.keepa_matcher import find_candidates
 from services.safety import read_upload_limited
@@ -232,6 +232,7 @@ async def create_scan(
     ai_mode: str = Form("false"),
     match_from_keepa: str = Form("false"),
     match_methods: str = Form("[]"),
+    scoring_method: str = Form("weighted"),
 ) -> dict:
     try:
         mapping_obj = _json.loads(mapping)
@@ -244,6 +245,13 @@ async def create_scan(
             methods_list = []
     except _json.JSONDecodeError:
         methods_list = []
+
+    scoring_method = scoring_method.strip().lower()
+    if scoring_method not in SCORING_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail="scoring_method must be one of: weighted, cascade, classifier",
+        )
 
     data = await read_upload_limited(catalog_file)
     try:
@@ -282,6 +290,7 @@ async def create_scan(
         ai_mode=ai_on,
         match_from_keepa=match_mode,
         match_methods=methods_list if match_mode else [],
+        scoring_method=scoring_method,
     )
     database.save_scan_catalog_rows(scan_id, mapped_rows)
 
@@ -372,15 +381,13 @@ async def run_verify(scan_id: int) -> dict:
     database.update_scan(scan_id, status="verifying")
 
     abbr_list = database.flat_library()
-    thresholds = database.get_thresholds()
     catalog_rows = database.load_scan_catalog_rows(scan_id)
     amazon_index = database.load_scan_amazon_rows(scan_id)
+    scoring_method = scan.get("scoring_method") or "weighted"
     use_ai = bool(scan.get("ai_mode"))
 
     dupes = _find_duplicates(catalog_rows, "Item ID")
-    # Load pair-manager sets once — avoids per-row DB queries.
-    blacklist_set = database.load_blacklist_set()
-    verified_set  = database.load_verified_set()
+    thresholds = database.get_thresholds()
     # Build a token set from the library for O(1) membership checks instead of
     # per-token DB queries inside the AI learning loop.
     known_tokens: set[str] = {e["abbr"].lower() for e in abbr_list}
@@ -420,7 +427,20 @@ async def run_verify(scan_id: int) -> dict:
         asin = str(row.get("ASIN") or "").strip().upper()
         upc = str(row.get("UPC/EAN") or "").strip()
         amz = amazon_index.get(asin)
-        score = score_row(row, amz, abbr_list, thresholds=thresholds)
+        matcher_scores, matcher_verdict = score_export_pair(
+            row, amz or {"ASIN": asin}, method=scoring_method,
+        )
+        score = {
+            "confidence": matcher_scores["confidence_score"],
+            "verdict": {
+                "verified": "Approved",
+                "review": "Review",
+                "not_approved": "Not Approved",
+            }[matcher_verdict],
+            "signals": matcher_scores["signals"],
+            "notes": "; ".join(matcher_scores["reasons"]),
+            "amz_pack": matcher_scores.get("effective_pack"),
+        }
 
         raw_title = row.get("Vendor Title") or ""
         title_expanded = apply_abbreviations(raw_title, abbr_list)
@@ -490,17 +510,7 @@ async def run_verify(scan_id: int) -> dict:
             else None
         )
 
-        # Pair manager overrides — applied after scoring.
-        pair_verdict = score["verdict"]
-        pair_status  = ""
-        is_blacklisted = upc and asin and (upc, asin) in blacklist_set
-        is_verified    = upc and asin and (upc, asin) in verified_set
-        if is_blacklisted:
-            pair_verdict = "Not Approved"
-            pair_status  = "Pair Blacklisted"
-        elif is_verified and score["confidence"] >= 40 and score["verdict"] != "Not Approved":
-            pair_verdict = "Approved"
-            pair_status  = "Pair Verified"
+        is_blacklisted = bool(upc and asin and database.is_blacklisted(upc, asin))
 
         results.append({
             "UPC": row.get("UPC/EAN"),
@@ -511,10 +521,12 @@ async def run_verify(scan_id: int) -> dict:
             "Brand": row.get("Brand"),
             "ASIN": row.get("ASIN"),
             "Confidence": score["confidence"],
-            "Verdict": pair_verdict,
+            "Verdict": score["verdict"],
             "original_verdict": score["verdict"],
-            "review_status": pair_status,
+            "review_status": "",
             "signals": score["signals"],
+            "matcher_scores": matcher_scores,
+            "scoring_method": scoring_method,
             "amz_pack": score["amz_pack"],
             "duplicate": str(row.get("Item ID") or "").strip() in dupes,
             "blacklisted": bool(is_blacklisted),
@@ -534,6 +546,7 @@ async def run_verify(scan_id: int) -> dict:
         "scan": database.get_scan(scan_id),
         "results": database.load_scan_results(scan_id),
         "thresholds": thresholds,
+        "scoring_method": scoring_method,
         "duplicate_item_ids": sorted(dupes),
         "ai_added": ai_added,
         "stats": stats,
@@ -557,7 +570,6 @@ async def run_match(scan_id: int) -> dict:
 
     database.update_scan(scan_id, status="verifying")
 
-    abbr_list  = database.flat_library()
     thresholds = database.get_thresholds()
     catalog_rows = database.load_scan_catalog_rows(scan_id)
     keepa_index  = database.load_scan_amazon_rows(scan_id)   # asin → row
@@ -567,8 +579,7 @@ async def run_match(scan_id: int) -> dict:
         catalog_rows=catalog_rows,
         keepa_rows=keepa_index,
         methods=methods,
-        abbr_list=abbr_list,
-        thresholds=thresholds,
+        scoring_method=scan.get("scoring_method") or "weighted",
     )
 
     database.save_scan_candidates(scan_id, candidates)

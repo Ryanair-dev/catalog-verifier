@@ -28,6 +28,8 @@ or UPC):
 """
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any, Iterable
 
 import re
@@ -36,6 +38,10 @@ try:
     from rapidfuzz import fuzz
 except ImportError:  # pragma: no cover - rapidfuzz is in requirements.txt
     fuzz = None  # type: ignore
+
+_log = logging.getLogger(__name__)
+_legacy_call_logged = False
+_legacy_log_lock = threading.Lock()
 
 
 # --------------------------------------------------------------------------- #
@@ -1311,6 +1317,15 @@ def calculate_confidence(
         "size_match":       bool,
         }
     """
+    global _legacy_call_logged
+    with _legacy_log_lock:
+        if not _legacy_call_logged:
+            _legacy_call_logged = True
+            _log.info(
+                "[legacy-matcher] calculate_confidence invoked; "
+                "this is the pre-matching_core analytics scorer"
+            )
+
     # Extracted brand (from GPT-4o-mini) is cleaner than raw catalog text —
     # prefer it when available.  extracted_product_type and model are injected
     # as additional keywords so the scorer can reward product-type matches.
