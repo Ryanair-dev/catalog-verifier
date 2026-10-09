@@ -6,6 +6,9 @@ the quality eval. Both default to ON.
 To reproduce the OLD behaviour (baseline run for before/after comparison):
 
     MATCH_CLEAN_TITLES=0 MATCH_EXTENDED_COUNTS=0
+
+# OFF until the classifier is retrained and the cascade's 72 threshold is re-picked
+# on cleaned titles. Switching it on alone made the eval worse (classifier 6 -> 39 wrong approvals).
 """
 from __future__ import annotations
 
