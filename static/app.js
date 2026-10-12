@@ -635,13 +635,7 @@
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
-    // NOTE: PO Analytics' poll is deliberately NOT cleared when leaving this view —
-    // a job keeps running server-side regardless of which tab is open, and killing
-    // the poll here made the panel freeze on whatever phase it last showed (e.g.
-    // "pulling SellerCloud PO data") if the user clicked away and back before it
-    // finished. _pollPoAnalytics's own tick() stops scheduling itself once the job
-    // is complete/errored, so there's nothing to leak by leaving it running.
-    if (view === "po-analytics" && typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
+    if (view === "po-analytics" && typeof _refreshPoaLists === "function") _refreshPoaLists();
     if (view === "po-analytics" && typeof loadAutomationSettings === "function") loadAutomationSettings();
   }
 
@@ -684,7 +678,6 @@
 
     let statusHtml = "";
     let checkNowBtn = "";
-    let watchlistSection = "";
     if (tool.tool === "po_analytics") {
       try {
         const st = await api("/api/po-analytics/automation/status");
@@ -695,22 +688,11 @@
         </div>`;
       } catch { /* best-effort status line */ }
       checkNowBtn = `<button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>`;
-      watchlistSection = `
-        <div class="auto-watchlist-section">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:6px;">
-            Watched PO numbers — the Inbound Shipments board tracks the whole company, not just ecommerce,
-            so only the POs you save here are ever checked or reported on.
-          </div>
-          <div style="display:flex;gap:8px;">
-            <input type="text" class="auto-watch-input" placeholder="49932, 49933"
-              style="flex:1;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-            <button class="btn btn-secondary text-xs" data-act="watch-add">Add</button>
-          </div>
-          <div class="auto-watch-list" style="display:flex;flex-direction:column;gap:4px;margin-top:8px;"></div>
-        </div>
-      `;
     }
 
+    // Watched POs themselves are added/removed via the Awaiting Analysis /
+    // Archive panels at the top of the page, not here — this card is just
+    // the generic on/off + recipients + a status line + a manual "check now".
     card.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;">
         <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">${tool.label}</div>
@@ -720,7 +702,6 @@
         </label>
       </div>
       ${statusHtml}
-      ${watchlistSection}
       <div style="font-size:11px;color:#94a3b8;">Recipients — one email per line.</div>
       <textarea data-role="recipients" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">${(tool.recipients || []).join("\n")}</textarea>
       <div style="display:flex;gap:8px;align-items:center;">
@@ -729,14 +710,6 @@
         <span class="auto-save-feedback" style="font-size:11px;"></span>
       </div>
     `;
-
-    if (tool.tool === "po_analytics") {
-      await _refreshWatchlistUI(card);
-      card.querySelector('[data-act="watch-add"]').addEventListener("click", () => _addToWatchlist(card));
-      card.querySelector(".auto-watch-input").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); _addToWatchlist(card); }
-      });
-    }
 
     card.querySelector('[data-act="save"]').addEventListener("click", async (e) => {
       const btn = e.currentTarget;
@@ -779,56 +752,12 @@
           checkBtn.disabled = false;
           checkBtn.textContent = "Check now";
           loadAutomationSettings();
+          _refreshPoaLists();
         }
       });
     }
 
     return card;
-  }
-
-  async function _refreshWatchlistUI(card) {
-    const list = card.querySelector(".auto-watch-list");
-    if (!list) return;
-    list.innerHTML = `<div style="font-size:11px;color:#94a3b8;">Loading…</div>`;
-    let data;
-    try {
-      data = await api("/api/po-analytics/automation/watchlist");
-    } catch (e) {
-      list.innerHTML = `<div style="font-size:11px;color:#c0392b;">Couldn't load watchlist: ${e.message || e}</div>`;
-      return;
-    }
-    const rows = data.watchlist || [];
-    if (!rows.length) {
-      list.innerHTML = `<div style="font-size:11px;color:#94a3b8;font-style:italic;">No POs watched yet.</div>`;
-      return;
-    }
-    list.innerHTML = "";
-    for (const r of rows) {
-      const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:12px;";
-      const bits = [`<b>PO ${r.po_number}</b>`];
-      if (r.last_eta) bits.push(`eta ${r.last_eta}`);
-      if (r.status) bits.push(r.status);
-      if (r.sent_at) bits.push(`<span style="color:var(--green-500,#16a34a);">sent</span>`);
-      row.innerHTML = `
-        <span style="color:#37404c;">${bits.join(" · ")}</span>
-        <button class="icon-btn" data-po="${r.po_number}" title="Remove from watchlist" style="width:22px;height:22px;">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-        </button>
-      `;
-      row.querySelector("button").addEventListener("click", async (e) => {
-        const po = e.currentTarget.dataset.po;
-        try {
-          await api(`/api/po-analytics/automation/watchlist/${po}`, { method: "DELETE" });
-          showToast(`Removed PO ${po} from the watchlist.`, "success");
-          await _refreshWatchlistUI(card);
-          _refreshAutomationStatusLine(card);
-        } catch (err) {
-          showToast(`Couldn't remove PO ${po}: ${err.message || err}`, "error");
-        }
-      });
-      list.appendChild(row);
-    }
   }
 
   async function _refreshAutomationStatusLine(card) {
@@ -844,24 +773,6 @@
           `${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far`;
       }
     } catch { /* best-effort */ }
-  }
-
-  async function _addToWatchlist(card) {
-    const input = card.querySelector(".auto-watch-input");
-    const raw = input.value.trim();
-    if (!raw) return;
-    try {
-      const r = await api("/api/po-analytics/automation/watchlist", {
-        method: "POST",
-        body: { po_numbers: raw },
-      });
-      input.value = "";
-      showToast(`Added ${r.added} of ${r.requested} PO(s) to the watchlist.`, r.added ? "success" : "info");
-      await _refreshWatchlistUI(card);
-      _refreshAutomationStatusLine(card);
-    } catch (err) {
-      showToast(`Couldn't add: ${err.message || err}`, "error");
-    }
   }
 
   // ========================================================================
@@ -8509,142 +8420,130 @@
     }
   }
 
-  // ---- PO Analytics ---------------------------------------------------------
-  // The poll is intentionally NOT tied to the view being visible — a job keeps
-  // running server-side regardless of which sidebar tab is open, so switching
-  // away and back must not freeze the display on a stale phase (see switchView).
-  let _poaPoll = null;
-  let _poaActiveJobId = null;
+  // ---- PO Analytics -- Add PO / Awaiting Analysis / Archive -----------------
+  // Every watched PO is analyzed + emailed automatically the day before its
+  // tracked ETA (services/po_automation.py) -- there's no "run it right now
+  // regardless of ETA" path anymore. This renders the watchlist split into
+  // two lists: not yet sent (Awaiting Analysis) and already sent (Archive,
+  // with a re-download link to the exact report that went out at send time).
 
-  function _clearPoaPoll() {
-    if (_poaPoll) { clearTimeout(_poaPoll); _poaPoll = null; }
+  function _poaRowLine(r) {
+    const bits = [];
+    if (r.last_eta) bits.push(`ETA ${r.last_eta}`);
+    if (r.status) bits.push(r.status);
+    return bits.join(" · ");
   }
 
-  async function _startPoAnalytics() {
-    const input = $("#poa-input");
-    const btn = $("#poa-run");
-    const dl = $("#poa-download");
-    const progress = $("#poa-progress");
-    const errEl = $("#poa-error");
-    if (!input || !btn) return;
-
-    const raw = input.value.trim();
-    if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
-
-    _clearPoaPoll();
-    btn.disabled = true;
-    btn.textContent = "Running…";
-    dl?.classList.add("hidden");
-    errEl?.classList.add("hidden");
-    $("#poa-skipped")?.classList.add("hidden");
-    progress?.classList.remove("hidden");
-    if (progress) progress.textContent = "Starting…";
-
+  async function _refreshPoaLists() {
+    const awaitEl = $("#poa-awaiting-list");
+    const archEl = $("#poa-archive-list");
+    if (!awaitEl && !archEl) return;
+    if (awaitEl) awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    if (archEl) archEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    let data;
     try {
-      const r = await api("/api/po-analytics/start", { method: "POST", body: { po_numbers: raw } });
-      _poaActiveJobId = r.job_id;
-      _pollPoAnalytics(r.job_id);
+      data = await api("/api/po-analytics/automation/watchlist");
     } catch (e) {
-      btn.disabled = false;
-      btn.textContent = "Run PO Analytics";
-      progress?.classList.add("hidden");
-      errEl?.classList.remove("hidden");
-      if (errEl) errEl.textContent = e.message;
+      const msg = `<div style="font-size:12px;color:#c0392b;">Couldn't load: ${e.message || e}</div>`;
+      if (awaitEl) awaitEl.innerHTML = msg;
+      if (archEl) archEl.innerHTML = msg;
+      return;
     }
-  }
-  $("#poa-run")?.addEventListener("click", _startPoAnalytics);
+    const rows = data.watchlist || [];
+    const awaiting = rows.filter(r => !r.sent_at);
+    const sent = rows.filter(r => r.sent_at);
 
-  function _applyPoaStatus(j, jobId) {
-    const btn = $("#poa-run");
-    const dl = $("#poa-download");
-    const progress = $("#poa-progress");
-    const errEl = $("#poa-error");
-    const skipEl = $("#poa-skipped");
-    if (progress && !progress.classList.contains("hidden")) {
-      const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
-      const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
-      progress.textContent = j.total
-        ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
-        : (j.phase || "Working…");
-    }
-    if (j.status === "complete") {
-      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
-      progress?.classList.add("hidden");
-      dl?.classList.remove("hidden");
-      if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
-      if (skipEl) {
-        if (j.skipped_pos?.length) {
-          // A skip with a "note" successfully followed a split (not a failure,
-          // just not what was literally typed in) -- phrase those positively
-          // and separately from ones truly left out with nothing usable found.
-          const followed = j.skipped_pos.filter(s => s.note);
-          const leftOut = j.skipped_pos.filter(s => !s.note);
-          const parts = [];
-          if (followed.length) {
-            parts.push(...followed.map(s => `PO ${s.po} (${s.status}) → used its split instead`));
-          }
-          if (leftOut.length) {
-            parts.push(...leftOut.map(s => `PO ${s.po} (${s.status}) — left out, no Received split found`));
-          }
-          skipEl.textContent = parts.join("; ") + ".";
-          skipEl.classList.remove("hidden");
-        } else {
-          skipEl.classList.add("hidden");
+    if (awaitEl) {
+      if (!awaiting.length) {
+        awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">Nothing waiting — add a PO on the left.</div>`;
+      } else {
+        awaitEl.innerHTML = "";
+        for (const r of awaiting) {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;";
+          const line = _poaRowLine(r);
+          row.innerHTML = `
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${line ? " · " + line : ""}</span>
+            <button class="icon-btn" data-po="${r.po_number}" title="Remove from watchlist" style="width:22px;height:22px;flex:none;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          `;
+          row.querySelector("button").addEventListener("click", async (e) => {
+            const po = e.currentTarget.dataset.po;
+            try {
+              await api(`/api/po-analytics/automation/watchlist/${po}`, { method: "DELETE" });
+              showToast(`Removed PO ${po} from the watchlist.`, "success");
+              await _refreshPoaLists();
+              _refreshAutomationStatusLine(document);
+            } catch (err) {
+              showToast(`Couldn't remove PO ${po}: ${err.message || err}`, "error");
+            }
+          });
+          awaitEl.appendChild(row);
         }
       }
-      return true;
     }
-    if (j.status === "error") {
-      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
-      progress?.classList.add("hidden");
-      errEl?.classList.remove("hidden");
-      if (errEl) errEl.textContent = j.error || "Failed.";
-      return true;
-    }
-    return false;
-  }
 
-  function _pollPoAnalytics(jobId) {
-    const tick = async () => {
-      let j;
-      try {
-        j = await api(`/api/po-analytics/jobs/${jobId}`);
-      } catch (e) {
-        _poaPoll = setTimeout(tick, 2000);
-        return;
+    if (archEl) {
+      if (!sent.length) {
+        archEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No reports analyzed yet.</div>`;
+      } else {
+        archEl.innerHTML = "";
+        for (const r of sent) {
+          const row = document.createElement("div");
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;";
+          const line = _poaRowLine(r);
+          const sentDate = (r.sent_at || "").slice(0, 10);
+          row.innerHTML = `
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${line ? " · " + line : ""} · <span style="color:var(--green-500,#16a34a);">sent ${sentDate}</span></span>
+            <button class="btn btn-secondary text-xs" data-po="${r.po_number}" style="flex:none;">Download</button>
+          `;
+          row.querySelector("button").addEventListener("click", async (e) => {
+            const po = e.currentTarget.dataset.po;
+            try {
+              const resp = await fetch(`/api/po-analytics/automation/archive/${po}/download`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const blob = await resp.blob();
+              const cd = resp.headers.get("Content-Disposition") || "";
+              const m = /filename="?([^"]+)"?/.exec(cd);
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = m ? m[1] : `${po}.xlsx`;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (err) {
+              showToast(`Download failed: ${err.message || err}`, "error");
+            }
+          });
+          archEl.appendChild(row);
+        }
       }
-      if (_applyPoaStatus(j, jobId)) return;   // complete/error — stop polling
-      _poaPoll = setTimeout(tick, 1500);
-    };
-    tick();
-  }
-
-  // Called when (re-)entering the PO Analytics view — immediately reflects the
-  // latest status of any job started earlier instead of waiting for the next
-  // 1.5s tick, so a job that finished while the user was on another tab shows
-  // up right away rather than looking frozen.
-  async function _refreshPoaStatusNow() {
-    if (!_poaActiveJobId) return;
-    try {
-      const j = await api(`/api/po-analytics/jobs/${_poaActiveJobId}`);
-      _applyPoaStatus(j, _poaActiveJobId);
-    } catch (e) { /* job may have expired — leave the panel as-is */ }
-  }
-
-  async function _downloadPoAnalytics(jobId, filename) {
-    try {
-      const resp = await fetch(`/api/po-analytics/jobs/${jobId}/download`);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = filename || "po_analytics.xlsx";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (e) {
-      showToast("Download failed: " + e.message, "error");
     }
   }
+
+  async function _addPoaWatch() {
+    const input = $("#poa-watch-input");
+    const btn = $("#poa-watch-add");
+    if (!input) return;
+    const raw = input.value.trim();
+    if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api("/api/po-analytics/automation/watchlist", { method: "POST", body: { po_numbers: raw } });
+      input.value = "";
+      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA.`, r.added ? "success" : "info");
+      await _refreshPoaLists();
+      _refreshAutomationStatusLine(document);
+    } catch (e) {
+      showToast(`Couldn't add: ${e.message || e}`, "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  $("#poa-watch-add")?.addEventListener("click", _addPoaWatch);
+  $("#poa-watch-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); _addPoaWatch(); }
+  });
 
   async function _startToolsRun() {
     const input = $("#tools-asin-input");

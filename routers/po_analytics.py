@@ -160,3 +160,16 @@ async def po_analytics_watchlist_remove(po_number: int) -> dict:
     if not removed:
         raise HTTPException(status_code=404, detail=f"PO {po_number} isn't on the watchlist.")
     return {"removed": po_number, "watchlist": po_automation.get_watchlist()}
+
+
+@router.get("/po-analytics/automation/archive/{po_number}/download")
+async def po_analytics_archive_download(po_number: int) -> StreamingResponse:
+    """The already-generated report for a watched PO that's been analyzed —
+    saved at send time so it can be re-downloaded later without re-running
+    the whole pipeline."""
+    from services import po_automation
+    result = po_automation.get_report(po_number)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No archived report for PO {po_number} yet.")
+    filename, blob = result
+    return _xlsx_response(blob, filename)

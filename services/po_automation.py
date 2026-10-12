@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS po_automation_watchlist (
 def init_schema() -> None:
     with database._LOCK, database._connect() as conn:
         conn.executescript(SCHEMA)
+        # Additive migration (2026-10-12): the generated report is now kept
+        # so the Archive table can offer it for download later, not just
+        # emailed once and discarded.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(po_eta_automation)").fetchall()}
+        if "report_filename" not in cols:
+            conn.execute("ALTER TABLE po_eta_automation ADD COLUMN report_filename TEXT")
+        if "report_blob" not in cols:
+            conn.execute("ALTER TABLE po_eta_automation ADD COLUMN report_blob BLOB")
 
 
 # --------------------------------------------------------------------------- #
@@ -232,9 +240,10 @@ def _compute_due(conn) -> list[int]:
     return due
 
 
-def _run_and_send_one(po_number: int) -> str:
+def _run_and_send_one(po_number: int) -> tuple[str, bytes]:
     """Runs PO Analytics for one PO (ordered-qty mode) and emails the result.
-    Returns the filename sent. Raises on any failure — caller records it."""
+    Returns (filename, blob) so the caller can archive it for later download —
+    raises on any failure, caller records it."""
     gathered = po_analytics.gather([po_number], require_received=False)
     blob = po_analytics.enrich_and_build(gathered)
     filename = po_analytics.po_analytics_filename(
@@ -249,7 +258,20 @@ def _run_and_send_one(po_number: int) -> str:
         f"nothing has been received yet.</p>"
     )
     graph_mail.send_mail(recip["recipients"], subject, body, attachments=[(filename, blob)])
-    return filename
+    return filename, blob
+
+
+def get_report(po_number: int) -> tuple[str, bytes] | None:
+    """The archived report for a PO, if one was ever generated — None if the
+    PO hasn't been analyzed yet (or was never watched)."""
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT report_filename, report_blob FROM po_eta_automation WHERE po_number=?",
+            (po_number,),
+        ).fetchone()
+    if not row or not row["report_blob"]:
+        return None
+    return row["report_filename"] or f"PO {po_number}.xlsx", bytes(row["report_blob"])
 
 
 def check_and_trigger() -> dict:
@@ -278,13 +300,14 @@ def check_and_trigger() -> dict:
     summary["due"] = len(due)
     for po in due:
         try:
-            _run_and_send_one(po)
+            filename, blob = _run_and_send_one(po)
             summary["sent"] += 1
             with database._LOCK, database._connect() as conn:
                 conn.execute(
                     "UPDATE po_eta_automation SET sent_at=datetime('now'), "
-                    "sent_for_eta=last_eta, last_error=NULL WHERE po_number=?",
-                    (po,),
+                    "sent_for_eta=last_eta, last_error=NULL, "
+                    "report_filename=?, report_blob=? WHERE po_number=?",
+                    (filename, blob, po),
                 )
         except Exception as exc:  # noqa: BLE001
             log.exception("[po_automation] PO %s failed", po)

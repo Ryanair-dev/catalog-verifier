@@ -185,35 +185,44 @@
           </div>
         </header>
 
-        <div style="max-width:720px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px;">
-          <div>
-            <div class="abbr-section-title" style="margin-bottom:4px;">PO number(s)</div>
-            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-              One PO number, or several separated by a comma/space for a multi-PO-received-at-once batch
-              (e.g. <code>49932</code> or <code>49932, 49933</code>). The output filename follows the
-              "PO number(s) + brand" convention — brand is resolved from the batch's own SKU prefix
-              (falling back to the vendor name when the batch spans more than one brand).
-            </div>
-            <input id="poa-input" type="text" placeholder="49932"
-              style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+        <div style="max-width:1040px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px;">
 
-            <div style="display:flex;gap:8px;margin-top:10px;">
-              <button id="poa-run" class="btn btn-primary" style="flex:1;justify-content:center;">Run PO Analytics</button>
-              <button id="poa-download" class="btn btn-secondary text-xs hidden" style="white-space:nowrap;">Download Excel</button>
+          <!-- ===== Add PO (left) + Awaiting Analysis (right). Every PO added here -->
+          <!-- is automatically analyzed and emailed the day before its tracked ETA -->
+          <!-- (or the same day, if the ETA gets revised onto a near-term date) — -->
+          <!-- there's no "run it right now regardless of ETA" path anymore. -->
+          <div style="display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start;">
+            <div class="card" style="padding:16px;">
+              <div class="abbr-section-title" style="margin-bottom:4px;">Add PO</div>
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+                One or more PO numbers (comma/space-separated). Added POs are
+                automatically analyzed and emailed the day before their tracked ETA.
+              </div>
+              <input id="poa-watch-input" type="text" placeholder="49932, 49933"
+                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+              <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Add</button>
             </div>
 
-            <div id="poa-progress" class="hidden" style="font-size:12px;color:#6b7480;margin-top:10px;"></div>
-            <div id="poa-error" class="hidden" style="font-size:12px;color:#c0392b;margin-top:10px;"></div>
-            <div id="poa-skipped" class="hidden" style="font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-top:10px;"></div>
+            <div class="card" style="padding:16px;">
+              <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
+              <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+            </div>
           </div>
 
-          <!-- ===== Automation — day-before-ETA report, combined onto this same page -->
-          <!-- (was a separate "Automation Settings" page; there's only ever one -->
-          <!-- automation today, so a dedicated page for it was redundant). Global/ -->
-          <!-- shared for now (no per-user login yet); per-user is planned once -->
-          <!-- Microsoft Entra ID is added, per the user's own stated roadmap. -->
+          <!-- ===== Archive — POs already analyzed; download the report that was -->
+          <!-- generated and emailed at the time. -->
+          <div class="card" style="padding:16px;">
+            <div class="abbr-section-title" style="margin-bottom:10px;">Archive</div>
+            <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+          </div>
+
+          <!-- ===== Automation Settings — recipients / enabled toggle / schedule -->
+          <!-- status. Was a separate "Automation Settings" page; combined here -->
+          <!-- since there's only ever one automation today. Global/shared for now -->
+          <!-- (no per-user login yet); per-user is planned once Microsoft Entra ID -->
+          <!-- is added, per the user's own stated roadmap. -->
           <div style="border-top:1px solid var(--grey-100,#eef0f4);padding-top:16px;">
-            <div class="abbr-section-title" style="margin-bottom:10px;">Automation</div>
+            <div class="abbr-section-title" style="margin-bottom:10px;">Automation Settings</div>
             <div id="poa-automation-card"></div>
           </div>
         </div>
@@ -2954,7 +2963,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=60"></script>
+  <script src="/static/app.js?v=61"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>
