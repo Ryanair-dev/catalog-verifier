@@ -1,7 +1,6 @@
 """
 Run the current repo's matchers (weighted, cascade, classifier) against a labeled
-eval set. Put this file at scripts/eval_matchers.py and run it from the repo root:
-
+eval set. 
     uv run python scripts/eval_matchers.py --matcher all
     uv run python scripts/eval_matchers.py --matcher cascade --mode cpg
     uv run python scripts/eval_matchers.py --matcher all --audit          # + LLM auditor (costs tokens)
