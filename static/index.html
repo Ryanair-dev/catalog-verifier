@@ -239,13 +239,13 @@
             <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
           </div>
 
-          <!-- ===== Automation Settings — recipients / enabled toggle / schedule -->
-          <!-- status. Was a separate "Automation Settings" page; combined here -->
-          <!-- since there's only ever one automation today. Global/shared for now -->
-          <!-- (no per-user login yet); per-user is planned once Microsoft Entra ID -->
-          <!-- is added, per the user's own stated roadmap. -->
+          <!-- ===== Default Recipients — who gets a PO's report when it wasn't -->
+          <!-- given its own recipients in the Add-PO box above, plus a manual -->
+          <!-- "Check now" and the schedule status line. No on/off toggle here -->
+          <!-- (removed 2026-10-13c) — the watchlist itself is already the real -->
+          <!-- on/off control. Global/shared for now (no per-user login yet); -->
+          <!-- per-user is planned once Microsoft Entra ID is added. -->
           <div style="border-top:1px solid var(--grey-100,#eef0f4);padding-top:16px;">
-            <div class="abbr-section-title" style="margin-bottom:10px;">Automation Settings</div>
             <div id="poa-automation-card"></div>
           </div>
         </div>
@@ -2986,7 +2986,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=62"></script>
+  <script src="/static/app.js?v=63"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

@@ -29,8 +29,13 @@ then emails the resulting workbook via services.graph_mail to whoever should
 receive THAT PO: each watched PO carries its own optional recipient override
 (`po_automation_watchlist.recipients_json`, 2026-10-13) — e.g. a different
 buyer per brand/vendor — falling back to the tool-wide default list when a
-PO has none of its own. The 'enabled' flag on the default is still the
-master on/off switch for the whole automation.
+PO has none of its own.
+
+No master on/off switch (removed 2026-10-13c) — the watchlist itself is the
+real on/off control: nothing is ever checked or sent for a PO unless it was
+explicitly added. `automation_recipients.enabled` still exists in the
+schema (shared, generic storage — `routers/settings.py`) but `check_and_
+trigger()` no longer reads it for 'po_analytics'.
 
 `automation_recipients` is a small generic table (keyed by an arbitrary
 `tool` string) so another automated tool can reuse the same settings-page
@@ -321,7 +326,13 @@ def check_and_trigger() -> dict:
     WATCHED POs only, and run+email PO Analytics for every watched PO that
     just became due. Best-effort per PO — one PO's failure (SellerCloud
     error, no recipients, etc.) is recorded on that PO's own row and does not
-    block the others. Returns a summary."""
+    block the others. Returns a summary.
+
+    No master on/off switch here (removed 2026-10-13c, per the user: "why
+    would we need that toggle if we always need the analytics sent the day
+    before the ETA" — correct, the watchlist itself is already the real
+    on/off control: a PO isn't checked/sent at all unless someone explicitly
+    added it)."""
     watchlist = get_watchlist()
     watch = {w["po_number"] for w in watchlist}
     summary = {"checked": 0, "due": 0, "sent": 0, "errors": []}
@@ -332,10 +343,6 @@ def check_and_trigger() -> dict:
     relevant = [it for it in items if it.get("po_number") in watch]
     _upsert_tracking(relevant)
     summary["checked"] = len(relevant)
-
-    master = get_recipients(TOOL_KEY)
-    if not master["enabled"]:
-        return summary  # automation switched off entirely — master kill-switch
 
     with database._connect() as conn:
         due = _compute_due(conn)

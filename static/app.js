@@ -676,13 +676,19 @@
     } catch { return iso; }
   }
 
+  // No on/off toggle and no recipients textarea+Save here anymore (removed
+  // 2026-10-13c) — per the user: the watchlist itself already IS the on/off
+  // control (a PO isn't touched at all unless it's been added), so a
+  // separate master switch was pointless; and the only thing left for this
+  // card to actually do is hold the DEFAULT recipient list (used by a
+  // watched PO that wasn't given its own recipients in the Add-PO box) —
+  // now a real add/remove list instead of a raw multi-line textarea.
   async function _renderAutomationToolCard(tool) {
     const card = document.createElement("div");
     card.className = "card";
     card.style.cssText = "padding:16px;display:flex;flex-direction:column;gap:10px;";
 
     let statusHtml = "";
-    let checkNowBtn = "";
     if (tool.tool === "po_analytics") {
       try {
         const st = await api("/api/po-analytics/automation/status");
@@ -692,54 +698,90 @@
           ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far
         </div>`;
       } catch { /* best-effort status line */ }
-      checkNowBtn = `<button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>`;
     }
 
-    // Watched POs themselves are added/removed via the Awaiting Analysis /
-    // Archive panels at the top of the page, not here — this card is just
-    // the generic on/off + recipients + a status line + a manual "check now".
     card.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">${tool.label}</div>
-        <label class="toggle-pill">
-          <input type="checkbox" data-role="enabled" ${tool.enabled ? "checked" : ""} />
-          <span class="slider"></span>
-        </label>
-      </div>
+      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Default Recipients</div>
       ${statusHtml}
-      <div style="font-size:11px;color:#94a3b8;">Recipients — one email per line.</div>
-      <textarea data-role="recipients" rows="4" style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">${(tool.recipients || []).join("\n")}</textarea>
+      <div style="font-size:11px;color:#94a3b8;">
+        Used for any watched PO that wasn't given its own recipients above.
+      </div>
+      <div class="auto-recip-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      <div style="display:flex;gap:8px;">
+        <input type="email" class="auto-recip-input" placeholder="name@fordmed.com"
+          style="flex:1;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+        <button class="btn btn-secondary text-xs" data-act="add-recip">Add</button>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;">
-        <button class="btn btn-primary text-xs" data-act="save" data-tool="${tool.tool}">Save</button>
-        ${checkNowBtn}
+        <button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>
         <span class="auto-save-feedback" style="font-size:11px;"></span>
       </div>
     `;
 
-    card.querySelector('[data-act="save"]').addEventListener("click", async (e) => {
-      const btn = e.currentTarget;
+    function renderRecipList() {
+      const list = card.querySelector(".auto-recip-list");
+      const recipients = tool.recipients || [];
+      if (!recipients.length) {
+        list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No default recipients yet — add one below.</div>`;
+        return;
+      }
+      list.innerHTML = "";
+      for (const email of recipients) {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:13px;";
+        row.innerHTML = `
+          <span style="color:#37404c;">${email}</span>
+          <button class="icon-btn" data-email="${email}" title="Remove" style="width:20px;height:20px;flex:none;">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        `;
+        row.querySelector("button").addEventListener("click", () => {
+          _saveDefaultRecipients(tool.recipients.filter(e => e !== email));
+        });
+        list.appendChild(row);
+      }
+    }
+    renderRecipList();
+
+    async function _saveDefaultRecipients(recipients) {
       const feedback = card.querySelector(".auto-save-feedback");
-      const recipients = card.querySelector('[data-role="recipients"]').value
-        .split("\n").map(s => s.trim()).filter(Boolean);
-      const enabled = card.querySelector('[data-role="enabled"]').checked;
-      btn.disabled = true;
       feedback.textContent = "Saving…";
       feedback.style.color = "#94a3b8";
       try {
-        await api(`/api/settings/automation/${btn.dataset.tool}`, {
+        // `enabled` has no behavioral effect anymore (the watchlist is the
+        // real on/off control) — always sent true so the generic settings
+        // schema (shared with any future automated tool) stays satisfied.
+        await api(`/api/settings/automation/${tool.tool}`, {
           method: "POST",
-          body: { recipients, enabled },
+          body: { recipients, enabled: true },
         });
+        tool.recipients = recipients;
+        renderRecipList();
         feedback.textContent = "Saved.";
         feedback.style.color = "var(--green-500,#16a34a)";
-        showToast("Automation settings saved.", "success");
       } catch (err) {
         feedback.textContent = err.message || "Failed to save.";
         feedback.style.color = "#c0392b";
         showToast(`Couldn't save: ${err.message || err}`, "error");
-      } finally {
-        btn.disabled = false;
       }
+    }
+
+    const addBtn = card.querySelector('[data-act="add-recip"]');
+    const addInput = card.querySelector(".auto-recip-input");
+    const doAdd = () => {
+      const email = addInput.value.trim();
+      if (!email) return;
+      if (!email.includes("@") || email.includes(" ")) {
+        showToast(`'${email}' doesn't look like a valid email address.`, "error");
+        return;
+      }
+      addInput.value = "";
+      if ((tool.recipients || []).includes(email)) return;   // already there
+      _saveDefaultRecipients([...(tool.recipients || []), email]);
+    };
+    addBtn.addEventListener("click", doAdd);
+    addInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); doAdd(); }
     });
 
     const checkBtn = card.querySelector('[data-act="check-now"]');
