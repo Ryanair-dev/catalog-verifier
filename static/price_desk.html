@@ -1096,8 +1096,32 @@ function focusVendorName() {
 const btnExport = document.getElementById("btnExport");
 const expModal = document.getElementById("expModal");
 const expScrim = document.getElementById("expScrim");
-let exportJob = null;                       // {id, cancelled} while a job is running
+let exportJob = null;                       // {id, cancelled} while a job is running (standalone path only)
 const EXPORT_LABEL = btnExport ? btnExport.textContent : "Export to Excel";
+
+// Embedded in the app's sidebar, this page sits in an iframe the SPA hides
+// (display:none) whenever another section is opened — and browsers throttle
+// or freeze JS timers in frames that aren't being rendered, which used to
+// stall the poll loop below the instant you switched tabs (the export itself
+// kept running fine server-side; nothing was left to notice it finished and
+// grab the file). When embedded, delegate the whole start/poll/download to
+// the parent (top) document instead, which is never hidden. Opening this
+// page standalone (visiting /api/vendor-offers/page directly) still uses the
+// original self-contained logic below unchanged.
+const _voEmbedded = !!(window.parent && window.parent !== window
+  && typeof window.parent._voStartExport === "function");
+
+function runExport(onlyAvailable, applyFilters, populateKeepa) {
+  if (_voEmbedded) {
+    window.parent._voStartExport({
+      upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
+      has_asin: !!state.asin, only_available: !!onlyAvailable,
+      apply_filters: !!applyFilters, populate_keepa: populateKeepa !== false,
+    });
+    return;
+  }
+  startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa);
+}
 
 // One consolidated export-options modal: scope / Keepa / filters, each a
 // mutually-exclusive chip pair, plus a single "Start export" button.
@@ -1184,7 +1208,9 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
 if (btnExport) {
   btnExport.title = "Export the Offer Analytics workbook (filter to one vendor to scope it). Click again to cancel.";
   btnExport.addEventListener("click", async () => {
-    if (exportJob) {                                        // second click → cancel
+    const running = _voEmbedded ? window.parent._voIsExportRunning() : !!exportJob;
+    if (running) {                                          // second click → cancel
+      if (_voEmbedded) { window.parent._voCancelExport(); btnExport.textContent = "Cancelling…"; return; }
       exportJob.cancelled = true;
       btnExport.textContent = "Cancelling…";
       try { await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/cancel`, { method: "POST" }); } catch (e) {}
@@ -1195,7 +1221,7 @@ if (btnExport) {
       expModal.classList.add("open"); expScrim.classList.add("open");
       expModal.setAttribute("aria-hidden", "false");
     } else {
-      startAnalyticsExport(false, false, true);
+      runExport(false, false, true);
     }
   });
   if (expModal) {
@@ -1210,7 +1236,7 @@ if (btnExport) {
       const applyFilters = populateKeepa
         && document.getElementById("optFilterYes").getAttribute("aria-pressed") === "true";
       closeExportScope();
-      startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa);
+      runExport(onlyAvailable, applyFilters, populateKeepa);
     });
   }
 }

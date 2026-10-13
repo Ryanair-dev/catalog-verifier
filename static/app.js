@@ -786,6 +786,127 @@
     if (f && !f.getAttribute("src")) f.setAttribute("src", "/api/vendor-offers/page");
   }
 
+  // ========================================================================
+  //  Vendor Offers "Offer Analytics" export — driven from THIS (top) document,
+  //  not the embedded iframe's own script. switchView hides #view-vendor-offers
+  //  (and therefore the iframe) via display:none whenever another sidebar
+  //  section is opened, and browsers throttle/freeze JS timers in frames that
+  //  aren't being rendered — so a poll loop living inside the iframe stalled
+  //  the instant the user switched tabs, even though the export itself is a
+  //  genuine background thread on the server that kept running regardless.
+  //  This document is never hidden (only its child view divs are), so owning
+  //  the poll loop + download here means switching sections can't interrupt
+  //  it. price_desk.html's button delegates to these (same-origin, callable
+  //  directly as window.parent._voStartExport/...) when embedded, and falls
+  //  back to its own original self-contained logic when opened standalone
+  //  (e.g. visiting /api/vendor-offers/page directly in its own tab).
+  // ========================================================================
+  let _voExportJob = null;   // {id, filename} while a job is running
+
+  function _voFrameBtn() {
+    try {
+      return document.getElementById("vendor-offers-frame")
+        ?.contentDocument?.getElementById("btnExport") || null;
+    } catch { return null; }
+  }
+
+  function _voResetFrameBtn() {
+    const b = _voFrameBtn();
+    if (b) { b.disabled = false; b.textContent = "Export to Excel"; }
+  }
+
+  async function _voStartExport(opts) {
+    if (_voExportJob) return;   // already running
+    const btn = _voFrameBtn();
+    if (btn) btn.textContent = "Starting…";
+    try {
+      const start = await fetch("/api/vendor-offers/analytics-export/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(opts),
+      });
+      const sj = await start.json().catch(() => ({}));
+      if (!start.ok) throw new Error(sj.detail || start.statusText);
+      _voExportJob = { id: sj.job_id, filename: sj.filename };
+      _voPollExport();
+    } catch (err) {
+      showToast("Export failed: " + (err.message || err), "error");
+      _voExportJob = null;
+      _voResetFrameBtn();
+    }
+  }
+
+  function _voCancelExport() {
+    if (!_voExportJob) return;
+    const btn = _voFrameBtn();
+    if (btn) btn.textContent = "Cancelling…";
+    fetch(`/api/vendor-offers/analytics-export/jobs/${_voExportJob.id}/cancel`, { method: "POST" }).catch(() => {});
+  }
+
+  function _voPollExport() {
+    const job = _voExportJob;
+    if (!job) return;
+    setTimeout(async () => {
+      if (_voExportJob !== job) return;   // superseded/already cleared
+      let pj;
+      try {
+        const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}`);
+        pj = await ps.json().catch(() => ({}));
+        if (!ps.ok) throw new Error(pj.detail || ps.statusText);
+      } catch (err) {
+        _voPollExport();   // transient fetch error — keep trying, same as before
+        return;
+      }
+      if (pj.status === "cancelled") {
+        showToast("Export cancelled.", "info");
+        _voExportJob = null;
+        _voResetFrameBtn();
+        return;
+      }
+      if (pj.status === "error") {
+        showToast("Export failed: " + (pj.error || "export failed"), "error");
+        _voExportJob = null;
+        _voResetFrameBtn();
+        return;
+      }
+      if (pj.status === "complete") {
+        try {
+          const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}/download`);
+          if (!dl.ok) throw new Error("download failed");
+          const blob = await dl.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = job.filename || "offer_analytics.xlsx";
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          showToast("Offer Analytics export downloaded.", "success");
+        } catch (err) {
+          showToast("Download failed: " + (err.message || err), "error");
+        }
+        _voExportJob = null;
+        _voResetFrameBtn();
+        return;
+      }
+      // still running — reflect progress on the button whenever the frame happens
+      // to be visible; harmless (and cheap) to set even while it's hidden.
+      const btn = _voFrameBtn();
+      if (btn) {
+        if (pj.total) {
+          const pct = Math.round(pj.done / pj.total * 100);
+          const s = pj.eta_seconds;
+          const eta = s == null ? "" : (s >= 90 ? ` · ~${Math.ceil(s / 60)}m left` : ` · ~${s}s left`);
+          btn.textContent = `Cancel · ${pj.phase || "working"} ${pct}% (${pj.done}/${pj.total})${eta}`;
+        } else {
+          btn.textContent = `Cancel · ${pj.phase || "working"}…`;
+        }
+      }
+      _voPollExport();
+    }, 1500);
+  }
+
+  window._voStartExport = _voStartExport;
+  window._voCancelExport = _voCancelExport;
+  window._voIsExportRunning = () => !!_voExportJob;
+
   function initCreatePo() {
     const el = document.getElementById("view-create-po");
     if (el && window.CreatePO) window.CreatePO.mount(el);
