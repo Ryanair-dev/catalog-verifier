@@ -8,6 +8,7 @@ GET  /api/po-analytics/jobs/{job_id}/download — xlsx once complete
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -141,6 +142,19 @@ async def po_analytics_watchlist() -> dict:
 
 class WatchlistAdd(BaseModel):
     po_numbers: str   # free text: "49932, 49933" / "49932 49933" / "49932"
+    recipients: str = ""   # optional per-PO override — one email per line (or comma/semicolon-separated)
+
+
+def _parse_recipient_emails(raw: str) -> list[str]:
+    """Same loose splitting + validation as the generic automation-settings
+    recipients field (routers/settings.py) — one email per line, tolerant of
+    stray commas/semicolons from a pasted list."""
+    parts = re.split(r"[\n,;]+", raw or "")
+    cleaned = [p.strip() for p in parts if p.strip()]
+    for e in cleaned:
+        if "@" not in e or " " in e:
+            raise HTTPException(status_code=400, detail=f"'{e}' doesn't look like a valid email address.")
+    return cleaned
 
 
 @router.post("/po-analytics/automation/watchlist")
@@ -149,7 +163,8 @@ async def po_analytics_watchlist_add(body: WatchlistAdd) -> dict:
     nums = poa._parse_po_numbers(body.po_numbers)
     if not nums:
         raise HTTPException(status_code=400, detail="No PO number(s) found in input.")
-    added = po_automation.add_to_watchlist(nums)
+    recipients = _parse_recipient_emails(body.recipients) or None
+    added = po_automation.add_to_watchlist(nums, recipients=recipients)
     return {"added": added, "requested": len(nums), "watchlist": po_automation.get_watchlist()}
 
 

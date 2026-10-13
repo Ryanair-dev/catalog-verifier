@@ -187,30 +187,53 @@
 
         <div style="max-width:1040px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px;">
 
-          <!-- ===== Add PO (left) + Awaiting Analysis (right). Every PO added here -->
-          <!-- is automatically analyzed and emailed the day before its tracked ETA -->
-          <!-- (or the same day, if the ETA gets revised onto a near-term date) — -->
-          <!-- there's no "run it right now regardless of ETA" path anymore. -->
-          <div style="display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start;">
+          <!-- ===== Analyze a PO (left, on-demand) + Add PO + Recipients (right, -->
+          <!-- for the automation). The left box runs PO Analytics immediately and -->
+          <!-- downloads the result right away, independent of the day-before-ETA -->
+          <!-- automation. The right box ADDS a PO to that automation's watchlist, -->
+          <!-- optionally with its own recipient list — each PO can go to a -->
+          <!-- different set of people; left blank, it uses the default -->
+          <!-- recipients configured under Automation Settings below. -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;">
             <div class="card" style="padding:16px;">
-              <div class="abbr-section-title" style="margin-bottom:4px;">Add PO</div>
+              <div class="abbr-section-title" style="margin-bottom:4px;">Analyze a PO</div>
               <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-                One or more PO numbers (comma/space-separated). Added POs are
-                automatically analyzed and emailed the day before their tracked ETA.
+                Runs right now and lets you download the report immediately —
+                this doesn't touch the automated day-before-ETA emails on the right.
               </div>
-              <input id="poa-watch-input" type="text" placeholder="49932, 49933"
+              <input id="poa-input" type="text" placeholder="49932 or 49932, 49933"
                 style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-              <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Add</button>
+              <button id="poa-run" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Run PO Analytics</button>
+              <div id="poa-progress" class="hidden" style="margin-top:10px;font-size:12px;color:#6b7480;"></div>
+              <div id="poa-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
+              <div id="poa-skipped" class="hidden" style="margin-top:10px;font-size:12px;color:#b45309;"></div>
+              <button id="poa-download" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:10px;">Download report</button>
             </div>
 
             <div class="card" style="padding:16px;">
-              <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
-              <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+              <div class="abbr-section-title" style="margin-bottom:4px;">Add PO (for automation)</div>
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+                One or more PO numbers (comma/space-separated). Leave recipients
+                blank to use the defaults below, or list specific emails (one
+                per line) just for these POs.
+              </div>
+              <input id="poa-watch-input" type="text" placeholder="49932, 49933"
+                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;margin-bottom:8px;" />
+              <textarea id="poa-watch-recipients" rows="3" placeholder="Leave blank to use the default recipients"
+                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;resize:vertical;font-family:inherit;"></textarea>
+              <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Add</button>
             </div>
           </div>
 
-          <!-- ===== Archive — POs already analyzed; download the report that was -->
-          <!-- generated and emailed at the time. -->
+          <!-- ===== Awaiting Analysis — full width, each row shows who will -->
+          <!-- receive that PO's report once it's analyzed. -->
+          <div class="card" style="padding:16px;">
+            <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
+            <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+          </div>
+
+          <!-- ===== Archive — full width, same as Awaiting Analysis. POs already -->
+          <!-- analyzed; download the report that was generated and emailed. -->
           <div class="card" style="padding:16px;">
             <div class="abbr-section-title" style="margin-bottom:10px;">Archive</div>
             <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
@@ -2963,7 +2986,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=61"></script>
+  <script src="/static/app.js?v=62"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

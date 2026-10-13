@@ -25,8 +25,12 @@ excluding the two unambiguous terminal states (Received/Cancelled).
 Each fire calls `services.analytics.po_analytics.gather(..., require_received
 =False)` — the PO is used in whatever SellerCloud status it's actually in,
 with "PO qty" switched to the ORDERED quantity (nothing has arrived yet) —
-then emails the resulting workbook via services.graph_mail to whoever is
-configured for the 'po_analytics' tool in `automation_recipients`.
+then emails the resulting workbook via services.graph_mail to whoever should
+receive THAT PO: each watched PO carries its own optional recipient override
+(`po_automation_watchlist.recipients_json`, 2026-10-13) — e.g. a different
+buyer per brand/vendor — falling back to the tool-wide default list when a
+PO has none of its own. The 'enabled' flag on the default is still the
+master on/off switch for the whole automation.
 
 `automation_recipients` is a small generic table (keyed by an arbitrary
 `tool` string) so another automated tool can reuse the same settings-page
@@ -82,9 +86,10 @@ CREATE TABLE IF NOT EXISTS automation_recipients (
     updated_at      TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS po_automation_watchlist (
-    po_number  INTEGER PRIMARY KEY,
-    note       TEXT DEFAULT '',
-    added_at   TEXT DEFAULT (datetime('now'))
+    po_number       INTEGER PRIMARY KEY,
+    note            TEXT DEFAULT '',
+    recipients_json TEXT,
+    added_at        TEXT DEFAULT (datetime('now'))
 );
 """
 
@@ -100,6 +105,13 @@ def init_schema() -> None:
             conn.execute("ALTER TABLE po_eta_automation ADD COLUMN report_filename TEXT")
         if "report_blob" not in cols:
             conn.execute("ALTER TABLE po_eta_automation ADD COLUMN report_blob BLOB")
+        # Additive migration (2026-10-13): per-PO recipient override — a PO
+        # can go to a different set of people than the tool-wide default
+        # (NULL = "use the default recipients below", a real list = override
+        # just for this PO).
+        wl_cols = {r[1] for r in conn.execute("PRAGMA table_info(po_automation_watchlist)").fetchall()}
+        if "recipients_json" not in wl_cols:
+            conn.execute("ALTER TABLE po_automation_watchlist ADD COLUMN recipients_json TEXT")
 
 
 # --------------------------------------------------------------------------- #
@@ -108,32 +120,62 @@ def init_schema() -> None:
 
 def get_watchlist() -> list[dict]:
     """Every watched PO, with its last-known tracking info if any (so the
-    Settings page can show the current ETA/status/sent-state inline)."""
+    Settings page can show the current ETA/status/sent-state inline), plus
+    the EFFECTIVE recipient list it will actually be sent to: its own
+    per-PO override if it has one, else the tool-wide default. `recipients`
+    is always the resolved list; `recipients_override` is the raw per-PO
+    value (None when this PO just uses the default)."""
+    default_recipients = get_recipients(TOOL_KEY)["recipients"]
     with database._connect() as conn:
         rows = conn.execute(
             """
-            SELECT w.po_number, w.note, w.added_at,
+            SELECT w.po_number, w.note, w.added_at, w.recipients_json,
                    t.last_eta, t.status, t.sent_at, t.last_error
             FROM po_automation_watchlist w
             LEFT JOIN po_eta_automation t ON t.po_number = w.po_number
             ORDER BY w.added_at DESC
             """
         ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        override = json.loads(d.pop("recipients_json") or "null")
+        d["recipients_override"] = override
+        d["recipients"] = override if override else default_recipients
+        out.append(d)
+    return out
 
 
-def add_to_watchlist(po_numbers: list[int], note: str = "") -> int:
-    """Adds PO numbers to the watchlist (no-op for ones already present).
-    Returns how many were newly added."""
+def add_to_watchlist(po_numbers: list[int], note: str = "", recipients: list[str] | None = None) -> int:
+    """Adds PO numbers to the watchlist (no-op for ones already present,
+    other than updating their recipients). `recipients=None` means "don't
+    set a per-PO override" — re-adding an already-watched PO with recipients
+    omitted leaves its existing override (if any) untouched; passing a real
+    list sets/replaces it. Returns how many were newly added (not counting
+    POs that already existed and just had their recipients updated)."""
+    recipients_json = json.dumps(recipients) if recipients is not None else None
     added = 0
     with database._LOCK, database._connect() as conn:
+        existing = set()
+        if po_numbers:
+            placeholders = ",".join("?" * len(po_numbers))
+            existing = {
+                r[0] for r in conn.execute(
+                    f"SELECT po_number FROM po_automation_watchlist WHERE po_number IN ({placeholders})",
+                    po_numbers,
+                ).fetchall()
+            }
         for po in po_numbers:
-            cur = conn.execute(
-                "INSERT INTO po_automation_watchlist (po_number, note) VALUES (?, ?) "
-                "ON CONFLICT(po_number) DO NOTHING",
-                (po, note),
+            conn.execute(
+                """
+                INSERT INTO po_automation_watchlist (po_number, note, recipients_json) VALUES (?, ?, ?)
+                ON CONFLICT(po_number) DO UPDATE SET
+                    recipients_json = COALESCE(excluded.recipients_json, po_automation_watchlist.recipients_json)
+                """,
+                (po, note, recipients_json),
             )
-            added += cur.rowcount
+            if po not in existing:
+                added += 1
     return added
 
 
@@ -240,16 +282,16 @@ def _compute_due(conn) -> list[int]:
     return due
 
 
-def _run_and_send_one(po_number: int) -> tuple[str, bytes]:
-    """Runs PO Analytics for one PO (ordered-qty mode) and emails the result.
-    Returns (filename, blob) so the caller can archive it for later download —
-    raises on any failure, caller records it."""
+def _run_and_send_one(po_number: int, recipients: list[str]) -> tuple[str, bytes]:
+    """Runs PO Analytics for one PO (ordered-qty mode) and emails the result
+    to the given recipients (the caller has already resolved per-PO override
+    vs. default). Returns (filename, blob) so the caller can archive it for
+    later download — raises on any failure, caller records it."""
     gathered = po_analytics.gather([po_number], require_received=False)
     blob = po_analytics.enrich_and_build(gathered)
     filename = po_analytics.po_analytics_filename(
         gathered.get("resolved_po_numbers") or [po_number], gathered["brand_label"]
     )
-    recip = get_recipients(TOOL_KEY)
     subject = f"PO Analytics (automated) — {filename.rsplit('.', 1)[0]}"
     body = (
         f"<p>Automated PO Analytics for PO <b>{po_number}</b>, generated the day "
@@ -257,7 +299,7 @@ def _run_and_send_one(po_number: int) -> tuple[str, bytes]:
         f"<p>Figures in the attached report are based on <b>ordered</b> quantity — "
         f"nothing has been received yet.</p>"
     )
-    graph_mail.send_mail(recip["recipients"], subject, body, attachments=[(filename, blob)])
+    graph_mail.send_mail(recipients, subject, body, attachments=[(filename, blob)])
     return filename, blob
 
 
@@ -278,9 +320,10 @@ def check_and_trigger() -> dict:
     """One check cycle: pull the live Monday mirror, update tracking for
     WATCHED POs only, and run+email PO Analytics for every watched PO that
     just became due. Best-effort per PO — one PO's failure (SellerCloud
-    error, bad recipient, etc.) is recorded on that PO's own row and does not
+    error, no recipients, etc.) is recorded on that PO's own row and does not
     block the others. Returns a summary."""
-    watch = {w["po_number"] for w in get_watchlist()}
+    watchlist = get_watchlist()
+    watch = {w["po_number"] for w in watchlist}
     summary = {"checked": 0, "due": 0, "sent": 0, "errors": []}
     if not watch:
         return summary  # nothing saved to watch yet — don't touch Azure at all
@@ -290,17 +333,31 @@ def check_and_trigger() -> dict:
     _upsert_tracking(relevant)
     summary["checked"] = len(relevant)
 
-    recip = get_recipients(TOOL_KEY)
-    if not recip["enabled"] or not recip["recipients"]:
-        return summary  # nothing to send to — don't bother running analytics
+    master = get_recipients(TOOL_KEY)
+    if not master["enabled"]:
+        return summary  # automation switched off entirely — master kill-switch
 
     with database._connect() as conn:
         due = _compute_due(conn)
 
     summary["due"] = len(due)
+    by_po = {w["po_number"]: w for w in watchlist}
     for po in due:
+        # Each PO goes to its own recipients if it has an override, else the
+        # tool-wide default — get_watchlist() already resolved that for us.
+        recipients = (by_po.get(po) or {}).get("recipients") or []
+        if not recipients:
+            summary["errors"].append(
+                {"po": po, "error": "no recipients configured (neither PO-specific nor default)"}
+            )
+            with database._LOCK, database._connect() as conn:
+                conn.execute(
+                    "UPDATE po_eta_automation SET last_error=? WHERE po_number=?",
+                    ("no recipients configured", po),
+                )
+            continue
         try:
-            filename, blob = _run_and_send_one(po)
+            filename, blob = _run_and_send_one(po, recipients)
             summary["sent"] += 1
             with database._LOCK, database._connect() as conn:
                 conn.execute(
