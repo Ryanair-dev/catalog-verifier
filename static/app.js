@@ -4539,18 +4539,20 @@
     }
     empty.classList.add("hidden");
 
-    const actionButtons = (c) => {
+        const actionButtons = (c) => {
       const key = `${c.row_idx}|${c.asin}`;
       const v = (c.verdict || "").toLowerCase();
+      const reportBtn = `<button class="row-action-btn" data-report-key="${escapeHtml(key)}" title="Report a wrong match and tell us why">&#9873; Report</button>`;
       if (v === "verified") {
-        return `<div class="run-action-cell"><button class="row-action-btn reject" data-run-action="reject" data-run-key="${escapeHtml(key)}">Reject</button></div>`;
+        return `<div class="run-action-cell"><button class="row-action-btn reject" data-run-action="reject" data-run-key="${escapeHtml(key)}">Reject</button>${reportBtn}</div>`;
       }
       if (v === "not_approved") {
-        return `<div class="run-action-cell"><button class="row-action-btn promote" data-run-action="promote" data-run-key="${escapeHtml(key)}">Promote</button></div>`;
+        return `<div class="run-action-cell"><button class="row-action-btn promote" data-run-action="promote" data-run-key="${escapeHtml(key)}">Promote</button>${reportBtn}</div>`;
       }
       return `<div class="run-action-cell">
         <button class="row-action-btn approve" data-run-action="approve" data-run-key="${escapeHtml(key)}">Approve</button>
         <button class="row-action-btn discard" data-run-action="discard" data-run-key="${escapeHtml(key)}">Discard</button>
+        ${reportBtn}
       </div>`;
     };
 
@@ -8467,4 +8469,157 @@
     }, 400);
   }
   $("#awiz-title-ai-clean")?.addEventListener("change", _updateAwizRunEstimate);
+
+  const _FB_NAME_KEY = "cv_user_name";
+  let _fbReasons = null;
+
+  function _fbStoredName() { try { return localStorage.getItem(_FB_NAME_KEY) || ""; } catch { return ""; } }
+  function _fbStoreName(n) { try { if (n) localStorage.setItem(_FB_NAME_KEY, n); } catch { /* private mode */ } }
+
+  async function _fbLoadReasons() {
+    if (_fbReasons) return _fbReasons;
+    try { _fbReasons = await api("/api/feedback/reasons"); }
+    catch { _fbReasons = { different: [], same: [] }; }
+    return _fbReasons;
+  }
+
+  function _fbFindCandidate(rowIdx, asin) {
+    const ar = state.analyticsRun || {};
+    const pools = [];
+    Object.values(ar.tabPageData || {}).forEach(e => { if (e && Array.isArray(e.candidates)) pools.push(e.candidates); });
+    if (ar.data && Array.isArray(ar.data.candidates)) pools.push(ar.data.candidates);
+    for (const p of pools) {
+      const c = p.find(x => x.row_idx === rowIdx && x.asin === asin);
+      if (c) return c;
+    }
+    return null;
+  }
+  function _fbFindSource(rowIdx) {
+    const rows = (state.analyticsRun && state.analyticsRun.data && state.analyticsRun.data.catalog_rows) || [];
+    return rows.find(r => r.row_idx === rowIdx) || {};
+  }
+
+  function _fbModal(html) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:200;";
+    backdrop.innerHTML = html;
+    document.body.appendChild(backdrop);
+    return backdrop;
+  }
+
+  async function _fbOpenReportModal(rowIdx, asin) {
+    const c = _fbFindCandidate(rowIdx, asin);
+    if (!c) { showToast("Could not find that row - refresh the page and try again.", "error"); return; }
+    const src = _fbFindSource(rowIdx);
+    const amz = (c.data && c.data.amazon) || {};
+    const verdict = (c.verdict || "").toLowerCase();
+    const reasons = await _fbLoadReasons();
+    let label = verdict === "verified" ? "different" : verdict === "not_approved" ? "same" : "";
+
+    const bd = _fbModal(`
+      <div class="bg-white rounded-xl p-6 shadow-xl" role="dialog" aria-modal="true"
+           style="width:520px;max-width:94vw;max-height:90vh;overflow:auto;box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+        <div class="font-semibold text-lg" style="color:var(--navy-800);">Report this match</div>
+        <div class="text-xs mt-1" style="color:#6b7480;">This does not change the verdict. It tells the developer where the matcher got it wrong.</div>
+        <div class="mt-3 p-3 rounded-lg text-xs" style="background:#f8fafc;border:1px solid #e2e8f0;">
+          <div><b>Vendor:</b> <span class="fb-vt"></span></div>
+          <div class="mt-1"><b>Amazon:</b> <span class="fb-at"></span> <span class="fb-asin" style="color:#94a3b8;"></span></div>
+          <div class="mt-1" style="color:#64748b;">Matcher: <span class="fb-sc"></span></div>
+        </div>
+        <div class="mt-4 text-xs font-semibold" style="color:#334155;">These two are...</div>
+        <div class="mt-1 flex gap-4 text-sm">
+          <label style="cursor:pointer;"><input type="radio" name="fb-label" value="different"> NOT the same product</label>
+          <label style="cursor:pointer;"><input type="radio" name="fb-label" value="same"> the SAME product</label>
+        </div>
+        <div class="mt-3 text-xs font-semibold" style="color:#334155;">Why? <span style="font-weight:400;color:#94a3b8;">(pick all that apply)</span></div>
+        <div class="fb-reasons mt-1" style="display:flex;flex-direction:column;gap:4px;font-size:13px;"></div>
+        <div class="mt-3 text-xs font-semibold" style="color:#334155;">Note <span style="font-weight:400;color:#94a3b8;">(optional)</span></div>
+        <textarea class="fb-note abbr-input mt-1" rows="3" maxlength="1000" placeholder="Anything that helps, e.g. the 2PCS pack is a different listing than the 4-pack"></textarea>
+        <div class="grid grid-cols-2 gap-3 mt-3">
+          <div><div class="text-xs font-semibold" style="color:#334155;">Correct ASIN <span style="font-weight:400;color:#94a3b8;">(optional)</span></div>
+            <input class="fb-asin-in abbr-input mt-1" maxlength="10" placeholder="B0..." autocomplete="off"></div>
+          <div><div class="text-xs font-semibold" style="color:#334155;">Your name</div>
+            <input class="fb-name abbr-input mt-1" maxlength="60" placeholder="in case we have a question" autocomplete="off"></div>
+        </div>
+        <div class="fb-err text-xs mt-2" style="color:#b91c1c;"></div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="btn btn-secondary fb-cancel">Cancel</button>
+          <button class="btn btn-primary fb-send">Send report</button>
+        </div>
+      </div>`);
+
+    // Titles go in as text (never as HTML): they come from vendor files and Amazon.
+    bd.querySelector(".fb-vt").textContent = [src.title, src.brand].filter(Boolean).join("  |  ") || "-";
+    bd.querySelector(".fb-at").textContent = amz.title || "-";
+    bd.querySelector(".fb-asin").textContent = asin;
+    bd.querySelector(".fb-sc").textContent =
+      `${(c.data && c.data.scores && c.data.scores.scoring_method) || "matcher"}  |  ${verdict.replace("_", " ")}  |  ${Math.round(c.confidence || 0)}%`;
+    bd.querySelector(".fb-name").value = _fbStoredName();
+
+    const box = bd.querySelector(".fb-reasons");
+    function renderReasons() {
+      const list = label === "same" ? reasons.same : label === "different" ? reasons.different : [];
+      box.replaceChildren();
+      if (!list.length) {
+        const hint = document.createElement("div");
+        hint.style.color = "#94a3b8";
+        hint.textContent = "Choose an option above first.";
+        box.appendChild(hint);
+        return;
+      }
+      list.forEach(r => {
+        const lab = document.createElement("label");
+        lab.style.cursor = "pointer";
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.value = r.code;
+        lab.append(cb, " " + r.label);
+        box.appendChild(lab);
+      });
+    }
+    bd.querySelectorAll("input[name='fb-label']").forEach(rb => {
+      rb.checked = rb.value === label;
+      rb.addEventListener("change", () => { label = rb.value; renderReasons(); });
+    });
+    renderReasons();
+
+    const close = () => { document.removeEventListener("keydown", onKey); bd.remove(); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    bd.querySelector(".fb-cancel").addEventListener("click", close);
+    bd.addEventListener("mousedown", (e) => { if (e.target === bd) close(); });
+
+    const err = bd.querySelector(".fb-err");
+    const sendBtn = bd.querySelector(".fb-send");
+    sendBtn.addEventListener("click", async () => {
+      const codes = Array.from(box.querySelectorAll("input:checked")).map(x => x.value);
+      const note = bd.querySelector(".fb-note").value.trim();
+      const name = bd.querySelector(".fb-name").value.trim();
+      if (!label) { err.textContent = "Choose whether the two are the same product or not."; return; }
+      if (!codes.length && !note) { err.textContent = "Pick at least one reason or write a short note."; return; }
+      sendBtn.disabled = true; err.textContent = "";
+      try {
+        await api("/api/feedback/report", { method: "POST", body: {
+          run_id: state.analyticsRun.id, row_idx: rowIdx, asin, label, reasons: codes, note,
+          correct_asin: bd.querySelector(".fb-asin-in").value.trim(), reported_by: name,
+        }});
+        _fbStoreName(name);
+        showToast("Thanks - your report was sent.", "success");
+        close();
+      } catch (e) {
+        err.textContent = e.message || String(e);
+        sendBtn.disabled = false;
+      }
+    });
+  }
+
+  // One listener on the table body: the rows are re-drawn often, the body is not.
+  $("#analytics-run-candidates-body")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-report-key]");
+    if (!btn) return;
+    const [rawIdx, asin] = (btn.dataset.reportKey || "").split("|");
+    const rowIdx = parseInt(rawIdx, 10);
+    if (Number.isNaN(rowIdx) || !asin) return;
+    _fbOpenReportModal(rowIdx, asin);
+  });
 })();

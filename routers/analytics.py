@@ -25,6 +25,7 @@ import io
 import json
 import os
 import sqlite3
+from statistics import median
 from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
@@ -717,181 +718,181 @@ def _parse_json_field(raw: str, default: Any) -> Any:
         return default
 
 
-@router.post("/runs")
-async def create_analytics_run(
-    catalog_file: UploadFile = File(...),
-    name: str = Form(...),
-    marketplace: str = Form("US"),
-    header_row: int = Form(...),
-    mapping: str = Form(...),           # JSON-encoded {"upc": "3", ...}
-    brand: str = Form(""),
-    search_methods: str = Form(...),    # JSON-encoded list
-    pages_per_title: int = Form(5),
-    ai_clean_titles: bool = Form(False),
-    max_rank: int = Form(0),
-    min_rank: int = Form(0),
-    vetting_mode: str = Form("cpg"),
-    scoring_method: str = Form("weighted"),
-    use_query_agent: bool = Form(False),
-    use_llm_verifier: bool = Form(False),
-    sheet_name: str = Form(""),
-    passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
-) -> dict[str, Any]:
-    """
-    Create a new Analytics run.
+# @router.post("/runs")
+# async def create_analytics_run(
+#     catalog_file: UploadFile = File(...),
+#     name: str = Form(...),
+#     marketplace: str = Form("US"),
+#     header_row: int = Form(...),
+#     mapping: str = Form(...),           # JSON-encoded {"upc": "3", ...}
+#     brand: str = Form(""),
+#     search_methods: str = Form(...),    # JSON-encoded list
+#     pages_per_title: int = Form(5),
+#     ai_clean_titles: bool = Form(False),
+#     max_rank: int = Form(0),
+#     min_rank: int = Form(0),
+#     vetting_mode: str = Form("cpg"),
+#     scoring_method: str = Form("weighted"),
+#     use_query_agent: bool = Form(False),
+#     use_llm_verifier: bool = Form(False),
+#     sheet_name: str = Form(""),
+#     passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
+# ) -> dict[str, Any]:
+#     """
+#     Create a new Analytics run.
 
-    The wizard sends us a multipart POST with the raw catalog file plus
-    every decision the user made in steps 1–4. We parse the file with
-    their chosen header row + column mapping, persist the resulting
-    source rows, and kick off a background thread that runs the
-    3-tier SP-API search + vetting.
+#     The wizard sends us a multipart POST with the raw catalog file plus
+#     every decision the user made in steps 1–4. We parse the file with
+#     their chosen header row + column mapping, persist the resulting
+#     source rows, and kick off a background thread that runs the
+#     3-tier SP-API search + vetting.
 
-    ``sheet_name`` lets the caller specify which Excel sheet to read.
-    If omitted or not found, the workbook's active sheet is used.
+#     ``sheet_name`` lets the caller specify which Excel sheet to read.
+#     If omitted or not found, the workbook's active sheet is used.
 
-    Response shape:
-        {"run_id": 17, "total_catalog_items": 142, "status": "Searching"}
-    """
-    try:
-        data = await read_upload_limited(catalog_file)
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
+#     Response shape:
+#         {"run_id": 17, "total_catalog_items": 142, "status": "Searching"}
+#     """
+#     try:
+#         data = await read_upload_limited(catalog_file)
+#     except HTTPException:
+#         raise
+#     except Exception as exc:  # noqa: BLE001
+#         raise HTTPException(status_code=400, detail=f"Could not read upload: {exc}")
 
-    mapping_dict = _parse_json_field(mapping, {})
-    methods_list = _parse_json_field(search_methods, [])
-    if not isinstance(mapping_dict, dict):
-        raise HTTPException(status_code=400, detail="mapping must be a JSON object")
-    if not isinstance(methods_list, list) or not methods_list:
-        raise HTTPException(status_code=400, detail="search_methods must be a non-empty JSON array")
-    scoring_method = scoring_method.strip().lower()
-    if scoring_method not in SCORING_METHODS:
-        raise HTTPException(
-            status_code=400,
-            detail="scoring_method must be one of: weighted, cascade, classifier",
-        )
-    if (use_query_agent or use_llm_verifier) and not os.getenv("ANTHROPIC_API_KEY"):
-        raise HTTPException(
-            status_code=400,
-            detail="Set ANTHROPIC_API_KEY in .env to enable the matcher agents",
-        )
+#     mapping_dict = _parse_json_field(mapping, {})
+#     methods_list = _parse_json_field(search_methods, [])
+#     if not isinstance(mapping_dict, dict):
+#         raise HTTPException(status_code=400, detail="mapping must be a JSON object")
+#     if not isinstance(methods_list, list) or not methods_list:
+#         raise HTTPException(status_code=400, detail="search_methods must be a non-empty JSON array")
+#     scoring_method = scoring_method.strip().lower()
+#     if scoring_method not in SCORING_METHODS:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="scoring_method must be one of: weighted, cascade, classifier",
+#         )
+#     if (use_query_agent or use_llm_verifier) and not os.getenv("ANTHROPIC_API_KEY"):
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Set ANTHROPIC_API_KEY in .env to enable the matcher agents",
+#         )
 
-    # Parse the file into source rows using the wizard's picks.
-    try:
-        rows = parse_source_rows(
-            filename=catalog_file.filename or "catalog.xlsx",
-            data=data,
-            header_row_idx=int(header_row),
-            mapping=mapping_dict,
-            brand=brand or "",
-            sheet_name=sheet_name or "",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+#     # Parse the file into source rows using the wizard's picks.
+#     try:
+#         rows = parse_source_rows(
+#             filename=catalog_file.filename or "catalog.xlsx",
+#             data=data,
+#             header_row_idx=int(header_row),
+#             mapping=mapping_dict,
+#             brand=brand or "",
+#             sheet_name=sheet_name or "",
+#         )
+#     except Exception as exc:  # noqa: BLE001
+#         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
 
-    if not rows:
-        raise HTTPException(
-            status_code=400,
-            detail="No catalog rows found after applying your column mapping. "
-                   "Check the header row and UPC / Item ID / Title columns.",
-        )
+#     if not rows:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="No catalog rows found after applying your column mapping. "
+#                    "Check the header row and UPC / Item ID / Title columns.",
+#         )
 
-    # ── Deduplicate catalog rows ─────────────────────────────────────────────
-    # Vendor catalogs frequently repeat the same SKU on multiple lines.  A row is
-    # treated as a duplicate only when it repeats a STRONG identity, keeping the
-    # FIRST occurrence (its original row_idx is preserved so UI row numbers stay
-    # meaningful).
-    #
-    # Key priority: UPC (the globally-unique per-product identifier) is preferred;
-    # when an Item ID is also present, BOTH must match.  This is deliberate — some
-    # vendor files leave the real "Item #" column blank and the wizard's Item ID
-    # ends up mapped to a low-cardinality column (Manufacturer, Category).  Keying
-    # on Item ID alone then collapses thousands of distinct products onto one row
-    # per manufacturer.  Requiring the UPC (or UPC+ItemID together) prevents that,
-    # while also never merging two genuinely different SKUs that share a case UPC.
-    # Only when there is NO UPC do we fall back to Item ID — and even then we pair
-    # it with the title so a low-cardinality Item ID can't collapse the file.
-    def _dedup_key(r):
-        norm_upc   = r.upc.strip()
-        norm_id    = r.itemid.strip().upper().replace("-", "").replace(" ", "")
-        norm_title = r.title.strip().lower()
-        if norm_upc and norm_id:
-            return ("upc+id", norm_upc, norm_id)
-        if norm_upc:
-            return ("upc", norm_upc)
-        if norm_id and norm_title:
-            return ("id+title", norm_id, norm_title)
-        if norm_id:
-            return ("id", norm_id)
-        return ("title", norm_title)
+#     # ── Deduplicate catalog rows ─────────────────────────────────────────────
+#     # Vendor catalogs frequently repeat the same SKU on multiple lines.  A row is
+#     # treated as a duplicate only when it repeats a STRONG identity, keeping the
+#     # FIRST occurrence (its original row_idx is preserved so UI row numbers stay
+#     # meaningful).
+#     #
+#     # Key priority: UPC (the globally-unique per-product identifier) is preferred;
+#     # when an Item ID is also present, BOTH must match.  This is deliberate — some
+#     # vendor files leave the real "Item #" column blank and the wizard's Item ID
+#     # ends up mapped to a low-cardinality column (Manufacturer, Category).  Keying
+#     # on Item ID alone then collapses thousands of distinct products onto one row
+#     # per manufacturer.  Requiring the UPC (or UPC+ItemID together) prevents that,
+#     # while also never merging two genuinely different SKUs that share a case UPC.
+#     # Only when there is NO UPC do we fall back to Item ID — and even then we pair
+#     # it with the title so a low-cardinality Item ID can't collapse the file.
+#     def _dedup_key(r):
+#         norm_upc   = r.upc.strip()
+#         norm_id    = r.itemid.strip().upper().replace("-", "").replace(" ", "")
+#         norm_title = r.title.strip().lower()
+#         if norm_upc and norm_id:
+#             return ("upc+id", norm_upc, norm_id)
+#         if norm_upc:
+#             return ("upc", norm_upc)
+#         if norm_id and norm_title:
+#             return ("id+title", norm_id, norm_title)
+#         if norm_id:
+#             return ("id", norm_id)
+#         return ("title", norm_title)
 
-    seen_keys: set = set()
-    deduped = []
-    for row in rows:
-        k = _dedup_key(row)
-        if k in seen_keys:
-            continue
-        seen_keys.add(k)
-        deduped.append(row)
+#     seen_keys: set = set()
+#     deduped = []
+#     for row in rows:
+#         k = _dedup_key(row)
+#         if k in seen_keys:
+#             continue
+#         seen_keys.add(k)
+#         deduped.append(row)
 
-    duplicates_removed = len(rows) - len(deduped)
-    rows = deduped
+#     duplicates_removed = len(rows) - len(deduped)
+#     rows = deduped
 
-    # Determine brand column/mode for storage so the rescore modal can pre-populate.
-    # When brand text is non-empty the wizard was in text mode; otherwise the brand
-    # column name comes from mapping["brand"].
-    saved_brand_col  = brand.strip() if brand.strip() else (mapping_dict.get("brand") or "")
-    saved_brand_mode = "text" if brand.strip() else "col"
+#     # Determine brand column/mode for storage so the rescore modal can pre-populate.
+#     # When brand text is non-empty the wizard was in text mode; otherwise the brand
+#     # column name comes from mapping["brand"].
+#     saved_brand_col  = brand.strip() if brand.strip() else (mapping_dict.get("brand") or "")
+#     saved_brand_mode = "text" if brand.strip() else "col"
 
-    # 0 = unlimited (walk every page Amazon returns); the runner bounds it with a
-    # safety cap. Positive values are capped at MAX_TITLE_PAGES.
-    pages_per_title = clamp_int(pages_per_title, 0, MAX_TITLE_PAGES, 5)
+#     # 0 = unlimited (walk every page Amazon returns); the runner bounds it with a
+#     # safety cap. Positive values are capped at MAX_TITLE_PAGES.
+#     pages_per_title = clamp_int(pages_per_title, 0, MAX_TITLE_PAGES, 5)
 
-    # Validate passthrough_cols — must be a JSON array of strings if provided.
-    pt_cols_raw = (passthrough_cols or "").strip()
-    pt_cols_validated: list[str] = []
-    if pt_cols_raw:
-        try:
-            parsed_pt = json.loads(pt_cols_raw)
-            if isinstance(parsed_pt, list):
-                pt_cols_validated = [str(c) for c in parsed_pt if c]
-        except (ValueError, TypeError):
-            pass  # ignore malformed input — passthrough is optional
+#     # Validate passthrough_cols — must be a JSON array of strings if provided.
+#     pt_cols_raw = (passthrough_cols or "").strip()
+#     pt_cols_validated: list[str] = []
+#     if pt_cols_raw:
+#         try:
+#             parsed_pt = json.loads(pt_cols_raw)
+#             if isinstance(parsed_pt, list):
+#                 pt_cols_validated = [str(c) for c in parsed_pt if c]
+#         except (ValueError, TypeError):
+#             pass  # ignore malformed input — passthrough is optional
 
-    run_id = start_analytics_run(
-        name=name.strip() or (catalog_file.filename or "Untitled run"),
-        marketplace=marketplace or "US",
-        search_methods=[str(m) for m in methods_list],
-        pages_per_title=pages_per_title,
-        ai_clean_titles=bool(ai_clean_titles),
-        source_rows=rows,
-        max_rank=int(max_rank),
-        min_rank=int(min_rank),
-        mode=vetting_mode if vetting_mode in ("cpg", "medical") else "cpg",
-        scoring_method=scoring_method,
-        use_query_agent=bool(use_query_agent),
-        use_llm_verifier=bool(use_llm_verifier),
-        brand_col=saved_brand_col,
-        brand_mode=saved_brand_mode,
-        passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",
-    )
+#     run_id = start_analytics_run(
+#         name=name.strip() or (catalog_file.filename or "Untitled run"),
+#         marketplace=marketplace or "US",
+#         search_methods=[str(m) for m in methods_list],
+#         pages_per_title=pages_per_title,
+#         ai_clean_titles=bool(ai_clean_titles),
+#         source_rows=rows,
+#         max_rank=int(max_rank),
+#         min_rank=int(min_rank),
+#         mode=vetting_mode if vetting_mode in ("cpg", "medical") else "cpg",
+#         scoring_method=scoring_method,
+#         use_query_agent=bool(use_query_agent),
+#         use_llm_verifier=bool(use_llm_verifier),
+#         brand_col=saved_brand_col,
+#         brand_mode=saved_brand_mode,
+#         passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",
+#     )
 
-    # Persist the duplicate count so the run detail banner can show it.
-    if duplicates_removed > 0:
-        with database._LOCK, database._connect() as conn:
-            conn.execute(
-                "UPDATE analytics_runs SET duplicate_rows_removed=? WHERE id=?",
-                (duplicates_removed, run_id),
-            )
+#     # Persist the duplicate count so the run detail banner can show it.
+#     if duplicates_removed > 0:
+#         with database._LOCK, database._connect() as conn:
+#             conn.execute(
+#                 "UPDATE analytics_runs SET duplicate_rows_removed=? WHERE id=?",
+#                 (duplicates_removed, run_id),
+#             )
 
-    return {
-        "run_id": run_id,
-        "total_catalog_items": len(rows),
-        "duplicate_rows_removed": duplicates_removed,
-        "status": "Searching" if sp_api_configured() else "Error",
-        "sp_api_configured": sp_api_configured(),
-    }
+#     return {
+#         "run_id": run_id,
+#         "total_catalog_items": len(rows),
+#         "duplicate_rows_removed": duplicates_removed,
+#         "status": "Searching" if sp_api_configured() else "Error",
+#         "sp_api_configured": sp_api_configured(),
+#     }
 
 
 # --------------------------------------------------------------------------- #
