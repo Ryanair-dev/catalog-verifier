@@ -6,8 +6,8 @@ Pipeline (per run):
   Tier 2 — Item ID keyword search (SP-API searchCatalogItems, keywords)
   Tier 3 — Title keyword search   (SP-API searchCatalogItems, keywords + paging)
 
-Each candidate ASIN is scored with services.analytics.matcher against
-the source row. If the same ASIN comes back from multiple tiers, we
+Each candidate ASIN is scored with the selected matcher against the source
+row. If the same ASIN comes back from multiple tiers, we
 dedupe and record which tiers contributed via the `sources` column.
 
 Progress is reported by updating the run row in `analytics_runs` so the
@@ -28,13 +28,15 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Iterable
 
 from services import database
-from services.analytics.matcher import calculate_confidence
+from services.analytics.matching_core.adapter import build_pair, score_pair
+from services.analytics.matching_core.models import MatchResult, Verdict
 from services.analytics.parser import SourceRow
-from services.analytics.product_categorizer import categorize, category_distance, UNKNOWN, MEDICAL
+from services.analytics.matching_core.matching.normalize import normalize_text
 from services.analytics.brand_extractor import extract_brands
 from services.spapi import get_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
@@ -59,30 +61,8 @@ def _page_limit(max_pages):
     return None if n <= 0 else max(1, n)
 AI_CLEAN_WORKERS = 3           # parallel GPT-4o-mini calls for title cleaning (Tier 1: 500 RPM)
 
-# Verdict thresholds (mirrors AmazonAsinResearch1 config defaults).
-MIN_CONFIDENCE = 30.0
 AUTO_APPROVE = 90.0
 REVIEW_FLOOR = 35.0
-
-
-# --------------------------------------------------------------------------- #
-# Media-format hard-reject
-# --------------------------------------------------------------------------- #
-
-# Matches physical/digital media format indicators that appear as standalone words
-# in an Amazon product title.  A medical or CPG vendor would never supply these.
-# Using word-boundary regex so "DVD" in a title like "STRETCHING EXERCISES FOR
-# SENIORS DVD" fires, but "DVDS001" (a model number) does not.
-_MEDIA_FORMAT_RE = re.compile(
-    r"\b(dvd|blu[\s\-]?ray|audiobook|audio\s+book|e[\s\-]?book|vhs|cd[\s\-]?rom)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_media_format(amazon_title: str) -> bool:
-    """Return True when the Amazon title explicitly identifies the item as a
-    physical/digital media product (DVD, Blu-ray, audiobook, etc.)."""
-    return bool(_MEDIA_FORMAT_RE.search(amazon_title or ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -241,8 +221,7 @@ def _extract_sales_rank(raw: dict) -> tuple[int | None, str, list[dict]]:
 
 def normalize_amazon_item(raw: dict) -> dict:
     """
-    Flatten a single SP-API Catalog Items v2022-04-01 item into the dict
-    shape `matcher.calculate_confidence` expects.
+    Flatten a single SP-API Catalog Items v2022-04-01 item for the matcher adapter.
     """
     asin = raw.get("asin", "")
 
@@ -289,7 +268,12 @@ def normalize_amazon_item(raw: dict) -> dict:
     return {
         "asin": asin,
         "title": summary.get("itemName") or _attr_str("item_name"),
-        "brand": summary.get("brand") or _attr_str("brand"),
+        "brand": (
+            summary.get("brand")
+            or _attr_str("brand")
+            or summary.get("manufacturer")
+            or _attr_str("manufacturer")
+        ),
         "manufacturer": summary.get("manufacturer") or _attr_str("manufacturer"),
         "mpn": summary.get("partNumber") or summary.get("modelNumber") or _attr_str("part_number"),
         "upc": upcs[0] if upcs else "",
@@ -334,6 +318,9 @@ def _create_run(
     brand_col: str = "",
     brand_mode: str = "col",
     passthrough_cols: str = "",
+    scoring_method: str = "weighted",
+    use_query_agent: bool = False,
+    use_llm_verifier: bool = False,
 ) -> int:
     with database._LOCK, _with_conn() as conn:
         cur = conn.execute(
@@ -342,8 +329,9 @@ def _create_run(
               (name, marketplace, search_methods, pages_per_title,
                ai_clean_titles, total_catalog_items, max_rank, min_rank,
                vetting_mode, brand_col, brand_mode, passthrough_cols,
+               scoring_method, use_query_agent, use_llm_verifier,
                status, progress_phase, progress_done, progress_total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', 'Queued', 0, ?)
             """,
             (
                 name, marketplace, json.dumps(search_methods),
@@ -351,6 +339,9 @@ def _create_run(
                 int(total_catalog_items), int(max_rank), int(min_rank),
                 mode or "cpg", brand_col or "", brand_mode or "col",
                 passthrough_cols or "",
+                scoring_method,
+                1 if use_query_agent else 0,
+                1 if use_llm_verifier else 0,
                 int(total_catalog_items),
             ),
         )
@@ -407,9 +398,8 @@ def _upsert_candidate(
     max_rank: int = 0,
     min_rank: int = 0,
     extracted: dict | None = None,
-    blacklist_set: frozenset | None = None,
-    verified_set: frozenset | None = None,
     mode: str = "cpg",
+    scoring_method: str = "weighted",
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
@@ -417,8 +407,7 @@ def _upsert_candidate(
     from a prior tier, we keep the higher confidence and union the
     `sources` list.
 
-    max_rank: when > 0, ASINs whose sales_rank exceeds this are forced to not_approved.
-    min_rank: when > 0, ASINs whose sales_rank is below this are forced to not_approved.
+    max_rank/min_rank filter ASINs outside the configured sales-rank window.
     Unknown/null rank is never penalised by either cap.
     extracted: brand fields from GPT-4o-mini extraction — used for more precise scoring.
     """
@@ -426,68 +415,15 @@ def _upsert_candidate(
     if not asin:
         return "skip"
 
-    upc = str(source.get("upc") or "").strip()
-
     # Save all fetched ASIN data to the global cache (strips _raw to save space).
     database.save_asin_to_cache(asin, normalized)
 
-    scores = calculate_confidence(
-        source, normalized,
-        upc_search_hit="UPC" in sources,
-        extracted=extracted,
-        mpn_search_hit="ItemID" in sources,
-        mode=mode,
+    scores, verdict = score_pair(
+        source, normalized, method=scoring_method, mode=mode,
+        extracted=extracted, sources=sources,
     )
+    scores["scorer_verdict"] = verdict
     conf = scores["confidence_score"]
-
-    # Category check: reject Amazon items whose BSR category is clearly in the
-    # wrong domain.  We use ONLY the Amazon sales_rank_category (the BSR top-level
-    # category) — it is authoritative and unambiguous.  Title-inferred categories
-    # are too noisy (e.g. "washcloths" → Food, "hot pack" → Garden).
-    # If Amazon provides no BSR category the check is skipped (no false-positives).
-    # Medical mode only — CPG runs span too many categories to restrict.
-    # Category distance only vetoes AMBIGUOUS matches.  A confirmed UPC or brand
-    # match means it's the right product even when Amazon shelves it outside
-    # Health (Futuro pantyhose → Clothing, Command hooks → Home Improvement,
-    # Scotch tape → Office).  Otherwise correct 100%-UPC matches were being
-    # hard-rejected as "Category mismatch".
-    _amz_bsr_cat = categorize("", normalized.get("sales_rank_category") or "")
-    category_mismatch = False
-    if (
-        mode == "medical" and _amz_bsr_cat != UNKNOWN
-        and not scores.get("upc_match") and not scores.get("brand_confirmed")
-    ):
-        _dist = category_distance(MEDICAL, _amz_bsr_cat)
-        category_mismatch = _dist >= 5.0
-
-    if category_mismatch:
-        scores["category_mismatch"] = True
-
-    # Media-format hard-reject (both CPG and medical): if the Amazon title
-    # explicitly identifies the listing as a DVD, Blu-ray, audiobook, etc.
-    # a medical/CPG vendor would never supply it.  This catches exercise DVDs
-    # that Amazon shelves under "Health & Personal Care" or "Sports & Outdoors"
-    # — BSR categories that otherwise pass the category distance check.
-    media_mismatch = _is_media_format(normalized.get("title") or "")
-    if media_mismatch:
-        scores["media_format_mismatch"] = True
-
-    hard_reject = (
-        scores.get("size_mismatch") or scores.get("gender_mismatch")
-        or scores.get("color_mismatch") or category_mismatch or media_mismatch
-        or scores.get("count_mismatch") or scores.get("scent_mismatch")
-        or scores.get("shade_mismatch") or scores.get("apparel_size_mismatch")
-    )
-    if hard_reject:
-        verdict = "not_approved"
-    elif conf >= AUTO_APPROVE:
-        verdict = "verified"
-    elif conf >= REVIEW_FLOOR or scores.get("pack_mismatch"):
-        verdict = "review"
-    elif conf >= MIN_CONFIDENCE:
-        verdict = "review"
-    else:
-        verdict = "not_approved"
 
     # amz_pack: use the scorer's effective_pack when available (accounts for
     # vendor titles that already embed a count, e.g. "36 count crayons").
@@ -526,15 +462,6 @@ def _upsert_candidate(
             )
         return "bsr_filtered"
 
-    # Pair manager overrides — applied after all scoring/rank logic.
-    # Blacklisted pairs are always forced not_approved (never match again until unlinked).
-    # Previously verified pairs are auto-approved when scoring is still reasonable.
-    if upc and blacklist_set is not None and (upc, asin) in blacklist_set:
-        verdict = "not_approved"
-    elif upc and verified_set is not None and (upc, asin) in verified_set \
-            and not hard_reject and conf >= REVIEW_FLOOR:
-        verdict = "verified"
-
     data_json = json.dumps({
         "asin": asin,
         "scores": scores,
@@ -544,7 +471,7 @@ def _upsert_candidate(
 
     with database._LOCK, _with_conn() as conn:
         existing = conn.execute(
-            "SELECT sources, confidence FROM analytics_candidates "
+            "SELECT sources, confidence, verdict, data_json FROM analytics_candidates "
             "WHERE run_id=? AND row_idx=? AND asin=?",
             (run_id, row_idx, asin),
         ).fetchone()
@@ -563,30 +490,27 @@ def _upsert_candidate(
             except (TypeError, ValueError):
                 prev_sources = []
             merged = list(dict.fromkeys([*prev_sources, *sources]))  # dedupe, keep order
-            new_conf = max(conf, float(existing["confidence"] or 0))
-            # Recompute verdict from the best confidence we've seen so a
-            # lower-scoring tier can't downgrade a high-confidence "verified".
-            # hard_reject is already computed above (includes category_mismatch).
-            if hard_reject:
-                verdict = "not_approved"
-            elif new_conf >= AUTO_APPROVE:
-                verdict = "verified"
-            elif new_conf >= REVIEW_FLOOR or scores.get("pack_mismatch"):
-                verdict = "review"
-            elif new_conf >= MIN_CONFIDENCE:
-                verdict = "review"
-            else:
-                verdict = "not_approved"
-            if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
-                verdict = "not_approved"
-            if min_rank > 0 and sales_rank is not None and int(sales_rank) < min_rank:
-                verdict = "not_approved"
-            # Pair manager overrides on update path too.
-            if upc and blacklist_set is not None and (upc, asin) in blacklist_set:
-                verdict = "not_approved"
-            elif upc and verified_set is not None and (upc, asin) in verified_set \
-                    and not hard_reject and new_conf >= REVIEW_FLOOR:
-                verdict = "verified"
+            previous_confidence = float(existing["confidence"] or 0)
+            try:
+                previous_data = json.loads(existing["data_json"] or "{}")
+            except (TypeError, ValueError):
+                previous_data = {}
+            previous_scores = previous_data.get("scores") or {}
+            previous_method = previous_scores.get("scoring_method")
+            same_scorer = previous_method == scoring_method
+            new_conf = max(conf, previous_confidence) if same_scorer else conf
+            if same_scorer and previous_confidence > conf:
+                scores = previous_scores
+                verdict = scores.get("scorer_verdict") or verdict
+                scores.pop("category_mismatch", None)
+                scores.pop("media_format_mismatch", None)
+                normalized = previous_data.get("amazon") or normalized
+            data_json = json.dumps({
+                "asin": asin,
+                "scores": scores,
+                "amazon": normalized,
+                "verdict": verdict,
+            }, default=str)
             conn.execute(
                 "UPDATE analytics_candidates SET sources=?, confidence=?, "
                 "  verdict=?, amz_pack=?, sales_rank=?, data_json=? "
@@ -599,15 +523,47 @@ def _upsert_candidate(
 
 
 def _save_extracted_brands(run_id: int, extracted: dict[int, dict]) -> None:
-    """Persist extracted brand fields into analytics_catalog_rows.extracted_json."""
+    """Merge extracted fields into analytics_catalog_rows.extracted_json."""
     if not extracted:
         return
     with database._LOCK, _with_conn() as conn:
-        conn.executemany(
-            "UPDATE analytics_catalog_rows SET extracted_json=? "
-            "WHERE run_id=? AND row_idx=?",
-            [(json.dumps(v, ensure_ascii=False), run_id, k) for k, v in extracted.items()],
-        )
+        for row_idx, new_fields in extracted.items():
+            row = conn.execute(
+                "SELECT extracted_json FROM analytics_catalog_rows "
+                "WHERE run_id=? AND row_idx=?",
+                (run_id, row_idx),
+            ).fetchone()
+            try:
+                existing = json.loads(row["extracted_json"] or "{}") if row else {}
+            except (TypeError, ValueError):
+                existing = {}
+            existing.update(new_fields)
+            conn.execute(
+                "UPDATE analytics_catalog_rows SET extracted_json=? "
+                "WHERE run_id=? AND row_idx=?",
+                (json.dumps(existing, ensure_ascii=False), run_id, row_idx),
+            )
+
+
+def _normalize_source_rows(
+    rows: list[SourceRow],
+) -> tuple[list[SourceRow], dict[int, dict[str, Any]]]:
+    """Apply the matcher's title normalization before retrieval and scoring."""
+    normalized_rows: list[SourceRow] = []
+    extracted: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        normalized_title = normalize_text(row.title)
+        normalized_search_title = normalize_text(row.search_term)
+        extracted[row.row_idx] = {
+            "normalized_title": normalized_title,
+            "normalized_search_title": normalized_search_title,
+        }
+        normalized_rows.append(replace(
+            row,
+            title=normalized_title,
+            search_title=normalized_search_title,
+        ))
+    return normalized_rows, extracted
 
 
 def _load_extracted_brands(run_id: int) -> dict[int, dict]:
@@ -626,6 +582,190 @@ def _load_extracted_brands(run_id: int) -> dict[int, dict]:
             pass
     return result
 
+
+def _save_query_agent_result(run_id: int, row_idx: int, result: dict[str, Any]) -> None:
+    with database._LOCK, _with_conn() as conn:
+        conn.execute(
+            "UPDATE analytics_catalog_rows SET query_agent_json=? "
+            "WHERE run_id=? AND row_idx=?",
+            (json.dumps(result, ensure_ascii=False), run_id, row_idx),
+        )
+
+
+def _run_query_agent_fallback(
+    run_id: int,
+    source_rows: list[SourceRow],
+    candidates_by_row: dict[int, list[tuple[dict, str]]],
+    extracted_brands: dict[int, dict],
+    marketplace: str,
+) -> tuple[dict[int, str], set[int]]:
+    """Use the matcher query agent only when regular retrieval found no candidates."""
+    from services.analytics.matching_core.agents.query_agent import create_query_agent
+    from services.analytics.matching_core.models import Offer
+
+    fallback_rows = [row for row in source_rows if not candidates_by_row.get(row.row_idx)]
+    if not fallback_rows:
+        return {}, set()
+    agent = create_query_agent(get_catalog_api(marketplace))
+    comparison_titles: dict[int, str] = {}
+    processed_rows: set[int] = set()
+    for row in fallback_rows:
+        offer = Offer(
+            offer_id=str(row.row_idx),
+            title=row.title or None,
+            raw_text=row.title or None,
+            brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
+            upc=row.upc or None,
+            mpn=row.itemid or None,
+        )
+        try:
+            candidates, trace = agent.run(offer)
+        except Exception as exc:
+            trace = {
+                "used_agent": True,
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "candidates_found": 0,
+            }
+            log.exception("Query agent failed for run %s row %s", run_id, row.row_idx)
+            _save_query_agent_result(run_id, row.row_idx, trace)
+            processed_rows.add(row.row_idx)
+            continue
+
+        processed_rows.add(row.row_idx)
+        trace["scoring_title"] = trace.get("comparison_title") or row.title
+        if trace.get("comparison_title"):
+            comparison_titles[row.row_idx] = trace["comparison_title"]
+        _save_query_agent_result(run_id, row.row_idx, trace)
+        for candidate in candidates:
+            candidates_by_row.setdefault(row.row_idx, []).append((candidate, "Agent"))
+    return comparison_titles, processed_rows
+
+
+def _audit_run_approvals(
+    run_id: int,
+    scoring_method: str,
+    mode: str,
+) -> int:
+    """Audit final scorer approvals and downgrade only explicitly flagged pairs.
+    Returns the number of approvals audited."""
+    from services.analytics.matching_core.agents.verification_agent import (
+        apply_audit,
+        create_approval_auditor,
+    )
+
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT c.row_idx, c.asin, c.confidence, c.verdict, c.sources, "
+            "c.review_status, c.data_json, r.data_json AS source_json, "
+            "r.extracted_json, r.query_agent_json "
+            "FROM analytics_candidates c "
+            "JOIN analytics_catalog_rows r "
+            "ON r.run_id=c.run_id AND r.row_idx=c.row_idx "
+            "WHERE c.run_id=? AND c.verdict='verified' "
+            "AND (c.review_status IS NULL OR c.review_status='') "
+            "ORDER BY c.row_idx, c.asin",
+            (run_id,),
+        ).fetchall()
+
+    pending: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            candidate_data = json.loads(row["data_json"] or "{}")
+            scores = candidate_data.get("scores") or {}
+            if scores.get("scorer_verdict") != "verified":
+                continue
+            if (candidate_data.get("verification_audit") or {}).get("audited"):
+                continue
+            source = json.loads(row["source_json"] or "{}")
+            extracted = json.loads(row["extracted_json"] or "{}")
+            query_trace = json.loads(row["query_agent_json"] or "{}")
+            sources = json.loads(row["sources"] or "[]")
+        except (TypeError, ValueError):
+            log.exception(
+                "Could not load verification input for run %s row %s ASIN %s",
+                run_id, row["row_idx"], row["asin"],
+            )
+            continue
+
+        if query_trace.get("comparison_title"):
+            source["title"] = query_trace["comparison_title"]
+        else:
+            source["title"] = extracted.get("normalized_title") or source.get("title", "")
+        offer, candidate = build_pair(
+            source,
+            candidate_data.get("amazon") or {},
+            extracted=extracted,
+            sources=sources,
+        )
+        pending.append({
+            "row_idx": row["row_idx"],
+            "asin": row["asin"],
+            "confidence": float(row["confidence"] or 0),
+            "data": candidate_data,
+            "offer": offer,
+            "candidate": candidate,
+            "result": MatchResult(
+                offer_id=offer.offer_id,
+                asin=candidate.asin,
+                confidence=float(scores["confidence_score"]),
+                verdict=Verdict.VERIFIED,
+                signals=scores.get("signals") or {},
+                reasons=scores.get("reasons") or [],
+            ),
+        })
+
+    if not pending:
+        return 0
+    auditor = create_approval_auditor()
+    with database._LOCK, _with_conn() as conn:
+        for item in pending:
+            audit_result = auditor.audit(
+                item["offer"], item["candidate"], item["result"],
+            )
+            audit = audit_result.as_record()
+            adjusted = apply_audit(item["result"], audit_result)
+            data = item["data"]
+            data["verification_audit"] = audit
+            verdict = adjusted.verdict.value
+            confidence = adjusted.confidence
+            if adjusted.used_agent:
+                data["scores"]["llm_verifier_flagged"] = True
+            data["scores"]["reasons"] = adjusted.reasons
+            data["scores"]["confidence_score"] = confidence
+            data["scores"]["verdict"] = verdict
+            conn.execute(
+                "UPDATE analytics_candidates SET confidence=?, verdict=?, data_json=? "
+                "WHERE run_id=? AND row_idx=? AND asin=? "
+                "AND (review_status IS NULL OR review_status='')",
+                (
+                    confidence, verdict, json.dumps(data, default=str),
+                    run_id, item["row_idx"], item["asin"],
+                ),
+            )
+    _recompute_run_counts(run_id)
+    return len(pending)
+
+def _log_run_timing(run_id: int, pages_cap: int, timings: dict) -> None:
+    """Remember how long each stage took, so /estimate can learn from real runs."""
+    rows = [(run_id, tier, int(units), float(sec), int(pages_cap or 0))
+            for tier, (sec, units) in timings.items() if units and units > 0 and sec > 0]
+    if not rows:
+        return
+    try:
+        with database._LOCK, _with_conn() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS analytics_run_timing ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER,"
+                " tier TEXT, units INTEGER, seconds REAL, pages_cap INTEGER,"
+                " created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.executemany(
+                "INSERT INTO analytics_run_timing(run_id, tier, units, seconds, pages_cap) "
+                "VALUES (?,?,?,?,?)", rows,
+            )
+    except Exception:
+        log.exception("Could not log run timing")
 
 def _recompute_run_counts(run_id: int) -> None:
     with database._LOCK, _with_conn() as conn:
@@ -1135,9 +1275,10 @@ def _rescore_pipeline(
         with database._connect() as conn:
             conn.row_factory = sqlite3.Row
             run_row = conn.execute(
-                "SELECT vetting_mode FROM analytics_runs WHERE id=?", (run_id,)
+                "SELECT vetting_mode, scoring_method FROM analytics_runs WHERE id=?", (run_id,)
             ).fetchone()
             rescore_mode = (run_row["vetting_mode"] if run_row else None) or "cpg"
+            rescore_method = (run_row["scoring_method"] if run_row else None) or "weighted"
 
             cat_rows = conn.execute(
                 "SELECT row_idx, data_json FROM analytics_catalog_rows "
@@ -1152,11 +1293,7 @@ def _rescore_pipeline(
 
         # Load previously extracted brand fields (stored during the original run).
         extracted_brands_rescore = _load_extracted_brands(run_id)
-
         # Load pair-manager sets once for the whole rescore.
-        bl_set = frozenset(database.load_blacklist_set())
-        vf_set = frozenset(database.load_verified_set())
-
         # Build row_idx → catalog data map, also resolve new title per row.
         # Single pass — parse data_json once per row to build all three maps
         catalog_map: dict[int, dict] = {}
@@ -1228,8 +1365,7 @@ def _rescore_pipeline(
             row_idx = int(c["row_idx"])
 
             # A manual or AI decision on this exact candidate (Approve/Discard,
-            # Apply AI Decisions, Pair Manager, the new ASIN-exclusivity cap,
-            # etc.) is a deliberate human-facing verdict and must survive a
+            # Apply AI Decisions, Pair Manager, etc.) must survive a
             # rescore untouched -- confirmed live (2026-09-29, "Pedifix Sales
             # 52 Week" run) that rescore was silently overwriting confidence
             # AND verdict for every candidate with zero regard for
@@ -1239,7 +1375,10 @@ def _rescore_pipeline(
             # rescore. `get_run_detail`'s own promotion/demotion logic already
             # treats a non-empty review_status as sacrosanct in three separate
             # places -- rescore is the one path that never did.
-            if (c["review_status"] or "").strip():
+            # ASIN Exclusivity was an automatic legacy rule, not a user
+            # decision; let the selected scorer replace those old verdicts.
+            review_status = (c["review_status"] or "").strip()
+            if review_status and review_status != "ASIN Exclusivity":
                 continue
 
             cat = catalog_map.get(row_idx, {})
@@ -1259,7 +1398,6 @@ def _rescore_pipeline(
                 "upc":          cat.get("upc", ""),
                 "mpn":          cat.get("itemid", ""),
                 "itemid":       cat.get("itemid", ""),
-                "title":        new_title,
                 "brand":        row_brand,
                 "manufacturer": row_brand,
             }
@@ -1269,54 +1407,24 @@ def _rescore_pipeline(
             except (ValueError, TypeError):
                 sources_list = []
 
-            ext = extracted_brands_rescore.get(row_idx) or {}
+            source["title"] = normalize_text(new_title)
+            ext = {
+                **(extracted_brands_rescore.get(row_idx) or {}),
+            }
             # When the user explicitly set a text brand override, prevent the
             # AI-extracted brand from taking priority over it.
             if brand_mode == "text" and brand_col and ext.get("brand"):
                 ext = {k: v for k, v in ext.items() if k != "brand"}
-            scores = calculate_confidence(
+            scores, verdict = score_pair(
                 source, amazon_data,
-                upc_search_hit="UPC" in sources_list,
+                method=rescore_method,
                 extracted=ext or None,
-                mpn_search_hit="ItemID" in sources_list,
+                sources=sources_list,
                 mode=rescore_mode,
             )
+            scores["scorer_verdict"] = verdict
             conf = scores["confidence_score"]
 
-            # Category check (same logic as _upsert_candidate): only veto
-            # ambiguous matches — a confirmed UPC/brand match is the right
-            # product even if Amazon shelves it outside Health.
-            _amz_bsr_cat_r = categorize("", amazon_data.get("sales_rank_category") or "")
-            _cat_mismatch_r = False
-            if (
-                rescore_mode == "medical" and _amz_bsr_cat_r != UNKNOWN
-                and not scores.get("upc_match") and not scores.get("brand_confirmed")
-            ):
-                _dist_r = category_distance(MEDICAL, _amz_bsr_cat_r)
-                _cat_mismatch_r = _dist_r >= 5.0
-
-            if _cat_mismatch_r:
-                scores["category_mismatch"] = True
-
-            # Media-format hard-reject (same logic as _upsert_candidate).
-            _media_mismatch_r = _is_media_format(amazon_data.get("title") or "")
-            if _media_mismatch_r:
-                scores["media_format_mismatch"] = True
-
-            hard_reject = (
-                scores.get("size_mismatch") or scores.get("gender_mismatch")
-                or scores.get("color_mismatch") or _cat_mismatch_r or _media_mismatch_r
-                or scores.get("count_mismatch") or scores.get("scent_mismatch")
-                or scores.get("shade_mismatch") or scores.get("apparel_size_mismatch")
-            )
-            if hard_reject:
-                verdict = "not_approved"
-            elif conf >= 90:
-                verdict = "verified"
-            elif conf >= 35 or scores.get("pack_mismatch"):
-                verdict = "review"
-            else:
-                verdict = "not_approved"
             # Re-extract sales_rank from the stored _raw SP-API payload when
             # the normalized dict is missing it (runs created before rank
             # extraction was added).  This backfills both the data_json and
@@ -1341,14 +1449,15 @@ def _rescore_pipeline(
                 delete_batch.append((run_id, row_idx, str(c["asin"])))
                 continue  # skip adding to cand_batch
 
-            # Pair manager overrides — blacklisted always loses, verified auto-approves.
-            cand_upc = str(source.get("upc") or "").strip()
-            cand_asin = str(c["asin"]).strip().upper()
-            if cand_upc and (cand_upc, cand_asin) in bl_set:
-                verdict = "not_approved"
-            elif cand_upc and (cand_upc, cand_asin) in vf_set \
-                    and not hard_reject and conf >= 35:
-                verdict = "verified"
+            audit = cand_data.get("verification_audit") or {}
+            if audit.get("flagged") and verdict != "not_approved":
+                verdict = "review"
+                conf = min(conf, 70.0)
+                scores["llm_verifier_flagged"] = True
+                reason = f"audit_flagged: {audit.get('reason') or 'LLM verifier flagged the match'}"
+                reasons = scores.setdefault("reasons", [])
+                if reason not in reasons:
+                    reasons.append(reason)
 
             scores["verdict"] = verdict
             cand_data["scores"] = scores
@@ -1441,14 +1550,18 @@ def start_analytics_run(
     brand_col: str = "",
     brand_mode: str = "col",
     passthrough_cols: str = "",
+    scoring_method: str = "weighted",
+    use_query_agent: bool = False,
+    use_llm_verifier: bool = False,
 ) -> int:
     """
     Create an analytics_runs row, persist source rows, and kick off a
     background thread that runs the 3-tier search + scoring. Returns
     the new run id so the caller can redirect/poll.
 
-    max_rank / min_rank: enforce rank window at verdict time.
-    mode: "cpg" or "medical" — controls MPN hit bonus and category distance threshold.
+    max_rank / min_rank: exclude candidates outside the configured rank window.
+    mode: "cpg" or "medical" — selects the matching scorer's mode.
+    scoring_method: "weighted", "cascade", or "classifier".
     brand_col / brand_mode: saved for rescore pre-population.
     passthrough_cols: JSON array of vendor column header names to carry into export.
     """
@@ -1460,6 +1573,9 @@ def start_analytics_run(
         total_catalog_items=len(source_rows), max_rank=max_rank, min_rank=min_rank,
         mode=mode, brand_col=brand_col, brand_mode=brand_mode,
         passthrough_cols=passthrough_cols,
+        scoring_method=scoring_method,
+        use_query_agent=use_query_agent,
+        use_llm_verifier=use_llm_verifier,
     )
     _save_catalog_rows(run_id, source_rows)
 
@@ -1469,7 +1585,8 @@ def start_analytics_run(
     thread = threading.Thread(
         target=_run_pipeline,
         args=(run_id, marketplace, search_methods, pages_per_title,
-              ai_clean_titles, source_rows, False, max_rank, min_rank, mode),
+              ai_clean_titles, source_rows, False, max_rank, min_rank, mode,
+              scoring_method, use_query_agent, use_llm_verifier),
         daemon=True,
     )
     thread.start()
@@ -1523,6 +1640,9 @@ def resume_run(run_id: int) -> bool:
     max_rank = int(run_d.get("max_rank") or 0)
     min_rank = int(run_d.get("min_rank") or 0)
     run_mode = run_d.get("vetting_mode") or "cpg"
+    scoring_method = run_d.get("scoring_method") or "weighted"
+    use_query_agent = bool(run_d.get("use_query_agent"))
+    use_llm_verifier = bool(run_d.get("use_llm_verifier"))
 
     clear_control(run_id)
     _update_progress(run_id, status="Searching", phase="Resuming…")
@@ -1536,7 +1656,8 @@ def resume_run(run_id: int) -> bool:
               bool(run_d.get("ai_clean_titles")),
               source_rows,
               True,       # is_resume=True
-              max_rank, min_rank, run_mode),
+              max_rank, min_rank, run_mode, scoring_method,
+              use_query_agent, use_llm_verifier),
         daemon=True,
     )
     thread.start()
@@ -1548,12 +1669,11 @@ def _vet_and_store(
     rows_to_vet: list[SourceRow],
     candidates_by_row: dict[int, list[tuple[dict, str]]],
     extracted_brands: dict[int, dict],
-    blacklist_set: frozenset,
-    verified_set: frozenset,
     max_rank: int,
     min_rank: int,
     mode: str,
     phase_label: str,
+    scoring_method: str = "weighted",
 ) -> None:
     """
     Score and persist every (row × ASIN) pair for ``rows_to_vet`` using the
@@ -1589,8 +1709,7 @@ def _vet_and_store(
             _upsert_candidate(
                 run_id, r.row_idx, item, source_dict, srcs,
                 max_rank, min_rank, extracted=ext,
-                blacklist_set=blacklist_set, verified_set=verified_set,
-                mode=mode,
+                mode=mode, scoring_method=scoring_method,
             )
         done += 1
         if done % 25 == 0 or done == total:
@@ -1609,6 +1728,9 @@ def _run_pipeline(
     max_rank: int = 0,
     min_rank: int = 0,
     mode: str = "cpg",
+    scoring_method: str = "weighted",
+    use_query_agent: bool = False,
+    use_llm_verifier: bool = False,
 ) -> None:
     """Do the work. All errors are caught and recorded on the run row."""
     try:
@@ -1654,11 +1776,18 @@ def _run_pipeline(
                 return True
             return False
 
+        _update_progress(run_id, phase="Normalizing vendor titles")
+        original_source_rows = source_rows
+        source_rows, extracted_brands = _normalize_source_rows(
+            source_rows,
+        )
+        _save_extracted_brands(run_id, extracted_brands)
+
         # --- Brand extraction (GPT-4o-mini, only when ai_clean_titles enabled) ---
         # Extracts brand / product_type / model / size / pack_info from vendor
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
-        extracted_brands: dict[int, dict] = {}
+        ai_fields_extracted = False
         if ai_clean_titles and os.getenv("OPENAI_API_KEY"):
             _update_progress(run_id, phase="Extracting product fields with AI…")
 
@@ -1670,14 +1799,22 @@ def _run_pipeline(
                     total=total_ext,
                 )
 
-            extracted_brands = extract_brands(source_rows, run_id, progress_cb=_extraction_progress)
+            ai_extracted = extract_brands(
+                original_source_rows, run_id, progress_cb=_extraction_progress,
+            )
+            ai_fields_extracted = any(
+                any(fields.get(key) for key in ("brand", "product_type", "model", "size", "pack_info"))
+                for fields in ai_extracted.values()
+            )
+            for row_idx, fields in ai_extracted.items():
+                extracted_brands.setdefault(row_idx, {}).update(fields)
             _save_extracted_brands(run_id, extracted_brands)
             if _handle_control():
                 return
 
         # --- AI title cleaning (before Tier 3, if enabled) ------------------
         cleaned_titles: dict[int, str] = {}
-        if ai_clean_titles and "Title" in search_methods and not extracted_brands:
+        if ai_clean_titles and "Title" in search_methods and not ai_fields_extracted:
             # Only run simple title cleaning when full brand extraction didn't run
             _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(total))
             cleaned_titles = clean_titles_parallel(source_rows, run_id)
@@ -1692,17 +1829,25 @@ def _run_pipeline(
             for r in source_rows:
                 if r.row_idx in cleaned_titles:
                     from dataclasses import replace
-                    out.append(replace(r, title=cleaned_titles[r.row_idx]))
+                    out.append(replace(
+                        r,
+                        title=cleaned_titles[r.row_idx],
+                        search_title=cleaned_titles[r.row_idx],
+                    ))
                 else:
                     out.append(r)
             return out
 
-        # Pair-manager sets — loaded once and reused for vetting after each tier.
-        blacklist_set = frozenset(database.load_blacklist_set())
-        verified_set  = frozenset(database.load_verified_set())
+        # Per-stage timing, logged at the end so /estimate can learn from real runs.
+        timings: dict[str, tuple[float, int]] = {}
+        _n_upc = len({r.upc.strip() for r in source_rows if r.upc})
+        _n_ids = len({r.itemid.strip() for r in source_rows if r.itemid})
+        _n_terms = len({t for t in (_clean_search_query(r.search_term)
+                                    for r in source_rows if r.search_term) if t})
 
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
             tier1, tier1_kw = _tier1_upc(api, source_rows, run_id=run_id)
             for ri, items in tier1.items():
@@ -1719,14 +1864,16 @@ def _run_pipeline(
             _tier1_rows = set(tier1) | set(tier1_kw)
             _vet_and_store(
                 run_id, [r for r in source_rows if r.row_idx in _tier1_rows],
-                candidates_by_row, extracted_brands, blacklist_set, verified_set,
-                max_rank, min_rank, mode, "Scoring UPC matches",
+                candidates_by_row, extracted_brands,
+                max_rank, min_rank, mode, "Scoring UPC matches", scoring_method,
             )
+            timings["upc"] = (time.monotonic() - _t0, _n_upc)
             if _handle_control():
                 return
 
         # --- Tier 2: Item ID -------------------------------------------------
         if "ItemID" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 2 / Item ID search")
             tier2 = _tier2_itemid(api, source_rows, run_id=run_id, max_pages=pages_per_title)
             for ri, items in tier2.items():
@@ -1734,14 +1881,16 @@ def _run_pipeline(
                     candidates_by_row.setdefault(ri, []).append((it, "ItemID"))
             _vet_and_store(
                 run_id, [r for r in source_rows if r.row_idx in tier2],
-                candidates_by_row, extracted_brands, blacklist_set, verified_set,
-                max_rank, min_rank, mode, "Scoring Item ID matches",
+                candidates_by_row, extracted_brands,
+                max_rank, min_rank, mode, "Scoring Item ID matches", scoring_method,
             )
+            timings["itemid"] = (time.monotonic() - _t0, _n_ids)
             if _handle_control():
                 return
 
         # --- Tier 3: Title ---------------------------------------------------
         if "Title" in search_methods:
+            _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 3 / Title search")
             tier3 = _tier3_title(
                 api,
@@ -1755,17 +1904,47 @@ def _run_pipeline(
                     candidates_by_row.setdefault(ri, []).append((it, "Title"))
             _vet_and_store(
                 run_id, [r for r in source_rows if r.row_idx in tier3],
-                candidates_by_row, extracted_brands, blacklist_set, verified_set,
-                max_rank, min_rank, mode, "Scoring title matches",
+                candidates_by_row, extracted_brands,
+                max_rank, min_rank, mode, "Scoring title matches", scoring_method,
             )
+            timings["title"] = (time.monotonic() - _t0, _n_terms)
             if _handle_control():
                 return
+
+        if use_query_agent:
+            _t0 = time.monotonic()
+            _update_progress(run_id, phase="LLM query fallback")
+            comparison_titles, agent_rows = _run_query_agent_fallback(
+                run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
+            )
+            fallback_rows = [row for row in source_rows if row.row_idx in agent_rows]
+            if fallback_rows:
+                scored_rows = [
+                    replace(row, title=comparison_titles.get(row.row_idx) or row.title)
+                    for row in fallback_rows
+                ]
+                _vet_and_store(
+                    run_id, scored_rows, candidates_by_row, extracted_brands,
+                    max_rank, min_rank, mode,
+                    "Scoring query-agent candidates", scoring_method,
+                )
+                if _handle_control():
+                    return
+            timings["agent"] = (time.monotonic() - _t0, len(agent_rows))
+
+        if use_llm_verifier:
+            _t0 = time.monotonic()
+            _update_progress(run_id, phase="Auditing approved matches with LLM")
+            _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
+            timings["verifier"] = (time.monotonic() - _t0, _n_audited or 0)
 
         # Each tier vetted the rows it touched (with the full set of candidates
         # accumulated so far), so every row that produced a candidate has been
         # scored with all its sources by the last tier that touched it.
         _recompute_run_counts(run_id)
         clear_control(run_id)
+        if not is_resume:
+            _log_run_timing(run_id, pages_per_title, timings)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
 
     except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles
