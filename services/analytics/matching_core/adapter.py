@@ -250,29 +250,35 @@ def result_to_scores(
     ]
     explanation: dict[str, Any]
     if method == "weighted":
-        if signals.get("upc", 0) > 0:
-            summary = "Exact UPC match set the score to 100 before mismatch checks."
-        else:
-            components = (
-                f"MPN {signals.get('mpn', 0):.1f} + "
-                f"brand {signals.get('brand', 0):.1f} + "
-                f"title {signals.get('title', 0):.1f}"
-            )
-            raw_total = sum(float(signals.get(key, 0) or 0) for key in ("mpn", "brand", "title"))
-            summary = (
-                f"Weighted sum: {components} = {raw_total:.1f}, "
-                f"capped at {min(raw_total, 100.0):.1f}."
+        names = (("upc", "UPC"), ("mpn", "part number"), ("brand", "brand"), ("title", "title"))
+        used = [(label, signals[key]) for key, label in names if key in signals]
+        missing = [label for key, label in names if key not in signals]
+        total = sum(value for _, value in used)
+        summary = (
+            "Weighted: " + " + ".join(f"{label} {value:.1f}" for label, value in used)
+            + f" = {total:.1f} (points out of 100)."
+        )
+        if missing:
+            summary += (
+                f" Not compared (missing on one side): {', '.join(missing)}; "
+                "their weight was shared by the others."
             )
         if mismatches:
             summary += f" Hard mismatch cap applied ({', '.join(mismatches)}); final score {confidence:.1f}."
+        elif signals.get("upc", 0) > 0 and confidence > total + 0.05:
+            summary += (
+                f" UPC match: score raised to {confidence:.1f} "
+                "(a UPC match is worth at least 90, or 100 with the same brand)."
+            )
+        elif "upc" not in signals and "mpn" not in signals and confidence < total - 0.05:
+            summary += (
+                f" No UPC or part number to compare, so the score is limited to {confidence:.1f} "
+                "(never approved on brand and title alone)."
+            )
         explanation = {
             "summary": summary,
-            "factors": [
-                f"UPC: {signals.get('upc', 0):.1f}/100",
-                f"MPN: {signals.get('mpn', 0):.1f}/90",
-                f"Brand: {signals.get('brand', 0):.1f}/10",
-                f"Title: {signals.get('title', 0):.1f}/50",
-            ] + ([f"Hard mismatch: {', '.join(mismatches)}"] if mismatches else []),
+            "factors": [f"{label}: {value:.1f} points" for label, value in used]
+                       + ([f"Hard mismatch: {', '.join(mismatches)}"] if mismatches else []),
         }
     elif method == "cascade":
         rule = next(
@@ -287,6 +293,7 @@ def result_to_scores(
             "1_brand+mpn": "Rule 1: brand + MPN",
             "2_upc+1attr": "Rule 2: UPC + at least one matching attribute",
             "2_mpn+1attr": "Rule 2: MPN + at least one matching attribute",
+            "2b_upc_alone": "Rule 2b: UPC alone (nothing contradicts it)",
             "3_brand+all_attrs": "Rule 3: brand + all comparable attributes",
             "4_all_attrs+fuzzy70": "Rule 4: all comparable attributes + title similarity",
             "5_fuzzy72": "Rule 5: title similarity",

@@ -100,6 +100,8 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
         confidence, rule = 100.0, f"1_brand+{ident_name}"
     elif ident_ok and n_match >= 1:
         confidence, rule = 100.0, f"2_{ident_name}+1attr"
+    elif mode == "cpg" and upc_ok:          
+        confidence, rule = 90.0, "2b_upc_alone"
     elif brand_ok and all_attrs_match:
         confidence, rule = 100.0, "3_brand+all_attrs"
     elif all_attrs_match and fuzzy > FUZZY_WITH_ATTRS:
