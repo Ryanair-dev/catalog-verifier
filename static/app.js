@@ -181,6 +181,11 @@
     scans: [],
     scanStatsCache: null,
 
+    // Offer Analysis — the "Past Analytics Runs" list (not an open run's
+    // own candidate table, which has its own server-side pagination under
+    // state.analyticsRun below).
+    analyticsRunsList: { rows: [], page: 1, pageSize: 10 },
+
     // active scan detail
     scan: null,
     results: [],
@@ -235,6 +240,8 @@
     brandAnalytics: {
       runs: [],
       runsPoll: null,
+      runsPage: 1,
+      runsPageSize: 10,
       run: {
         id: null,
         data: null,
@@ -3964,68 +3971,12 @@
       const r = await fetch("/api/analytics/runs");
       if (!r.ok) throw new Error("status " + r.status);
       const rows = await r.json();
-      if (!Array.isArray(rows) || rows.length === 0) {
-        body.innerHTML = `
-          <div class="empty-state" style="padding: 24px 12px;">
-            <div class="text-sm" style="color: #6b7480;">No runs yet — kick one off above.</div>
-          </div>`;
-        _clearAnalyticsRunsPoll();
-        return;
-      }
+      state.analyticsRunsList.rows = Array.isArray(rows) ? rows : [];
+      _renderAnalyticsRunsPage();
 
-      body.innerHTML = rows.map(r => {
-        const active = _runIsActive(r);
-        const pct = r.progress_total
-          ? Math.min(100, Math.round((r.progress_done / r.progress_total) * 100))
-          : 0;
-        const phase = r.progress_phase || r.status || "";
-        return `
-          <div class="analytics-run-row" data-run-id="${r.id}">
-            <div class="flex items-center justify-between gap-3">
-              <div class="flex-1 min-w-0">
-                <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
-                  ${escapeHtml(r.name || "Untitled run")}
-                  <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
-                </div>
-                <div class="text-xs mt-0.5" style="color: #6b7480;">
-                  ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
-                  <span style="color: var(--green-600);">${r.verified_count || 0} verified</span> ·
-                  <span style="color: #b58100;">${r.review_count || 0} review</span> ·
-                  <span style="color: #b91c1c;">${r.not_approved_count || 0} rejected</span>
-                </div>
-              </div>
-              <div class="text-xs text-right" style="color: ${active ? 'var(--purple-700)' : '#94a3b8'}; min-width: 130px;">
-                ${active ? `<span class="mini-spinner"></span> ${escapeHtml(phase)} ${pct}%` : escapeHtml(r.status || "")}
-              </div>
-              <button class="analytics-run-del" data-run-id="${r.id}" title="Delete run" aria-label="Delete run">✕</button>
-            </div>
-            ${active ? `
-              <div class="analytics-run-inline-bar"><div class="fill" style="width: ${pct}%"></div></div>
-            ` : ""}
-          </div>`;
-      }).join("");
-
-      // Wire row clicks → open detail view.
-      body.querySelectorAll(".analytics-run-row").forEach(el => {
-        el.addEventListener("click", () => {
-          const id = Number(el.dataset.runId);
-          if (id) openAnalyticsRunDetail(id);
-        });
-      });
-
-      // Wire per-row delete buttons. stopPropagation so the row click (which
-      // opens the run) doesn't also fire when deleting.
-      const _runNameById = Object.fromEntries(rows.map(rr => [rr.id, rr.name || "Untitled run"]));
-      body.querySelectorAll(".analytics-run-del").forEach(btn => {
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const id = Number(btn.dataset.runId);
-          if (id) _deleteAnalyticsRunFromBoard(id, _runNameById[id] || "this run");
-        });
-      });
-
-      // Keep polling while any run is active.
-      if (rows.some(_runIsActive)) {
+      // Keep polling while any run is active, regardless of which page of
+      // the list is currently shown.
+      if (state.analyticsRunsList.rows.some(_runIsActive)) {
         _schedAnalyticsRunsPoll();
       } else {
         _clearAnalyticsRunsPoll();
@@ -4038,6 +3989,123 @@
     }
   }
   $("#analytics-refresh-runs")?.addEventListener("click", loadAnalyticsRuns);
+
+  // Renders the currently-selected page of state.analyticsRunsList.rows —
+  // called on fresh load, on a pager click, and on every poll tick (so an
+  // active run's progress updates in place without resetting which page
+  // the user is looking at).
+  function _renderAnalyticsRunsPage() {
+    const body = $("#analytics-runs-body");
+    if (!body) return;
+    const all = state.analyticsRunsList.rows;
+    if (!all.length) {
+      body.innerHTML = `
+        <div class="empty-state" style="padding: 24px 12px;">
+          <div class="text-sm" style="color: #6b7480;">No runs yet — kick one off above.</div>
+        </div>`;
+      const pg = $("#analytics-runs-pagination");
+      if (pg) pg.innerHTML = "";
+      return;
+    }
+
+    const pageSize = state.analyticsRunsList.pageSize || 10;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    if (state.analyticsRunsList.page > totalPages) state.analyticsRunsList.page = totalPages;
+    if (state.analyticsRunsList.page < 1) state.analyticsRunsList.page = 1;
+    const page = state.analyticsRunsList.page;
+    const rows = all.slice((page - 1) * pageSize, page * pageSize);
+
+    body.innerHTML = rows.map(r => {
+      const active = _runIsActive(r);
+      const pct = r.progress_total
+        ? Math.min(100, Math.round((r.progress_done / r.progress_total) * 100))
+        : 0;
+      const phase = r.progress_phase || r.status || "";
+      return `
+        <div class="analytics-run-row" data-run-id="${r.id}">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
+                ${escapeHtml(r.name || "Untitled run")}
+                <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
+              </div>
+              <div class="text-xs mt-0.5" style="color: #6b7480;">
+                ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
+                <span style="color: var(--green-600);">${r.verified_count || 0} verified</span> ·
+                <span style="color: #b58100;">${r.review_count || 0} review</span> ·
+                <span style="color: #b91c1c;">${r.not_approved_count || 0} rejected</span>
+              </div>
+            </div>
+            <div class="text-xs text-right" style="color: ${active ? 'var(--purple-700)' : '#94a3b8'}; min-width: 130px;">
+              ${active ? `<span class="mini-spinner"></span> ${escapeHtml(phase)} ${pct}%` : escapeHtml(r.status || "")}
+            </div>
+            <button class="analytics-run-del" data-run-id="${r.id}" title="Delete run" aria-label="Delete run">✕</button>
+          </div>
+          ${active ? `
+            <div class="analytics-run-inline-bar"><div class="fill" style="width: ${pct}%"></div></div>
+          ` : ""}
+        </div>`;
+    }).join("");
+
+    // Wire row clicks → open detail view.
+    body.querySelectorAll(".analytics-run-row").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = Number(el.dataset.runId);
+        if (id) openAnalyticsRunDetail(id);
+      });
+    });
+
+    // Wire per-row delete buttons. stopPropagation so the row click (which
+    // opens the run) doesn't also fire when deleting.
+    const _runNameById = Object.fromEntries(all.map(rr => [rr.id, rr.name || "Untitled run"]));
+    body.querySelectorAll(".analytics-run-del").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.runId);
+        if (id) _deleteAnalyticsRunFromBoard(id, _runNameById[id] || "this run");
+      });
+    });
+
+    _renderAnalyticsRunsPagination(page, totalPages, all.length);
+  }
+
+  function _renderAnalyticsRunsPagination(page, totalPages, totalRows) {
+    const el = $("#analytics-runs-pagination");
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    const pageSize = state.analyticsRunsList.pageSize || 10;
+    const from = (page - 1) * pageSize + 1;
+    const to   = Math.min(page * pageSize, totalRows);
+
+    const pages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+        pages.push(p);
+      } else if (pages[pages.length - 1] !== "…") {
+        pages.push("…");
+      }
+    }
+    const btns = pages.map(p =>
+      p === "…"
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-btn${p === page ? " active" : ""}" data-pg="${p}">${p}</button>`
+    ).join("");
+
+    el.innerHTML = `
+      <span class="pg-info">Showing ${from}–${to} of ${totalRows}</span>
+      <button class="pg-btn" data-pg="${page - 1}" ${page <= 1 ? "disabled" : ""}>&#8249;</button>
+      ${btns}
+      <button class="pg-btn" data-pg="${page + 1}" ${page >= totalPages ? "disabled" : ""}>&#8250;</button>`;
+
+    el.querySelectorAll("button[data-pg]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.pg);
+        if (isNaN(p) || p < 1 || p > totalPages) return;
+        state.analyticsRunsList.page = p;
+        _renderAnalyticsRunsPage();
+      });
+    });
+  }
 
   // Delete a run straight from the board (no need to open it first). Confirms,
   // calls DELETE (which stops any active search + cascade-deletes its data),
@@ -6583,11 +6651,21 @@
   function renderBARuns() {
     const body = $("#ba-runs-body");
     if (!body) return;
-    const runs = state.brandAnalytics.runs;
-    if (!runs.length) {
+    const all = state.brandAnalytics.runs;
+    if (!all.length) {
       body.innerHTML = `<div class="empty-state" style="padding:24px 12px;"><div class="text-sm" style="color:#6b7480;">No runs yet — click New Search to start.</div></div>`;
+      const pg = $("#ba-runs-pagination");
+      if (pg) pg.innerHTML = "";
       return;
     }
+
+    const pageSize = state.brandAnalytics.runsPageSize || 10;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    if (state.brandAnalytics.runsPage > totalPages) state.brandAnalytics.runsPage = totalPages;
+    if (state.brandAnalytics.runsPage < 1) state.brandAnalytics.runsPage = 1;
+    const page = state.brandAnalytics.runsPage;
+    const runs = all.slice((page - 1) * pageSize, page * pageSize);
+
     body.innerHTML = runs.map(r => {
       const terms = Array.isArray(r.search_terms) ? r.search_terms : [];
       const statusColor = r.status === "Complete" ? "#16a34a"
@@ -6606,6 +6684,46 @@
     }).join("");
     body.querySelectorAll("[data-run-id]").forEach(el => {
       el.addEventListener("click", () => openBARun(parseInt(el.dataset.runId)));
+    });
+
+    _renderBARunsPagination(page, totalPages, all.length);
+  }
+
+  function _renderBARunsPagination(page, totalPages, totalRows) {
+    const el = $("#ba-runs-pagination");
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    const pageSize = state.brandAnalytics.runsPageSize || 10;
+    const from = (page - 1) * pageSize + 1;
+    const to   = Math.min(page * pageSize, totalRows);
+
+    const pages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+        pages.push(p);
+      } else if (pages[pages.length - 1] !== "…") {
+        pages.push("…");
+      }
+    }
+    const btns = pages.map(p =>
+      p === "…"
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-btn${p === page ? " active" : ""}" data-pg="${p}">${p}</button>`
+    ).join("");
+
+    el.innerHTML = `
+      <span class="pg-info">Showing ${from}–${to} of ${totalRows}</span>
+      <button class="pg-btn" data-pg="${page - 1}" ${page <= 1 ? "disabled" : ""}>&#8249;</button>
+      ${btns}
+      <button class="pg-btn" data-pg="${page + 1}" ${page >= totalPages ? "disabled" : ""}>&#8250;</button>`;
+
+    el.querySelectorAll("button[data-pg]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.pg);
+        if (isNaN(p) || p < 1 || p > totalPages) return;
+        state.brandAnalytics.runsPage = p;
+        renderBARuns();
+      });
     });
   }
 
