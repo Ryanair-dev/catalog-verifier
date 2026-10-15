@@ -28,6 +28,7 @@ from services import vendor_offers_db_sync as vo_sync
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 from services.spapi import reports as sp_reports
+from services import job_persistence
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,10 +87,21 @@ _AJOB_TTL = 3600
 
 
 def _get_ajob(job_id: str) -> dict:
+    # BUG FIXED: eviction used to measure the TTL from "started" (job creation),
+    # not from completion -- so a job that legitimately took longer than
+    # _AJOB_TTL to run (e.g. a big Offer Analytics export throttled by Keepa's
+    # token bucket, which can easily take 1-3+ hours) was already PAST the TTL
+    # the instant it finished, and got silently deleted -- blob and all -- on
+    # the very next status poll, before anyone (including the persistent
+    # "Download" banner added in static/app.js) ever got a chance to see it
+    # as complete. Now the TTL is measured from "completed_at" (set only once
+    # the job leaves "running"), so a finished job always gets a full
+    # _AJOB_TTL window to be downloaded, no matter how long it took to build.
     now = time.time()
     with _AJOBS_LOCK:
         for jid in [j for j, jb in _ANALYTICS_JOBS.items()
-                    if jb["status"] != "running" and now - jb["started"] > _AJOB_TTL]:
+                    if jb["status"] != "running" and jb.get("completed_at")
+                    and now - jb["completed_at"] > _AJOB_TTL]:
             _ANALYTICS_JOBS.pop(jid, None)
         job = _ANALYTICS_JOBS.get(job_id)
     if not job:
@@ -112,13 +124,38 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     prep = body.get("prep_fee")
     prep = float(prep) if prep is not None else None      # None → build reads the setting
     live = bool(body.get("live", True))
+    params = {
+        "upcs": upcs, "focus_vendor": focus, "has_asin": has_asin,
+        "only_available": only_available, "apply_filters": apply_filters,
+        "populate_keepa": populate_keepa, "prep_fee": prep, "live": live,
+    }
+    job_id, filename = _launch_export(params)
+    return {"job_id": job_id, "filename": filename}
+
+
+def _launch_export(params: dict) -> tuple[str, str]:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs). `params` is the
+    exact body dict `/analytics-export/start` would have received."""
+    upcs = params.get("upcs") or None
+    focus = params.get("focus_vendor") or None
+    has_asin = bool(params.get("has_asin"))
+    only_available = bool(params.get("only_available"))
+    apply_filters = bool(params.get("apply_filters"))
+    populate_keepa = bool(params.get("populate_keepa", True))
+    prep = params.get("prep_fee")
+    prep = float(prep) if prep is not None else None
+    live = bool(params.get("live", True))
+
     job_id = uuid.uuid4().hex[:12]
     filename = vo_tpl.export_filename(focus)              # increment the per-vendor/day seq once
     job = {"status": "running", "phase": "pulling Amazon data", "done": 0,
            "total": 0, "blob": None, "error": None, "started": time.time(),
+           "completed_at": None,
            "phase_started": time.time(), "filename": filename, "cancel": False}
     with _AJOBS_LOCK:
         _ANALYTICS_JOBS[job_id] = job
+    job_persistence.save_job(job_id, "offer_export", params)
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -138,9 +175,19 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.exception("[analytics-export] failed")
             job["status"], job["error"] = "error", str(exc)[:400]
+        finally:
+            job["completed_at"] = time.time()
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=_run, name=f"analytics-export-{job_id}", daemon=True).start()
-    return {"job_id": job_id, "filename": filename}
+    return job_id, filename
+
+
+def _relaunch(params: dict) -> None:
+    _launch_export(params)
+
+
+job_persistence.register_relauncher("offer_export", _relaunch)
 
 
 @router.post("/vendor-offers/analytics-export/jobs/{job_id}/cancel")

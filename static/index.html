@@ -61,25 +61,16 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         Brand Analytics
       </div>
-      <div class="nav-item" data-view="po-analytics">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-        PO Analytics
-      </div>
-      <div class="nav-item" data-view="quick-search">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-        Quick Search
-      </div>
-
       <div class="section-label">Marketplaces</div>
       <div class="nav-item" data-view="walmart-catalog">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
         Walmart Catalog
       </div>
 
-      <div class="section-label">Tools</div>
+      <div class="section-label">Toolbox</div>
       <div class="nav-item" id="open-tools-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-        Tools
+        Toolbox
       </div>
       <div class="nav-item" data-view="create-po">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
@@ -176,80 +167,7 @@
         </div>
       </div>
 
-      <!-- ===== View: PO Analytics ===== -->
-      <div id="view-po-analytics" class="hidden">
-        <header class="view-header">
-          <div>
-            <h1 class="view-title">PO Analytics</h1>
-            <p class="view-subtitle">Analyze a received Purchase Order: every FBA/FBM shadow SKU + ASIN for each line item, enriched with live Buy Box, fees, eligibility, rank and sales data.</p>
-          </div>
-        </header>
-
-        <div style="max-width:1040px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:20px;">
-
-          <!-- ===== Analyze a PO (left, on-demand) + Add PO + Recipients (right, -->
-          <!-- for the automation). The left box runs PO Analytics immediately and -->
-          <!-- downloads the result right away, independent of the day-before-ETA -->
-          <!-- automation. The right box ADDS a PO to that automation's watchlist, -->
-          <!-- optionally with its own recipient list — each PO can go to a -->
-          <!-- different set of people; left blank, it uses the default -->
-          <!-- recipients configured under Automation Settings below. -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;">
-            <div class="card" style="padding:16px;">
-              <div class="abbr-section-title" style="margin-bottom:4px;">Analyze a PO</div>
-              <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-                Runs right now and lets you download the report immediately —
-                this doesn't touch the automated day-before-ETA emails on the right.
-              </div>
-              <input id="poa-input" type="text" placeholder="49932 or 49932, 49933"
-                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-              <button id="poa-run" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Run PO Analytics</button>
-              <div id="poa-progress" class="hidden" style="margin-top:10px;font-size:12px;color:#6b7480;"></div>
-              <div id="poa-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
-              <div id="poa-skipped" class="hidden" style="margin-top:10px;font-size:12px;color:#b45309;"></div>
-              <button id="poa-download" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:10px;">Download report</button>
-            </div>
-
-            <div class="card" style="padding:16px;">
-              <div class="abbr-section-title" style="margin-bottom:4px;">Add PO (for automation)</div>
-              <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-                One or more PO numbers (comma/space-separated). Leave recipients
-                blank to use the defaults below, or list specific emails (one
-                per line) just for these POs.
-              </div>
-              <input id="poa-watch-input" type="text" placeholder="49932, 49933"
-                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;margin-bottom:8px;" />
-              <textarea id="poa-watch-recipients" rows="3" placeholder="Leave blank to use the default recipients"
-                style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;resize:vertical;font-family:inherit;"></textarea>
-              <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Add</button>
-            </div>
-          </div>
-
-          <!-- ===== Awaiting Analysis — full width, each row shows who will -->
-          <!-- receive that PO's report once it's analyzed. -->
-          <div class="card" style="padding:16px;">
-            <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
-            <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-          </div>
-
-          <!-- ===== Archive — full width, same as Awaiting Analysis. POs already -->
-          <!-- analyzed; download the report that was generated and emailed. -->
-          <div class="card" style="padding:16px;">
-            <div class="abbr-section-title" style="margin-bottom:10px;">Archive</div>
-            <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-          </div>
-
-          <!-- ===== Default Recipients — who gets a PO's report when it wasn't -->
-          <!-- given its own recipients in the Add-PO box above, plus a manual -->
-          <!-- "Check now" and the schedule status line. No on/off toggle here -->
-          <!-- (removed 2026-10-13c) — the watchlist itself is already the real -->
-          <!-- on/off control. Global/shared for now (no per-user login yet); -->
-          <!-- per-user is planned once Microsoft Entra ID is added. -->
-          <div style="border-top:1px solid var(--grey-100,#eef0f4);padding-top:16px;">
-            <div id="poa-automation-card"></div>
-          </div>
-        </div>
-      </div>
+      <!-- view-po-analytics removed — PO Analytics is now a Toolbox sub-tab (#tools-tab-po) -->
 
       <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
@@ -1314,140 +1232,7 @@
       </div>
 
       <!-- ===== View: Quick Search ===== -->
-      <div id="view-quick-search" class="hidden">
-        <header class="view-header">
-          <div>
-            <h1 class="view-title">Quick Search</h1>
-            <p class="view-subtitle">Search Amazon for a single item by any combination of UPC, Item ID, title, or brand.</p>
-          </div>
-        </header>
-
-        <div style="padding: 28px 32px; max-width: 900px;">
-
-          <!-- Search form card -->
-          <div class="card qs-form-card mb-6">
-            <div style="padding: 28px 28px 24px;">
-
-              <!-- Identifier fields (multi-tag inputs) -->
-              <div class="qs-field-group mb-4">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                  <div class="qs-field-group-label" style="margin-bottom:0;">Identifiers</div>
-                  <span style="font-size:11px;color:#94a3b8;">Press <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">Enter</kbd> or <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">,</kbd> to add multiple</span>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px;">
-                  <div>
-                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">UPC / EAN / Barcode</label>
-                    <div class="tag-input-wrap" id="qs-upc-wrap" onclick="document.getElementById('qs-upc').focus()">
-                      <input id="qs-upc" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. 012345678901…">
-                    </div>
-                  </div>
-                  <div>
-                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Item ID / MPN / SKU</label>
-                    <div class="tag-input-wrap" id="qs-itemid-wrap" onclick="document.getElementById('qs-itemid').focus()">
-                      <input id="qs-itemid" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. ASL02…">
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Context fields -->
-              <div class="qs-field-group mb-4">
-                <div class="qs-field-group-label">Context (single search)</div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px;">
-                  <div>
-                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Product Title</label>
-                    <input id="qs-title" type="text" class="input-field" placeholder="e.g. DawnMist 2 oz After Shave Lotion">
-                  </div>
-                  <div>
-                    <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Brand</label>
-                    <input id="qs-brand" type="text" class="input-field" placeholder="e.g. DawnMist">
-                  </div>
-                </div>
-              </div>
-
-              <!-- Options row -->
-              <div style="display: flex; align-items: flex-end; gap: 24px; flex-wrap: wrap;">
-                <div>
-                  <label class="block text-xs font-semibold mb-2" style="color: #64748b;">Vetting Mode</label>
-                  <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
-                    <button id="qs-mode-cpg" class="qs-mode-btn active" data-mode="cpg">CPG</button>
-                    <button id="qs-mode-medical" class="qs-mode-btn" data-mode="medical">Medical</button>
-                  </div>
-                </div>
-                <div style="flex: 1; min-width: 120px; max-width: 160px;">
-                  <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Min BSR</label>
-                  <input id="qs-min-rank" type="number" class="input-field w-full" placeholder="0 = no floor" min="0">
-                </div>
-                <div style="flex: 1; min-width: 120px; max-width: 160px;">
-                  <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Max BSR</label>
-                  <input id="qs-max-rank" type="number" class="input-field w-full" placeholder="0 = no cap" min="0">
-                </div>
-                <div style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
-                  <span id="qs-status-text" class="text-xs hidden" style="color: #6b7480;"></span>
-                  <button id="qs-clear-btn" class="btn btn-secondary">Clear</button>
-                  <button id="qs-search-btn" class="btn btn-primary" style="min-width: 145px; gap: 7px;">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    Search Amazon
-                  </button>
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-          <!-- Results area -->
-          <div id="qs-results-area" class="hidden">
-
-            <!-- Summary bar -->
-            <div class="flex items-center justify-between mb-3">
-              <div id="qs-results-summary" class="text-sm font-semibold" style="color: var(--purple-800);"></div>
-              <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
-                <button id="qs-filter-all"          class="qs-filter-btn active" data-filter="all">All</button>
-                <button id="qs-filter-verified"     class="qs-filter-btn" data-filter="verified">Verified</button>
-                <button id="qs-filter-review"       class="qs-filter-btn" data-filter="review">Review</button>
-                <button id="qs-filter-not_approved" class="qs-filter-btn" data-filter="not_approved">Not Approved</button>
-              </div>
-            </div>
-
-            <!-- Results table -->
-            <div class="card">
-              <div style="overflow-x: auto;">
-                <table class="results-table" style="width: 100%;">
-                  <thead>
-                    <tr>
-                      <th style="width: 80px;">Score</th>
-                      <th style="width: 100px;">Verdict</th>
-                      <th style="width: 120px;">ASIN</th>
-                      <th>Amazon Title</th>
-                      <th style="width: 100px;">BSR</th>
-                      <th style="width: 130px;">Category</th>
-                      <th style="width: 120px;">UPC</th>
-                      <th style="width: 110px;">MPN</th>
-                      <th style="width: 90px;">Source</th>
-                      <th style="width: 130px;">Price &amp; Storage</th>
-                      <th id="qs-th-query" style="width: 110px;" class="hidden">Query</th>
-                    </tr>
-                  </thead>
-                  <tbody id="qs-results-tbody"></tbody>
-                </table>
-              </div>
-            </div>
-
-          </div>
-
-          <!-- Empty / idle state -->
-          <div id="qs-empty-state" class="text-center" style="padding: 52px 0; color: #94a3b8;">
-            <div style="width: 64px; height: 64px; border-radius: 50%; background: var(--purple-50, #f4f0ff); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--purple-400, #8b76e5)" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            </div>
-            <div class="text-sm font-semibold" style="color: #475569; margin-bottom: 4px;">Ready to search</div>
-            <div class="text-xs" style="color: #94a3b8;">Fill in at least one field above and click <strong style="color: var(--purple-600);">Search Amazon</strong>.</div>
-          </div>
-
-        </div>
-      </div>
-      <!-- /view-quick-search -->
-
+      <!-- view-quick-search removed — Quick Search is now a Toolbox sub-tab (#tools-tab-quicksearch) -->
       <!-- view-tools removed — Tools is now a sidebar panel (#tools-panel) -->
 
     </main>
@@ -1726,19 +1511,21 @@
   <div id="tools-panel" class="side-panel side-panel-wide">
     <div class="side-panel-header">
       <div>
-        <div class="font-semibold" style="color:var(--navy-800)">Tools</div>
-        <div class="text-xs" style="color:#6b7480;">Eligibility check &amp; FBA storage fees — paste ASINs once, export one file.</div>
+        <div class="font-semibold" style="color:var(--navy-800)">Toolbox</div>
+        <div class="text-xs" style="color:#6b7480;">Eligibility, storage fees, brand/MPN checks &amp; quick single-item search.</div>
       </div>
       <button id="tools-close" class="icon-btn" title="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
 
-    <!-- Tools sub-tabs -->
+    <!-- Toolbox sub-tabs -->
     <div class="lib-type-tabs" role="tablist">
       <button class="lib-type-tab active" data-tools-tab="asin" type="button">ASIN Check</button>
       <button class="lib-type-tab" data-tools-tab="brand" type="button">Brand Check</button>
       <button class="lib-type-tab" data-tools-tab="mpn" type="button">MPN Check</button>
+      <button class="lib-type-tab" data-tools-tab="quicksearch" type="button">Quick Search</button>
+      <button class="lib-type-tab" data-tools-tab="po" type="button">PO Analytics</button>
     </div>
 
     <div id="tools-tab-asin" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
@@ -1877,7 +1664,27 @@
           applies uniformly. One brand per line, or upload a .txt/.csv.
         </div>
 
-        <textarea id="brand-check-input" rows="3"
+        <!-- Sample-size settings -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:#94a3b8;">Check:</span>
+          <div class="seg-radio" role="radiogroup" aria-label="Sample size mode">
+            <label>
+              <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked />
+              Fixed
+            </label>
+            <label>
+              <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" />
+              Percent
+            </label>
+          </div>
+          <input id="brand-check-count-val" type="number" min="1" max="300" value="8"
+            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <input id="brand-check-pct-val" type="number" min="1" max="100" value="10" disabled
+            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;background:#f8fafc;" />
+          <span style="font-size:11px;color:#94a3b8;">of each brand's live ASINs (capped at 300).</span>
+        </div>
+
+        <textarea id="brand-check-input" rows="7"
           placeholder="ColorStay&#10;Babor&#10;Bodum&#10;… one brand per line"
           style="width:100%;box-sizing:border-box;resize:vertical;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
 
@@ -1887,26 +1694,6 @@
           </label>
           <input id="brand-check-file" type="file" accept=".txt,.csv" class="hidden" />
           <span id="brand-check-count" style="font-size:11px;color:#94a3b8;"></span>
-        </div>
-
-        <!-- Sample-size settings -->
-        <div style="display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;">
-          <span style="font-size:11px;color:#94a3b8;">Check:</span>
-          <div class="seg-radio" role="radiogroup" aria-label="Sample size mode">
-            <label>
-              <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked />
-              a fixed number
-            </label>
-            <label>
-              <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" />
-              a %
-            </label>
-          </div>
-          <input id="brand-check-count-val" type="number" min="1" max="300" value="8"
-            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-          <input id="brand-check-pct-val" type="number" min="1" max="100" value="10" disabled
-            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;background:#f8fafc;" />
-          <span style="font-size:11px;color:#94a3b8;">of each brand's live ASINs (capped at 300).</span>
         </div>
 
         <div style="display:flex;gap:8px;margin-top:10px;">
@@ -2022,6 +1809,206 @@
         </div>
       </div>
     </div><!-- /tools-tab-mpn -->
+
+    <div id="tools-tab-quicksearch" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+
+      <!-- Search form card -->
+      <div class="card qs-form-card">
+        <div style="padding: 20px 20px 18px;">
+
+          <!-- Identifier fields (multi-tag inputs) -->
+          <div class="qs-field-group mb-4">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
+              <div class="qs-field-group-label" style="margin-bottom:0;">Identifiers</div>
+              <span style="font-size:11px;color:#94a3b8;">Press <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">Enter</kbd> or <kbd style="padding:1px 5px;border-radius:4px;background:#f1f5f9;border:1px solid #e2e8f0;font-size:10px;">,</kbd> to add multiple</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 16px;">
+              <div>
+                <label class="block text-xs font-semibold mb-1" style="color: #64748b;">UPC / EAN / Barcode</label>
+                <div class="tag-input-wrap" id="qs-upc-wrap" onclick="document.getElementById('qs-upc').focus()">
+                  <input id="qs-upc" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. 012345678901…">
+                </div>
+              </div>
+              <div>
+                <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Item ID / MPN / SKU</label>
+                <div class="tag-input-wrap" id="qs-itemid-wrap" onclick="document.getElementById('qs-itemid').focus()">
+                  <input id="qs-itemid" class="tag-input-inner" type="text" autocomplete="off" placeholder="e.g. ASL02…">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Context fields -->
+          <div class="qs-field-group mb-4">
+            <div class="qs-field-group-label">Context (single search)</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 16px;">
+              <div>
+                <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Product Title</label>
+                <input id="qs-title" type="text" class="input-field" placeholder="e.g. DawnMist 2 oz After Shave Lotion">
+              </div>
+              <div>
+                <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Brand</label>
+                <input id="qs-brand" type="text" class="input-field" placeholder="e.g. DawnMist">
+              </div>
+            </div>
+          </div>
+
+          <!-- Options row -->
+          <div style="display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap;">
+            <div>
+              <label class="block text-xs font-semibold mb-2" style="color: #64748b;">Vetting Mode</label>
+              <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
+                <button id="qs-mode-cpg" class="qs-mode-btn active" data-mode="cpg">CPG</button>
+                <button id="qs-mode-medical" class="qs-mode-btn" data-mode="medical">Medical</button>
+              </div>
+            </div>
+            <div style="flex: 1; min-width: 100px; max-width: 140px;">
+              <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Min BSR</label>
+              <input id="qs-min-rank" type="number" class="input-field w-full" placeholder="0 = no floor" min="0">
+            </div>
+            <div style="flex: 1; min-width: 100px; max-width: 140px;">
+              <label class="block text-xs font-semibold mb-1" style="color: #64748b;">Max BSR</label>
+              <input id="qs-max-rank" type="number" class="input-field w-full" placeholder="0 = no cap" min="0">
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;">
+            <span id="qs-status-text" class="text-xs hidden" style="color: #6b7480;"></span>
+            <button id="qs-clear-btn" class="btn btn-secondary">Clear</button>
+            <button id="qs-search-btn" class="btn btn-primary" style="min-width: 145px; gap: 7px; justify-content:center;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              Search Amazon
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Results area -->
+      <div id="qs-results-area" class="hidden">
+
+        <!-- Summary bar -->
+        <div class="flex items-center justify-between mb-3" style="flex-wrap:wrap;gap:8px;">
+          <div id="qs-results-summary" class="text-sm font-semibold" style="color: var(--purple-800);"></div>
+          <div style="display: flex; gap: 6px; background: var(--grey-100, #eef0f4); border-radius: 22px; padding: 3px;">
+            <button id="qs-filter-all"          class="qs-filter-btn active" data-filter="all">All</button>
+            <button id="qs-filter-verified"     class="qs-filter-btn" data-filter="verified">Verified</button>
+            <button id="qs-filter-review"       class="qs-filter-btn" data-filter="review">Review</button>
+            <button id="qs-filter-not_approved" class="qs-filter-btn" data-filter="not_approved">Not Approved</button>
+          </div>
+        </div>
+
+        <!-- Results table -->
+        <div class="card">
+          <div style="overflow-x: auto;">
+            <table class="results-table" style="width: 100%;">
+              <thead>
+                <tr>
+                  <th style="width: 80px;">Score</th>
+                  <th style="width: 100px;">Verdict</th>
+                  <th style="width: 120px;">ASIN</th>
+                  <th>Amazon Title</th>
+                  <th style="width: 100px;">BSR</th>
+                  <th style="width: 130px;">Category</th>
+                  <th style="width: 120px;">UPC</th>
+                  <th style="width: 110px;">MPN</th>
+                  <th style="width: 90px;">Source</th>
+                  <th style="width: 130px;">Price &amp; Storage</th>
+                  <th id="qs-th-query" style="width: 110px;" class="hidden">Query</th>
+                </tr>
+              </thead>
+              <tbody id="qs-results-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Empty / idle state -->
+      <div id="qs-empty-state" class="text-center" style="padding: 40px 0; color: #94a3b8;">
+        <div style="width: 56px; height: 56px; border-radius: 50%; background: var(--purple-50, #f4f0ff); display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--purple-400, #8b76e5)" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <div class="text-sm font-semibold" style="color: #475569; margin-bottom: 4px;">Ready to search</div>
+        <div class="text-xs" style="color: #94a3b8;">Fill in at least one field above and click <strong style="color: var(--purple-600);">Search Amazon</strong>.</div>
+      </div>
+
+    </div><!-- /tools-tab-quicksearch -->
+
+    <div id="tools-tab-po" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+
+      <!-- ===== Analyze a PO (on-demand) + Add PO + Recipients (for the -->
+      <!-- automation). The first box runs PO Analytics immediately and -->
+      <!-- downloads the result right away, independent of the day-before-ETA -->
+      <!-- automation. The second ADDS a PO to that automation's watchlist, -->
+      <!-- with its own recipient list -- required, no tool-wide fallback. -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:16px;align-items:stretch;">
+        <div class="card" style="padding:16px;display:flex;flex-direction:column;">
+          <div class="abbr-section-title" style="margin-bottom:4px;">Analyze a PO</div>
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+            Runs right now and lets you download the report immediately —
+            this doesn't touch the automated day-before-ETA emails.
+          </div>
+          <input id="poa-input" type="text" placeholder="49932 or 49932, 49933"
+            style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <button id="poa-run" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:10px;">Run PO Analytics</button>
+          <div id="poa-progress" class="hidden" style="margin-top:10px;font-size:12px;color:#6b7480;"></div>
+          <div id="poa-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
+          <div id="poa-skipped" class="hidden" style="margin-top:10px;font-size:12px;color:#b45309;"></div>
+          <button id="poa-download" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:10px;">Download report</button>
+        </div>
+
+        <div class="card" style="padding:16px;display:flex;flex-direction:column;">
+          <div class="abbr-section-title" style="margin-bottom:4px;">Add PO (for automation)</div>
+          <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+            One or more PO numbers (comma/space-separated). Recipients are
+            required — every PO added here needs at least one person to send
+            the report to.
+          </div>
+          <input id="poa-watch-input" type="text" placeholder="49932, 49933"
+            style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;margin-bottom:10px;" />
+
+          <div style="font-size:11px;font-weight:600;color:#6b7480;margin-bottom:6px;">Recipients</div>
+          <div id="poa-watch-recip-list" style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px;"></div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <input id="poa-watch-recip-new" type="text" list="poa-recip-datalist" placeholder="e.g. Raiann"
+              style="flex:1;min-width:90px;box-sizing:border-box;font-size:13px;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+            <span style="font-size:12px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
+            <button id="poa-watch-recip-add" class="btn btn-secondary text-xs" type="button" style="white-space:nowrap;">+ Add recipient</button>
+          </div>
+          <datalist id="poa-recip-datalist">
+            <option value="Raiann"></option>
+            <option value="AviS"></option>
+            <option value="MasonB"></option>
+            <option value="VictoriaV"></option>
+          </datalist>
+
+          <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:auto;padding-top:10px;">Add</button>
+        </div>
+      </div>
+
+      <!-- ===== Awaiting Analysis — each row shows who will receive that -->
+      <!-- PO's report once it's analyzed. -->
+      <div class="card" style="padding:16px;">
+        <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
+        <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+
+      <!-- ===== Archive — POs already analyzed; download the report that was -->
+      <!-- generated and emailed. -->
+      <div class="card" style="padding:16px;">
+        <div class="abbr-section-title" style="margin-bottom:10px;">Archive</div>
+        <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+      </div>
+
+      <!-- ===== Automation status — schedule line + manual "Check now". -->
+      <!-- Default/tool-wide recipients were removed (2026-10-15) — every -->
+      <!-- Add-PO submission now requires its own recipients, so there's no -->
+      <!-- fallback list to configure here anymore. -->
+      <div style="border-top:1px solid var(--grey-100,#eef0f4);padding-top:16px;">
+        <div id="poa-automation-card"></div>
+      </div>
+
+    </div><!-- /tools-tab-po -->
 
   </div><!-- /#tools-panel -->
 

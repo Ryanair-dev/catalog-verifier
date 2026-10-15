@@ -1702,11 +1702,23 @@ def reset_tables(tables: Iterable[str]) -> None:
 init_db()
 
 
-def reset_orphaned_running_states() -> None:
+def reset_orphaned_running_states() -> dict:
     """On server startup, any run/check left in 'Running' state from a previous
     process is now an orphan — the thread that drove it is dead.  Reset them to
-    'Stopped' so the UI doesn't show a永 spinner and the stop button works."""
+    'Stopped' so the UI doesn't show a永 spinner and the stop button works.
+
+    Returns {"analytics_run_ids": [...], "brand_run_ids": [...]} — the runs
+    that were actually mid-search at the moment of the restart, so the caller
+    (main.py's lifespan) can automatically resume them instead of leaving them
+    sitting at 'Stopped' until someone notices and clicks Resume by hand."""
     with _LOCK, _connect() as conn:
+        analytics_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM analytics_runs WHERE status IN ('Searching','Pending','Vetting')"
+        ).fetchall()]
+        brand_ids = [r[0] for r in conn.execute(
+            "SELECT id FROM brand_analytics_runs WHERE status IN ('Searching','Pending')"
+        ).fetchall()]
+
         # Offer Analysis (analytics_runs) itself — found live 2026-10-09: a run
         # mid-search when the server restarts was the ONE orphan-able state
         # this function never covered (only its ai_check_status sub-process,
@@ -1736,3 +1748,4 @@ def reset_orphaned_running_states() -> None:
             "UPDATE brand_analytics_runs SET ai_fill_status='stopped' "
             "WHERE ai_fill_status='running'"
         )
+    return {"analytics_run_ids": analytics_ids, "brand_run_ids": brand_ids}

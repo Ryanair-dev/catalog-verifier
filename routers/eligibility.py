@@ -26,6 +26,7 @@ from services.spapi import get_catalog_api
 from services.restrictions import classify, get_restrictions_api
 from services.spapi.config import load_sp_api_credentials, sp_api_configured, list_stores
 from services.safety import safe_spreadsheet_value
+from services import job_persistence
 
 router = APIRouter()
 
@@ -448,6 +449,17 @@ async def start_check(body: CheckBody) -> dict:
             ),
         )
 
+    job_id = _launch_check(asins, store, creds.seller_id)
+    return {"job_id": job_id, "total": len(asins), "store": store}
+
+
+def _launch_check(asins: list[str], store: str, seller_id: str | None = None) -> str:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs)."""
+    if seller_id is None:
+        creds = load_sp_api_credentials(store)
+        seller_id = creds.seller_id
+
     job_id = str(uuid.uuid4())
     job: dict = {
         "job_id":     job_id,
@@ -460,46 +472,59 @@ async def start_check(body: CheckBody) -> dict:
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    job_persistence.save_job(job_id, "eligibility", {"asins": asins, "store": store})
 
     # ── Background worker ──────────────────────────────────────────────────
     def run() -> None:
-        api       = get_restrictions_api(store)
-        seller_id = creds.seller_id
-        lock      = threading.Lock()
-
-        def check_one(asin: str) -> dict:
-            try:
-                raw = api.get_restrictions(asin, seller_id)
-                return classify(asin, raw)
-            except PermissionError as exc:
-                return {
-                    "asin": asin, "status": "ERROR", "dog": False,
-                    "reasons": [{"type": "PERMISSION_ERROR", "message": str(exc),
-                                 "hint": "", "can_request": False, "approval_url": None}],
-                }
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "asin": asin, "status": "ERROR", "dog": False,
-                    "reasons": [{"type": "API_ERROR", "message": str(exc),
-                                 "hint": "", "can_request": False, "approval_url": None}],
-                }
-
         try:
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(check_one, asin): asin for asin in asins}
-                for future in as_completed(futures):
-                    result = future.result()
-                    with lock:
-                        job["results"].append(result)
-                        job["done"] += 1
-            job["status"] = "complete"
-        except Exception as exc:  # noqa: BLE001
-            job["status"] = "error"
-            job["error"]  = str(exc)
+            api  = get_restrictions_api(store)
+            lock = threading.Lock()
+
+            def check_one(asin: str) -> dict:
+                try:
+                    raw = api.get_restrictions(asin, seller_id)
+                    return classify(asin, raw)
+                except PermissionError as exc:
+                    return {
+                        "asin": asin, "status": "ERROR", "dog": False,
+                        "reasons": [{"type": "PERMISSION_ERROR", "message": str(exc),
+                                     "hint": "", "can_request": False, "approval_url": None}],
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    return {
+                        "asin": asin, "status": "ERROR", "dog": False,
+                        "reasons": [{"type": "API_ERROR", "message": str(exc),
+                                     "hint": "", "can_request": False, "approval_url": None}],
+                    }
+
+            try:
+                with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                    futures = {pool.submit(check_one, asin): asin for asin in asins}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        with lock:
+                            job["results"].append(result)
+                            job["done"] += 1
+                job["status"] = "complete"
+            except Exception as exc:  # noqa: BLE001
+                job["status"] = "error"
+                job["error"]  = str(exc)
+        finally:
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=run, daemon=True).start()
+    return job_id
 
-    return {"job_id": job_id, "total": len(asins), "store": store}
+
+def _relaunch(params: dict) -> None:
+    asins = [str(a) for a in (params.get("asins") or []) if str(a).strip()]
+    store = params.get("store") or "default"
+    if not asins:
+        return
+    _launch_check(asins, store)
+
+
+job_persistence.register_relauncher("eligibility", _relaunch)
 
 
 @router.get("/eligibility/jobs/{job_id}")

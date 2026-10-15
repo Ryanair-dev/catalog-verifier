@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.analytics import po_analytics as poa
+from services import job_persistence
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,10 +30,15 @@ _JOB_TTL = 3600
 
 
 def _get_job(job_id: str) -> dict:
+    # Same fix as routers/vendor_offers.py's _get_ajob: TTL is measured from
+    # "completed_at", not "started" -- a job that took longer than _JOB_TTL
+    # to run would otherwise be evicted (blob and all) the instant it
+    # finished, before any poller could ever observe it as complete.
     now = time.time()
     with _JOBS_LOCK:
         for jid in [j for j, jb in _JOBS.items()
-                   if jb["status"] != "running" and now - jb["started"] > _JOB_TTL]:
+                   if jb["status"] != "running" and jb.get("completed_at")
+                   and now - jb["completed_at"] > _JOB_TTL]:
             _JOBS.pop(jid, None)
         job = _JOBS.get(job_id)
     if not job:
@@ -55,13 +61,21 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
     if not po_numbers:
         raise HTTPException(status_code=400, detail="No PO number(s) found in input.")
 
+    job_id = _launch_po_analytics(po_numbers)
+    return {"job_id": job_id, "po_numbers": po_numbers}
+
+
+def _launch_po_analytics(po_numbers: list) -> str:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs)."""
     job_id = uuid.uuid4().hex[:12]
     job = {"status": "running", "phase": "pulling SellerCloud PO data", "done": 0,
            "total": 0, "blob": None, "error": None, "filename": None,
-           "skipped_pos": [],
+           "skipped_pos": [], "completed_at": None,
            "started": time.time(), "phase_started": time.time()}
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    job_persistence.save_job(job_id, "po_export", {"po_numbers": po_numbers})
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -83,9 +97,22 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
         except Exception as exc:  # noqa: BLE001
             log.exception("[po-analytics] failed")
             job["status"], job["error"] = "error", str(exc)[:400]
+        finally:
+            job["completed_at"] = time.time()
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=_run, name=f"po-analytics-{job_id}", daemon=True).start()
-    return {"job_id": job_id, "po_numbers": po_numbers}
+    return job_id
+
+
+def _relaunch(params: dict) -> None:
+    po_numbers = params.get("po_numbers") or []
+    if not po_numbers:
+        return
+    _launch_po_analytics(po_numbers)
+
+
+job_persistence.register_relauncher("po_export", _relaunch)
 
 
 @router.get("/po-analytics/jobs/{job_id}")

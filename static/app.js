@@ -240,7 +240,7 @@
         data: null,
         poll: null,
         page: 1,
-        pageSize: 50,
+        pageSize: 10,
         search: "",
         sortKey: "bsr",
         sortDir: "asc",
@@ -595,11 +595,9 @@
       "analytics-run":  $("#view-analytics-run"),
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
-      "quick-search":   $("#view-quick-search"),
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
-      "po-analytics":   $("#view-po-analytics"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -639,9 +637,6 @@
     // the job keeps running server-side regardless of which sidebar tab is
     // open, and killing the poll here would freeze the panel on whatever
     // phase it last showed. _refreshPoaStatusNow() re-syncs on re-entry.
-    if (view === "po-analytics" && typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
-    if (view === "po-analytics" && typeof _refreshPoaLists === "function") _refreshPoaLists();
-    if (view === "po-analytics" && typeof loadAutomationSettings === "function") loadAutomationSettings();
   }
 
   // ========================================================================
@@ -676,13 +671,10 @@
     } catch { return iso; }
   }
 
-  // No on/off toggle and no recipients textarea+Save here anymore (removed
-  // 2026-10-13c) — per the user: the watchlist itself already IS the on/off
-  // control (a PO isn't touched at all unless it's been added), so a
-  // separate master switch was pointless; and the only thing left for this
-  // card to actually do is hold the DEFAULT recipient list (used by a
-  // watched PO that wasn't given its own recipients in the Add-PO box) —
-  // now a real add/remove list instead of a raw multi-line textarea.
+  // No on/off toggle (removed 2026-10-13c) and no default-recipients list
+  // (removed 2026-10-15 — every Add-PO submission now requires its own
+  // recipients, so there's no fallback list left to configure). This card is
+  // now just the schedule status line + a manual "Check now" trigger.
   async function _renderAutomationToolCard(tool) {
     const card = document.createElement("div");
     card.className = "card";
@@ -701,88 +693,13 @@
     }
 
     card.innerHTML = `
-      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Default Recipients</div>
+      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Automation Status</div>
       ${statusHtml}
-      <div style="font-size:11px;color:#94a3b8;">
-        Used for any watched PO that wasn't given its own recipients above.
-      </div>
-      <div class="auto-recip-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-      <div style="display:flex;gap:8px;">
-        <input type="email" class="auto-recip-input" placeholder="name@fordmed.com"
-          style="flex:1;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-        <button class="btn btn-secondary text-xs" data-act="add-recip">Add</button>
-      </div>
       <div style="display:flex;gap:8px;align-items:center;">
         <button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>
         <span class="auto-save-feedback" style="font-size:11px;"></span>
       </div>
     `;
-
-    function renderRecipList() {
-      const list = card.querySelector(".auto-recip-list");
-      const recipients = tool.recipients || [];
-      if (!recipients.length) {
-        list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No default recipients yet — add one below.</div>`;
-        return;
-      }
-      list.innerHTML = "";
-      for (const email of recipients) {
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:13px;";
-        row.innerHTML = `
-          <span style="color:#37404c;">${email}</span>
-          <button class="icon-btn" data-email="${email}" title="Remove" style="width:20px;height:20px;flex:none;">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
-        `;
-        row.querySelector("button").addEventListener("click", () => {
-          _saveDefaultRecipients(tool.recipients.filter(e => e !== email));
-        });
-        list.appendChild(row);
-      }
-    }
-    renderRecipList();
-
-    async function _saveDefaultRecipients(recipients) {
-      const feedback = card.querySelector(".auto-save-feedback");
-      feedback.textContent = "Saving…";
-      feedback.style.color = "#94a3b8";
-      try {
-        // `enabled` has no behavioral effect anymore (the watchlist is the
-        // real on/off control) — always sent true so the generic settings
-        // schema (shared with any future automated tool) stays satisfied.
-        await api(`/api/settings/automation/${tool.tool}`, {
-          method: "POST",
-          body: { recipients, enabled: true },
-        });
-        tool.recipients = recipients;
-        renderRecipList();
-        feedback.textContent = "Saved.";
-        feedback.style.color = "var(--green-500,#16a34a)";
-      } catch (err) {
-        feedback.textContent = err.message || "Failed to save.";
-        feedback.style.color = "#c0392b";
-        showToast(`Couldn't save: ${err.message || err}`, "error");
-      }
-    }
-
-    const addBtn = card.querySelector('[data-act="add-recip"]');
-    const addInput = card.querySelector(".auto-recip-input");
-    const doAdd = () => {
-      const email = addInput.value.trim();
-      if (!email) return;
-      if (!email.includes("@") || email.includes(" ")) {
-        showToast(`'${email}' doesn't look like a valid email address.`, "error");
-        return;
-      }
-      addInput.value = "";
-      if ((tool.recipients || []).includes(email)) return;   // already there
-      _saveDefaultRecipients([...(tool.recipients || []), email]);
-    };
-    addBtn.addEventListener("click", doAdd);
-    addInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); doAdd(); }
-    });
 
     const checkBtn = card.querySelector('[data-act="check-now"]');
     if (checkBtn) {
@@ -847,8 +764,120 @@
   //  directly as window.parent._voStartExport/...) when embedded, and falls
   //  back to its own original self-contained logic when opened standalone
   //  (e.g. visiting /api/vendor-offers/page directly in its own tab).
+  //
+  //  Moving the poll loop here fixed the "switched sidebar section" case, but
+  //  NOT the case where the user leaves the whole BROWSER TAB (switches tabs,
+  //  the OS/browser suspends or discards a backgrounded tab, the laptop
+  //  sleeps, ...) — that can freeze or wipe this document's own JS state too,
+  //  including the in-memory _voExportJob var, with no way to recover it.
+  //  The server-side job (routers/vendor_offers.py _ANALYTICS_JOBS) is
+  //  unaffected either way — it's a real background thread, kept for 1h
+  //  after completion — so the fix is to persist the job id to localStorage
+  //  (survives a reload/tab-discard) and resume checking it on boot, plus
+  //  replace the auto-triggered a.click() download (easy to miss or lose if
+  //  it fires while the tab isn't actually being watched) with a persistent
+  //  on-screen "Download" button that just sits there until clicked.
   // ========================================================================
   let _voExportJob = null;   // {id, filename} while a job is running
+  const VO_EXPORT_STORAGE_KEY = "vo_export_job_v1";
+
+  function _voSaveJobToStorage(job) {
+    try { localStorage.setItem(VO_EXPORT_STORAGE_KEY, JSON.stringify(job)); } catch {}
+  }
+  function _voClearJobStorage() {
+    try { localStorage.removeItem(VO_EXPORT_STORAGE_KEY); } catch {}
+  }
+  function _voLoadJobFromStorage() {
+    try {
+      const raw = localStorage.getItem(VO_EXPORT_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function _voHideReadyBar() {
+    document.getElementById("vo-export-ready-bar")?.remove();
+  }
+
+  // A persistent (non-auto-dismissing) download prompt — unlike showToast,
+  // this stays on screen until the user clicks Download or dismisses it, so
+  // coming back to the tab minutes/hours later still shows it.
+  function _voShowReadyBar(job) {
+    _voHideReadyBar();
+    const bar = document.createElement("div");
+    bar.id = "vo-export-ready-bar";
+    bar.style.cssText = [
+      "position:fixed", "bottom:20px", "right:20px", "z-index:9999",
+      "background:#fff", "border:1px solid #e2e6ec", "border-radius:12px",
+      "box-shadow:0 8px 24px rgba(0,0,0,.15)", "padding:14px 16px",
+      "display:flex", "align-items:center", "gap:12px",
+      "font-family:Inter,system-ui,sans-serif", "font-size:14px",
+      "max-width:380px",
+    ].join(";");
+
+    const msg = document.createElement("span");
+    msg.style.flex = "1";
+    msg.textContent = `Offer Analytics export ready: ${job.filename || "offer_analytics.xlsx"}`;
+
+    const dlBtn = document.createElement("button");
+    dlBtn.type = "button";
+    dlBtn.textContent = "Download";
+    dlBtn.style.cssText = "background:#4d37a1;color:#fff;border:none;border-radius:8px;" +
+      "padding:8px 14px;font-weight:600;cursor:pointer;white-space:nowrap;";
+    dlBtn.addEventListener("click", () => _voDownloadReadyJob(job));
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "×";
+    closeBtn.setAttribute("aria-label", "Dismiss");
+    closeBtn.style.cssText = "background:none;border:none;font-size:20px;line-height:1;" +
+      "cursor:pointer;color:#8a94a6;padding:0 2px;";
+    closeBtn.addEventListener("click", () => { _voHideReadyBar(); _voClearJobStorage(); });
+
+    bar.append(msg, dlBtn, closeBtn);
+    document.body.appendChild(bar);
+  }
+
+  async function _voDownloadReadyJob(job) {
+    try {
+      const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}/download`);
+      if (!dl.ok) {
+        throw new Error(dl.status === 404
+          ? "This export has expired on the server — please re-run it."
+          : "download failed");
+      }
+      const blob = await dl.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = job.filename || "offer_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast("Offer Analytics export downloaded.", "success");
+      _voHideReadyBar();
+      _voClearJobStorage();
+    } catch (err) {
+      showToast("Download failed: " + (err.message || err), "error");
+    }
+  }
+
+  // Called once at boot. If a job was left running (or finished) when the
+  // tab was last active, pick it back up instead of losing it silently.
+  async function _voResumePendingExport() {
+    const saved = _voLoadJobFromStorage();
+    if (!saved || !saved.id) return;
+    try {
+      const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${saved.id}`);
+      if (!ps.ok) { _voClearJobStorage(); return; }   // expired / gone
+      const pj = await ps.json().catch(() => ({}));
+      if (pj.status === "complete") {
+        _voShowReadyBar(saved);
+      } else if (pj.status === "running") {
+        _voExportJob = saved;
+        _voPollExport();
+      } else {
+        _voClearJobStorage();   // error / cancelled while we were away
+      }
+    } catch { /* network hiccup on boot — just skip, no job state lost */ }
+  }
 
   function _voFrameBtn() {
     try {
@@ -874,6 +903,7 @@
       const sj = await start.json().catch(() => ({}));
       if (!start.ok) throw new Error(sj.detail || start.statusText);
       _voExportJob = { id: sj.job_id, filename: sj.filename };
+      _voSaveJobToStorage(_voExportJob);
       _voPollExport();
     } catch (err) {
       showToast("Export failed: " + (err.message || err), "error");
@@ -887,6 +917,7 @@
     const btn = _voFrameBtn();
     if (btn) btn.textContent = "Cancelling…";
     fetch(`/api/vendor-offers/analytics-export/jobs/${_voExportJob.id}/cancel`, { method: "POST" }).catch(() => {});
+    _voClearJobStorage();
   }
 
   function _voPollExport() {
@@ -897,6 +928,19 @@
       let pj;
       try {
         const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}`);
+        // A 404 specifically means the job is GONE (expired/evicted server-side,
+        // e.g. the TTL-from-start bug) -- that's terminal, not a network blip.
+        // Treating it as "transient and keep retrying" (the old behavior) made
+        // the button sit on "Cancel · <stale phase> X%" forever, looking like
+        // the export was still running when it had actually vanished.
+        if (ps.status === 404) {
+          showToast("That export is no longer available on the server "
+            + "(it may have expired) — please start it again.", "error");
+          _voExportJob = null;
+          _voClearJobStorage();
+          _voResetFrameBtn();
+          return;
+        }
         pj = await ps.json().catch(() => ({}));
         if (!ps.ok) throw new Error(pj.detail || ps.statusText);
       } catch (err) {
@@ -906,29 +950,24 @@
       if (pj.status === "cancelled") {
         showToast("Export cancelled.", "info");
         _voExportJob = null;
+        _voClearJobStorage();
         _voResetFrameBtn();
         return;
       }
       if (pj.status === "error") {
         showToast("Export failed: " + (pj.error || "export failed"), "error");
         _voExportJob = null;
+        _voClearJobStorage();
         _voResetFrameBtn();
         return;
       }
       if (pj.status === "complete") {
-        try {
-          const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}/download`);
-          if (!dl.ok) throw new Error("download failed");
-          const blob = await dl.blob();
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url; a.download = job.filename || "offer_analytics.xlsx";
-          a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          showToast("Offer Analytics export downloaded.", "success");
-        } catch (err) {
-          showToast("Download failed: " + (err.message || err), "error");
-        }
+        // Was: auto-trigger a.click() the instant this is detected — easy to
+        // miss (or never see fire at all) if the tab wasn't being watched.
+        // Now: a persistent on-screen button that stays until clicked, and
+        // _voResumePendingExport() can show the same thing on a later reload
+        // even if this exact poll never got to run (tab discarded, etc).
+        _voShowReadyBar(job);
         _voExportJob = null;
         _voResetFrameBtn();
         return;
@@ -3726,6 +3765,10 @@
 
     // Pre-load library so the panel opens instantly the first time.
     loadLibrary();
+
+    // Pick back up any Offer Analytics export left running (or finished
+    // unnoticed) from before this tab was reloaded/discarded.
+    _voResumePendingExport();
   })();
 
   // ==========================================================================
@@ -4027,7 +4070,7 @@
     sortKey: "row_idx",
     sortDir: "asc",
     page: 1,
-    pageSize: 50,
+    pageSize: 10,
     progressHistory: [],
     lastPhase: null,
     rankMin: 0,
@@ -4655,7 +4698,7 @@
     const el = $("#analytics-run-pagination");
     if (!el) return;
     if (totalPages <= 1) { el.innerHTML = ""; return; }
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const from = (page - 1) * pageSize + 1;
     const to   = Math.min(page * pageSize, totalRows);
 
@@ -4709,7 +4752,7 @@
   async function _fetchVerdictPage(tab, page) {
     const verdict = _TAB_TO_VERDICT[tab]; // undefined for "All" tab — that's ok
     const id = state.analyticsRun.id;
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const offset = (page - 1) * pageSize;
     const aiFilter = state.analyticsRun.aiFilter || "all";
     const searchQ = (state.analyticsRun.search || "").trim();
@@ -4909,7 +4952,7 @@
     // the total so page buttons cover the full dataset.
     // When an AI filter is active the server returns ai_filtered_count — use
     // that so pagination reflects only the filtered set.
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const page     = state.analyticsRun.page;
     let totalRows, totalPages, pageRows;
     if (isVerdictTab || _aiFilterActive) {
@@ -8022,13 +8065,23 @@
     } catch { /* best-effort — leave the note blank on failure */ }
   }
 
-  // Tools sub-tabs: ASIN Check / Brand Check / MPN Check
+  // Toolbox sub-tabs: ASIN Check / Brand Check / MPN Check / Quick Search / PO Analytics
   function _switchToolsTab(tab) {
     $$("#tools-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.toolsTab === tab));
     $("#tools-tab-asin")?.classList.toggle("hidden", tab !== "asin");
     $("#tools-tab-brand")?.classList.toggle("hidden", tab !== "brand");
     $("#tools-tab-mpn")?.classList.toggle("hidden", tab !== "mpn");
+    $("#tools-tab-quicksearch")?.classList.toggle("hidden", tab !== "quicksearch");
+    $("#tools-tab-po")?.classList.toggle("hidden", tab !== "po");
     if (tab === "mpn") _refreshMpnSyncStatus();
+    if (tab === "po") {
+      // PO Analytics used to re-sync on re-entering its own view (a job keeps
+      // running server-side regardless of which tab is open) -- now that
+      // trigger is re-entering this Toolbox sub-tab instead.
+      if (typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
+      if (typeof _refreshPoaLists === "function") _refreshPoaLists();
+      if (typeof loadAutomationSettings === "function") loadAutomationSettings();
+    }
   }
   $$("#tools-panel .lib-type-tab").forEach(tab => {
     tab.addEventListener("click", () => _switchToolsTab(tab.dataset.toolsTab));
@@ -8696,23 +8749,82 @@
     }
   }
 
+  // Recipients are now a real add/remove list (not a free-text textarea),
+  // pre-seeded with the usual 4 people each time — edit/add/remove per PO,
+  // then it resets back to this starting set after a successful Add so the
+  // next PO starts from the same clean defaults. Domain is always
+  // @fordmed.com (single org) so it's never typed — only the name shows in
+  // the list, and only the name is typed to add someone.
+  const POA_DEFAULT_RECIPIENT_NAMES = ["Raiann", "AviS", "MasonB", "VictoriaV"];
+  let _poaWatchRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+
+  function _renderPoaRecipList() {
+    const list = $("#poa-watch-recip-list");
+    if (!list) return;
+    if (!_poaWatchRecipients.length) {
+      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No recipients yet — add at least one below.</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const name of _poaWatchRecipients) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:13px;";
+      row.innerHTML = `
+        <span style="color:#37404c;">${escapeHtml(name)}</span>
+        <button class="icon-btn" title="Remove" style="width:20px;height:20px;flex:none;">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>`;
+      row.querySelector("button").addEventListener("click", () => {
+        _poaWatchRecipients = _poaWatchRecipients.filter(n => n !== name);
+        _renderPoaRecipList();
+      });
+      list.appendChild(row);
+    }
+  }
+
+  function _poaAddRecipient() {
+    const input = $("#poa-watch-recip-new");
+    if (!input) return;
+    let name = input.value.trim();
+    if (!name) return;
+    name = name.replace(/@.*$/, "").trim();   // tolerate a pasted full email — strip the domain back off
+    if (/\s/.test(name)) {
+      showToast("Just the name (e.g. \"Raiann\") — no spaces.", "error");
+      return;
+    }
+    if (!_poaWatchRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+      _poaWatchRecipients.push(name);
+      _renderPoaRecipList();
+    }
+    input.value = "";
+    input.focus();
+  }
+  $("#poa-watch-recip-add")?.addEventListener("click", _poaAddRecipient);
+  $("#poa-watch-recip-new")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); _poaAddRecipient(); }
+  });
+  _renderPoaRecipList();
+
   async function _addPoaWatch() {
     const input = $("#poa-watch-input");
-    const recipEl = $("#poa-watch-recipients");
     const btn = $("#poa-watch-add");
     if (!input) return;
     const raw = input.value.trim();
     if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
-    const recipients = recipEl ? recipEl.value.trim() : "";
+    if (!_poaWatchRecipients.length) {
+      showToast("Add at least one recipient — it's required for every PO.", "warning");
+      return;
+    }
+    const recipients = _poaWatchRecipients.map(n => `${n}@fordmed.com`).join(",");
     if (btn) btn.disabled = true;
     try {
       const r = await api("/api/po-analytics/automation/watchlist", {
         method: "POST", body: { po_numbers: raw, recipients },
       });
       input.value = "";
-      if (recipEl) recipEl.value = "";
-      const who = recipients ? "its own recipients" : "the default recipients";
-      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${who}.`, r.added ? "success" : "info");
+      _poaWatchRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+      _renderPoaRecipList();
+      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${_poaWatchRecipients.length} recipient(s).`, r.added ? "success" : "info");
       await _refreshPoaLists();
       _refreshAutomationStatusLine(document);
     } catch (e) {

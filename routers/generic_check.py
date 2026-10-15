@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from services.generic_check import classify_generic
 from services.spapi.config import load_sp_api_credentials, sp_api_configured
 from services.safety import safe_spreadsheet_value
+from services import job_persistence
 
 router = APIRouter()
 
@@ -93,6 +94,13 @@ async def start_check(body: CheckBody) -> dict:
             "check submits a validation-preview listing which requires a seller ID."
         ))
 
+    job_id = _launch_check(asins)
+    return {"job_id": job_id, "total": len(asins)}
+
+
+def _launch_check(asins: list[str]) -> str:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs)."""
     job_id = str(uuid.uuid4())
     job: dict = {
         "job_id": job_id, "total": len(asins), "done": 0,
@@ -100,6 +108,7 @@ async def start_check(body: CheckBody) -> dict:
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    job_persistence.save_job(job_id, "generic_check", {"asins": asins})
 
     def run() -> None:
         lock = threading.Lock()
@@ -115,9 +124,21 @@ async def start_check(body: CheckBody) -> dict:
         except Exception as exc:  # noqa: BLE001
             job["status"] = "error"
             job["error"] = str(exc)
+        finally:
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=run, daemon=True).start()
-    return {"job_id": job_id, "total": len(asins)}
+    return job_id
+
+
+def _relaunch(params: dict) -> None:
+    asins = [str(a) for a in (params.get("asins") or []) if str(a).strip()]
+    if not asins:
+        return
+    _launch_check(asins)
+
+
+job_persistence.register_relauncher("generic_check", _relaunch)
 
 
 @router.get("/generic-check/jobs/{job_id}")

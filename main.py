@@ -32,7 +32,58 @@ STATIC_DIR = BASE_DIR / "static"
 async def _lifespan(app: FastAPI):
     """Ensure DB is initialised and orphaned run states are cleared on startup."""
     database.init_db()
-    database.reset_orphaned_running_states()
+    _orphans = database.reset_orphaned_running_states()
+    # Auto-resume anything that was genuinely mid-work the moment the process
+    # died/restarted, instead of leaving it sitting at "Stopped" until someone
+    # notices and clicks Resume by hand -- a server restart happens constantly
+    # during active development, so "stopped but resumable" silently became
+    # "stopped and forgotten" for anything nobody was actively watching.
+    try:
+        from services.analytics import runner as _analytics_runner
+        for _rid in _orphans.get("analytics_run_ids") or []:
+            try:
+                _analytics_runner.resume_run(_rid)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        import json as _json
+        from services.analytics import brand_runner as _brand_runner
+        for _rid in _orphans.get("brand_run_ids") or []:
+            try:
+                with database._connect() as _c:
+                    _run = _c.execute(
+                        "SELECT * FROM brand_analytics_runs WHERE id=?", (_rid,)
+                    ).fetchone()
+                if _run:
+                    _run = dict(_run)
+                    try:
+                        _terms = _json.loads(_run.get("search_terms") or "[]")
+                    except (ValueError, TypeError):
+                        _terms = []
+                    if _terms:
+                        _brand_runner.start_brand_run(
+                            _rid, _terms,
+                            _run.get("min_rank") or 0, _run.get("max_rank") or 0,
+                            _run.get("pages_per_brand") or 10,
+                            vetting_mode=_run.get("vetting_mode") or "cpg",
+                        )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # Every in-memory background job (Offer Analytics export, PO Analytics
+    # export, Eligibility/Storage/Generic ASIN checks) that was still running
+    # when the process went down gets relaunched fresh here -- see
+    # services/job_persistence.py. Must run after every router module has
+    # been imported (it has, by the time this coroutine starts) so every
+    # relauncher is already registered.
+    try:
+        from services import job_persistence
+        job_persistence.resume_orphaned_jobs()
+    except Exception:
+        pass
     # Live SellerCloud (Azure) catalog: hourly background refresh (2026-10-07,
     # replaces a one-shot startup-only warm) so PO Analytics/Create SKUs/
     # sc_reference almost always find an already-warm cache (<1h old) instead

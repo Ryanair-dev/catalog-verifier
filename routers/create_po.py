@@ -431,6 +431,8 @@ def export(body: dict = Body(...)) -> dict:
     for bi in (sess.get("brands") or {}).values():
         if getattr(bi, "status", "") == "new" and getattr(bi, "prefix", ""):
             cp.save_brand_reference(bi.brand, bi.prefix, _company, bi.manufacturer)
+    files_payload = [{"name": name, "b64": base64.b64encode(data).decode("ascii")}
+                      for name, data in files]
     try:
         sku_exports.record(
             export_id=export_id, export_date=export_date,
@@ -440,13 +442,22 @@ def export(body: dict = Body(...)) -> dict:
             total_fbm=sum(1 for r in results if r.fbm and not r.fbm_on_sc),
             total_kits=sum(1 for r in results if r.kit_value),
             files=[name for name, _ in files],
+            files_blob=files_payload,
         )
     except Exception as exc:
         log.warning("failed to log sku export: %s", exc)
 
-    return {"export_id": export_id, "export_date": export_date,
-            "files": [{"name": name, "b64": base64.b64encode(data).decode("ascii")}
-                      for name, data in files]}
+    return {"export_id": export_id, "export_date": export_date, "files": files_payload}
+
+
+@router.get("/create-po/history/{export_id}/download")
+def history_download(export_id: str) -> dict:
+    """Re-download a past export's exact generated files, no re-generation."""
+    blob = sku_exports.get_files_blob(export_id)
+    if blob is None:
+        raise HTTPException(404, "No stored files for this export (it may predate "
+                                  "re-export support, or the ID doesn't exist).")
+    return {"export_id": export_id, "files": blob}
 
 
 def _config(body: dict) -> dict:
