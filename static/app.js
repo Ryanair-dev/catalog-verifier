@@ -8892,33 +8892,40 @@
     }
   }
 
-  // Recipients are now a real add/remove list (not a free-text textarea),
-  // pre-seeded with the usual 4 people each time — edit/add/remove per PO,
-  // then it resets back to this starting set after a successful Add so the
-  // next PO starts from the same clean defaults. Domain is always
-  // @fordmed.com (single org) so it's never typed — only the name shows in
-  // the list, and only the name is typed to add someone.
+  // Recipients are a real click-to-choose list, not an auto-add-then-remove
+  // one: _poaKnownRecipients is everyone who CAN be picked (the 4 usual
+  // people, plus anyone typed in via "+ Add to list" below, which persists
+  // across POs for the rest of the session); _poaSelectedRecipients is who's
+  // actually CHECKED for the PO about to be added — it starts EMPTY every
+  // time, so nothing is pre-chosen and you explicitly click who gets this
+  // one. Domain is always @fordmed.com (single org) so it's never typed —
+  // only the name shows in the list, and only the name is typed to add
+  // someone new to the pickable set.
   const POA_DEFAULT_RECIPIENT_NAMES = ["Raiann", "AviS", "MasonB", "VictoriaV"];
-  let _poaWatchRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+  let _poaKnownRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+  let _poaSelectedRecipients = [];
 
   function _renderPoaRecipList() {
     const list = $("#poa-watch-recip-list");
     if (!list) return;
-    if (!_poaWatchRecipients.length) {
-      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No recipients yet — add at least one below.</div>`;
+    if (!_poaKnownRecipients.length) {
+      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No one to choose from yet — add someone below.</div>`;
       return;
     }
     list.innerHTML = "";
-    for (const name of _poaWatchRecipients) {
+    for (const name of _poaKnownRecipients) {
+      const checked = _poaSelectedRecipients.includes(name);
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#f7f8fa;border-radius:6px;font-size:13px;";
+      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;font-size:13px;cursor:pointer;background:${checked ? "#eef2ff" : "#f7f8fa"};border:1px solid ${checked ? "#c7d2fe" : "transparent"};`;
       row.innerHTML = `
-        <span style="color:#37404c;">${escapeHtml(name)}</span>
-        <button class="icon-btn" title="Remove" style="width:20px;height:20px;flex:none;">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-        </button>`;
-      row.querySelector("button").addEventListener("click", () => {
-        _poaWatchRecipients = _poaWatchRecipients.filter(n => n !== name);
+        <span style="width:16px;height:16px;border-radius:4px;flex:none;display:flex;align-items:center;justify-content:center;border:1.5px solid ${checked ? "#4f46e5" : "#cbd5e1"};background:${checked ? "#4f46e5" : "#fff"};">
+          ${checked ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>` : ""}
+        </span>
+        <span style="color:#37404c;flex:1;">${escapeHtml(name)}</span>`;
+      row.addEventListener("click", () => {
+        _poaSelectedRecipients = checked
+          ? _poaSelectedRecipients.filter(n => n !== name)
+          : [..._poaSelectedRecipients, name];
         _renderPoaRecipList();
       });
       list.appendChild(row);
@@ -8935,10 +8942,15 @@
       showToast("Just the name (e.g. \"Raiann\") — no spaces.", "error");
       return;
     }
-    if (!_poaWatchRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
-      _poaWatchRecipients.push(name);
-      _renderPoaRecipList();
+    if (!_poaKnownRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+      _poaKnownRecipients.push(name);
     }
+    // A name you just typed in is something you want on THIS PO — check it
+    // right away instead of making you click it a second time.
+    if (!_poaSelectedRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+      _poaSelectedRecipients.push(name);
+    }
+    _renderPoaRecipList();
     input.value = "";
     input.focus();
   }
@@ -8954,20 +8966,21 @@
     if (!input) return;
     const raw = input.value.trim();
     if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
-    if (!_poaWatchRecipients.length) {
-      showToast("Add at least one recipient — it's required for every PO.", "warning");
+    if (!_poaSelectedRecipients.length) {
+      showToast("Choose at least one recipient — it's required for every PO.", "warning");
       return;
     }
-    const recipients = _poaWatchRecipients.map(n => `${n}@fordmed.com`).join(",");
+    const sentCount = _poaSelectedRecipients.length;
+    const recipients = _poaSelectedRecipients.map(n => `${n}@fordmed.com`).join(",");
     if (btn) btn.disabled = true;
     try {
       const r = await api("/api/po-analytics/automation/watchlist", {
         method: "POST", body: { po_numbers: raw, recipients },
       });
       input.value = "";
-      _poaWatchRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+      _poaSelectedRecipients = [];   // nothing pre-chosen for the next PO — choose fresh each time
       _renderPoaRecipList();
-      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${_poaWatchRecipients.length} recipient(s).`, r.added ? "success" : "info");
+      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${sentCount} recipient(s).`, r.added ? "success" : "info");
       await _refreshPoaLists();
       _refreshAutomationStatusLine(document);
     } catch (e) {

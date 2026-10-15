@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=12" />
+  <link rel="stylesheet" href="/static/styles.css?v=13" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
@@ -38,6 +38,7 @@
         </div>
       </div>
 
+      <div class="sidebar-nav-scroll">
       <div class="section-label">Scans</div>
       <div class="nav-item active" data-view="cpg">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v6H3z"/><path d="M3 15h18v6H3z"/><circle cx="8" cy="18" r="1"/></svg>
@@ -96,6 +97,7 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         Settings
       </div>
+      </div><!-- /sidebar-nav-scroll -->
       <div class="mt-auto pt-10 px-2 text-xs" style="color:var(--grey-500);">
         <div>Local mode</div>
         <div id="api-status" class="mt-1">Connecting…</div>
@@ -1572,10 +1574,10 @@
     <!-- Toolbox sub-tabs -->
     <div class="lib-type-tabs" role="tablist">
       <button class="lib-type-tab active" data-tools-tab="asin" type="button">ASIN Check</button>
+      <button class="lib-type-tab" data-tools-tab="po" type="button">PO Analytics</button>
       <button class="lib-type-tab" data-tools-tab="brand" type="button">Brand Check</button>
       <button class="lib-type-tab" data-tools-tab="mpn" type="button">MPN Check</button>
       <button class="lib-type-tab" data-tools-tab="quicksearch" type="button">Quick Search</button>
-      <button class="lib-type-tab" data-tools-tab="po" type="button">PO Analytics</button>
     </div>
 
     <div id="tools-tab-asin" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
@@ -2017,20 +2019,14 @@
           <input id="poa-watch-input" type="text" placeholder="49932, 49933"
             style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;margin-bottom:10px;" />
 
-          <div style="font-size:11px;font-weight:600;color:#6b7480;margin-bottom:6px;">Recipients</div>
-          <div id="poa-watch-recip-list" style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px;"></div>
+          <div style="font-size:11px;font-weight:600;color:#6b7480;margin-bottom:6px;">Recipients — click who should get this PO's report</div>
+          <div id="poa-watch-recip-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-            <input id="poa-watch-recip-new" type="text" list="poa-recip-datalist" placeholder="e.g. Raiann"
+            <input id="poa-watch-recip-new" type="text" placeholder="Add someone else — e.g. Raiann"
               style="flex:1;min-width:90px;box-sizing:border-box;font-size:13px;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
             <span style="font-size:12px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
-            <button id="poa-watch-recip-add" class="btn btn-secondary text-xs" type="button" style="white-space:nowrap;">+ Add recipient</button>
+            <button id="poa-watch-recip-add" class="btn btn-secondary text-xs" type="button" style="white-space:nowrap;">+ Add to list</button>
           </div>
-          <datalist id="poa-recip-datalist">
-            <option value="Raiann"></option>
-            <option value="AviS"></option>
-            <option value="MasonB"></option>
-            <option value="VictoriaV"></option>
-          </datalist>
 
           <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:auto;padding-top:10px;">Add</button>
         </div>
@@ -3023,7 +3019,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=65"></script>
+  <script src="/static/app.js?v=66"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>
