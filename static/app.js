@@ -8892,31 +8892,70 @@
     }
   }
 
-  // Recipients are a real click-to-choose list, not an auto-add-then-remove
-  // one: _poaKnownRecipients is everyone who CAN be picked (the 4 usual
-  // people, plus anyone typed in via "+ Add to list" below, which persists
-  // across POs for the rest of the session); _poaSelectedRecipients is who's
-  // actually CHECKED for the PO about to be added — it starts EMPTY every
-  // time, so nothing is pre-chosen and you explicitly click who gets this
-  // one. Domain is always @fordmed.com (single org) so it's never typed —
-  // only the name shows in the list, and only the name is typed to add
-  // someone new to the pickable set.
+  // Recipients are chosen from a real popup list, not an auto-add-then-remove
+  // inline checklist: clicking the "Choose recipients…" box opens a floating
+  // dropdown (appended to <body>, position:fixed computed from the button's
+  // own rect, so it's never clipped by the side panel's internal scroll area
+  // or its CSS transform). _poaKnownRecipients is everyone PICKABLE (the 4
+  // usual people, plus anyone typed in via "+ Add" inside the popup, which
+  // persists across POs for the rest of the session); _poaSelectedRecipients
+  // is who's actually CHECKED for the PO about to be added — it starts EMPTY
+  // every time, so nothing is pre-chosen and you explicitly click who gets
+  // this one. Domain is always @fordmed.com (single org) so it's never
+  // typed — only the name shows, and only the name is typed to add someone
+  // new to the pickable set.
   const POA_DEFAULT_RECIPIENT_NAMES = ["Raiann", "AviS", "MasonB", "VictoriaV"];
   let _poaKnownRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
   let _poaSelectedRecipients = [];
+  let _poaRecipDropdownEl = null;   // the floating popup; only exists in the DOM while open
 
-  function _renderPoaRecipList() {
-    const list = $("#poa-watch-recip-list");
+  function _poaRecipLabel() {
+    const label = $("#poa-watch-recip-label");
+    if (!label) return;
+    label.textContent = _poaSelectedRecipients.length
+      ? _poaSelectedRecipients.join(", ")
+      : "Choose recipients…";
+  }
+
+  function _onPoaRecipOutsideClick(e) {
+    const trigger = $("#poa-watch-recip-btn");
+    if (_poaRecipDropdownEl && !_poaRecipDropdownEl.contains(e.target)
+        && e.target !== trigger && !trigger?.contains(e.target)) {
+      _closePoaRecipDropdown();
+    }
+  }
+  function _onPoaRecipEscape(e) {
+    if (e.key === "Escape") _closePoaRecipDropdown();
+  }
+  function _onPoaRecipPanelScroll() {
+    // The popup is position:fixed to the viewport; if the panel content
+    // behind it scrolls, the trigger button moves out from under it — just
+    // close rather than try to keep repositioning on every scroll tick.
+    _closePoaRecipDropdown();
+  }
+
+  function _closePoaRecipDropdown() {
+    if (!_poaRecipDropdownEl) return;
+    _poaRecipDropdownEl.remove();
+    _poaRecipDropdownEl = null;
+    document.removeEventListener("mousedown", _onPoaRecipOutsideClick, true);
+    document.removeEventListener("keydown", _onPoaRecipEscape, true);
+    $("#tools-tab-po")?.removeEventListener("scroll", _onPoaRecipPanelScroll);
+  }
+
+  function _renderPoaRecipDropdownList() {
+    if (!_poaRecipDropdownEl) return;
+    const list = _poaRecipDropdownEl.querySelector(".poa-recip-list");
     if (!list) return;
     if (!_poaKnownRecipients.length) {
-      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No one to choose from yet — add someone below.</div>`;
+      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;padding:4px 2px;">No one to choose from yet — add someone below.</div>`;
       return;
     }
     list.innerHTML = "";
     for (const name of _poaKnownRecipients) {
       const checked = _poaSelectedRecipients.includes(name);
       const row = document.createElement("div");
-      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;font-size:13px;cursor:pointer;background:${checked ? "#eef2ff" : "#f7f8fa"};border:1px solid ${checked ? "#c7d2fe" : "transparent"};`;
+      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;background:${checked ? "#eef2ff" : "transparent"};`;
       row.innerHTML = `
         <span style="width:16px;height:16px;border-radius:4px;flex:none;display:flex;align-items:center;justify-content:center;border:1.5px solid ${checked ? "#4f46e5" : "#cbd5e1"};background:${checked ? "#4f46e5" : "#fff"};">
           ${checked ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>` : ""}
@@ -8926,14 +8965,16 @@
         _poaSelectedRecipients = checked
           ? _poaSelectedRecipients.filter(n => n !== name)
           : [..._poaSelectedRecipients, name];
-        _renderPoaRecipList();
+        _renderPoaRecipDropdownList();
+        _poaRecipLabel();
       });
       list.appendChild(row);
     }
   }
 
   function _poaAddRecipient() {
-    const input = $("#poa-watch-recip-new");
+    if (!_poaRecipDropdownEl) return;
+    const input = _poaRecipDropdownEl.querySelector("#poa-watch-recip-new");
     if (!input) return;
     let name = input.value.trim();
     if (!name) return;
@@ -8950,15 +8991,50 @@
     if (!_poaSelectedRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
       _poaSelectedRecipients.push(name);
     }
-    _renderPoaRecipList();
+    _renderPoaRecipDropdownList();
+    _poaRecipLabel();
     input.value = "";
     input.focus();
   }
-  $("#poa-watch-recip-add")?.addEventListener("click", _poaAddRecipient);
-  $("#poa-watch-recip-new")?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); _poaAddRecipient(); }
-  });
-  _renderPoaRecipList();
+
+  function _openPoaRecipDropdown() {
+    if (_poaRecipDropdownEl) { _closePoaRecipDropdown(); return; }   // toggle closed on a 2nd click
+    const trigger = $("#poa-watch-recip-btn");
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+
+    const el = document.createElement("div");
+    el.className = "poa-recip-dropdown";
+    el.style.cssText = `position:fixed;top:${rect.bottom + 4}px;left:${rect.left}px;width:${rect.width}px;
+      background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 10px 30px rgba(15,23,42,0.12);
+      padding:10px;z-index:500;display:flex;flex-direction:column;gap:8px;`;
+    el.innerHTML = `
+      <div class="poa-recip-list" style="display:flex;flex-direction:column;gap:2px;overflow-y:auto;max-height:180px;"></div>
+      <div style="display:flex;gap:6px;align-items:center;border-top:1px solid #eef0f4;padding-top:8px;">
+        <input id="poa-watch-recip-new" type="text" placeholder="Add someone else — e.g. Raiann"
+          style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:6px 9px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+        <span style="font-size:11px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
+        <button id="poa-watch-recip-add" class="btn btn-secondary text-xs" type="button" style="white-space:nowrap;">+ Add</button>
+      </div>`;
+    document.body.appendChild(el);
+    _poaRecipDropdownEl = el;
+    _renderPoaRecipDropdownList();
+
+    el.querySelector("#poa-watch-recip-add").addEventListener("click", _poaAddRecipient);
+    el.querySelector("#poa-watch-recip-new").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); _poaAddRecipient(); }
+    });
+
+    // Defer attaching the outside-click listener so the same click that
+    // opened the dropdown doesn't immediately close it again.
+    setTimeout(() => {
+      document.addEventListener("mousedown", _onPoaRecipOutsideClick, true);
+      document.addEventListener("keydown", _onPoaRecipEscape, true);
+      $("#tools-tab-po")?.addEventListener("scroll", _onPoaRecipPanelScroll);
+    }, 0);
+  }
+  $("#poa-watch-recip-btn")?.addEventListener("click", _openPoaRecipDropdown);
+  _poaRecipLabel();
 
   async function _addPoaWatch() {
     const input = $("#poa-watch-input");
@@ -8979,7 +9055,8 @@
       });
       input.value = "";
       _poaSelectedRecipients = [];   // nothing pre-chosen for the next PO — choose fresh each time
-      _renderPoaRecipList();
+      _poaRecipLabel();
+      _closePoaRecipDropdown();
       showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${sentCount} recipient(s).`, r.added ? "success" : "info");
       await _refreshPoaLists();
       _refreshAutomationStatusLine(document);
