@@ -171,6 +171,46 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
     raise RuntimeError("Keepa /product failed after retries (token exhaustion or repeated errors)")
 
 
+def seller_asins(seller_id: str) -> dict:
+    """Keepa /seller?storefront=1 -- this seller's full CURRENT ASIN roster plus
+    basic identity info. Flat ~10 tokens regardless of catalog size (verified
+    live) -- this is the Seller Analytics discovery step: unlike a vendor
+    offer's UPC, which needs a barcode->ASIN lookup pass, a seller ID already
+    IS the confirmed identity, so Keepa just hands back their ASIN list
+    directly -- no recovery/resolution pass needed."""
+    seller_id = (seller_id or "").strip()
+    if not seller_id:
+        return {"asins": [], "seller_name": None, "error": "No seller ID given."}
+    if not is_configured():
+        return {"asins": [], "seller_name": None, "error": "Keepa is not configured (KEEPA_API missing)."}
+    sess = _session()
+    _wait_tokens(sess, 10)
+    try:
+        r = sess.get(f"{_ENDPOINT}/seller",
+                     params={"domain": _DOMAIN, "seller": seller_id, "storefront": 1},
+                     timeout=60)
+        j = r.json()
+    except requests.RequestException as exc:
+        return {"asins": [], "seller_name": None, "error": str(exc)[:200]}
+    if j.get("error"):
+        return {"asins": [], "seller_name": None, "error": str(j["error"])[:200]}
+    sellers = j.get("sellers") or {}
+    obj = sellers.get(seller_id) or next(iter(sellers.values()), None)
+    if not obj:
+        return {"asins": [], "seller_name": None,
+                "error": f"Seller {seller_id!r} not found on Keepa."}
+    asin_list = obj.get("asinList") or []
+    return {
+        "asins": sorted({a for a in asin_list if a}),
+        "seller_name": obj.get("sellerName") or obj.get("businessName"),
+        "total_storefront_asins": obj.get("totalStorefrontAsins"),
+        "has_fba": obj.get("hasFBA"),
+        "rating": _kval(obj.get("currentRating")),
+        "rating_count": _kval(obj.get("currentRatingCount")),
+        "error": None,
+    }
+
+
 def _call_sellers(sess: requests.Session, seller_ids) -> dict:
     names: dict = {}
     uniq = list({s for s in seller_ids if s})
@@ -207,6 +247,10 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
         "sales_rank_current": _karr(s90, "current", _IDX_SALES_RANK),
         "sales_rank_30d": _karr(s30, "avg30", _IDX_SALES_RANK),
         "url": f"https://www.amazon.com/dp/{p.get('asin')}",
+        # Only needed by Seller Analytics (no vendor-offer UPC to key off of
+        # there) -- additive, existing callers never read these keys.
+        "ean": next(iter(p.get("eanList") or []), None),
+        "upc": next(iter(p.get("upcList") or []), None),
     }
     if isinstance(p.get("variationCSV"), list):
         row["variation_asin"] = ",".join(v for v in p["variationCSV"][1:] if isinstance(v, str))

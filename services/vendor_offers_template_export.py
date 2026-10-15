@@ -255,7 +255,7 @@ def _sku_data_by_asin(asins: list[str]) -> dict:
         try:
             rows, cols = _azure_rows(
                 "SELECT LTRIM(RTRIM(ASIN)) asin, ProductID, ShadowOf, FulfilledBy, Status, "
-                "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
+                "OnOrder, InventoryPhysicalQty, LastPurchasedOn, UPC "
                 "FROM analytics.sku_data_extended_view "
                 f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)})")
         except Exception as exc:  # noqa: BLE001
@@ -281,6 +281,10 @@ def _sku_data_by_asin(asins: list[str]) -> dict:
                 "fba_sku": (fba or {}).get("ProductID"),
                 "on_order": (main or {}).get("OnOrder"),
                 "or33": (main or {}).get("InventoryPhysicalQty"),
+                # Only needed by Seller Analytics (an ASIN we don't carry has no
+                # vendor-offer UPC to key off of, so this is the fallback source
+                # when Keepa's own UPC/EAN list comes back empty for it).
+                "upc": (main or {}).get("UPC") or (fba or {}).get("UPC"),
             }
     return out
 

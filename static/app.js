@@ -595,6 +595,7 @@
       "analytics-run":  $("#view-analytics-run"),
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
+      "seller-analytics":    $("#view-seller-analytics"),
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
@@ -8970,6 +8971,139 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url; a.download = filename || "po_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      showToast("Download failed: " + e.message, "error");
+    }
+  }
+
+  // ===== Seller Analytics ===================================================
+  // Mirrors the PO Analytics job pattern above: start a background job, poll
+  // until it's done, then download. Unlike a vendor-offer UPC (which needs a
+  // barcode->ASIN recovery pass), a seller ID is already a confirmed identity
+  // -- Keepa hands back its full current ASIN roster directly.
+  let _saPoll = null;
+
+  function _clearSaPoll() {
+    if (_saPoll) { clearTimeout(_saPoll); _saPoll = null; }
+  }
+
+  async function _saLookupSeller() {
+    const input = $("#sa-seller-input");
+    const btn = $("#sa-lookup-btn");
+    const resEl = $("#sa-lookup-result");
+    const errEl = $("#sa-lookup-error");
+    if (!input || !btn) return;
+    const sellerId = input.value.trim();
+    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
+
+    btn.disabled = true;
+    btn.textContent = "Looking up…";
+    resEl?.classList.add("hidden");
+    errEl?.classList.add("hidden");
+    try {
+      const r = await api("/api/seller-analytics/lookup", { method: "POST", body: { seller_id: sellerId } });
+      if (resEl) {
+        const name = r.seller_name ? `<strong>${r.seller_name}</strong>` : `Seller ${sellerId}`;
+        const fba = r.has_fba ? " · FBA" : "";
+        const rating = r.rating != null ? ` · ${r.rating}% positive (${r.rating_count || 0} ratings)` : "";
+        resEl.innerHTML = `${name} — ${r.asin_count.toLocaleString()} ASINs currently listed${fba}${rating}`;
+        resEl.classList.remove("hidden");
+      }
+    } catch (e) {
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Look up";
+    }
+  }
+  $("#sa-lookup-btn")?.addEventListener("click", _saLookupSeller);
+
+  async function _saStartRun() {
+    const sellerInput = $("#sa-seller-input");
+    const roiInput = $("#sa-roi-input");
+    const btn = $("#sa-run-btn");
+    const dl = $("#sa-download-btn");
+    const progress = $("#sa-progress");
+    const errEl = $("#sa-error");
+    if (!sellerInput || !btn) return;
+
+    const sellerId = sellerInput.value.trim();
+    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
+    const roiPct = parseFloat(roiInput?.value) || 30;
+
+    _clearSaPoll();
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    dl?.classList.add("hidden");
+    errEl?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Starting…";
+
+    try {
+      const r = await api("/api/seller-analytics/start", {
+        method: "POST", body: { seller_id: sellerId, roi_pct: roiPct },
+      });
+      _pollSellerAnalytics(r.job_id);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run Analysis";
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+    }
+  }
+  $("#sa-run-btn")?.addEventListener("click", _saStartRun);
+
+  function _pollSellerAnalytics(jobId) {
+    const btn = $("#sa-run-btn");
+    const dl = $("#sa-download-btn");
+    const progress = $("#sa-progress");
+    const errEl = $("#sa-error");
+    const tick = async () => {
+      let j;
+      try {
+        j = await api(`/api/seller-analytics/jobs/${jobId}`);
+      } catch (e) {
+        _saPoll = setTimeout(tick, 2000);
+        return;
+      }
+      if (progress && !progress.classList.contains("hidden")) {
+        const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+        const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
+        progress.textContent = j.total
+          ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
+          : (j.phase || "Working…");
+      }
+      if (j.status === "complete") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+        progress?.classList.add("hidden");
+        dl?.classList.remove("hidden");
+        if (dl) dl.onclick = () => _downloadSellerAnalytics(jobId, j.filename);
+        return;
+      }
+      if (j.status === "error") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+        progress?.classList.add("hidden");
+        errEl?.classList.remove("hidden");
+        if (errEl) errEl.textContent = j.error || "Failed.";
+        return;
+      }
+      _saPoll = setTimeout(tick, 1500);
+    };
+    tick();
+  }
+
+  async function _downloadSellerAnalytics(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/seller-analytics/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "seller_analytics.xlsx";
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
