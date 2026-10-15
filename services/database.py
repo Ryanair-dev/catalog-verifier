@@ -900,81 +900,123 @@ def upsert_library_pair(
 
     Returns counts: created, updated, ids_added, blacklist_cleared.
     """
+    with _LOCK, _connect() as conn:
+        return _upsert_library_pair_conn(conn, asin, ids, brand, manufacturer, amz_pack)
+
+
+def _upsert_library_pair_conn(
+    conn: sqlite3.Connection,
+    asin: str,
+    ids: dict[str, list[str]],
+    brand: str = "",
+    manufacturer: str = "",
+    amz_pack: str = "",
+) -> dict:
+    """The actual per-row work of upsert_library_pair, against an ALREADY-OPEN
+    connection (caller holds _LOCK) — shared by the single-row public function
+    and upsert_library_pairs_bulk() so a big import doesn't pay the cost of a
+    fresh sqlite3.connect() (+ its 5 PRAGMA statements) and a separate _LOCK
+    acquisition for every single row."""
     asin = str(asin or "").strip().upper()
     out = {"created": 0, "updated": 0, "ids_added": 0, "blacklist_cleared": 0}
     if not asin:
         return out
 
     _payload = json.dumps({"source": "pair-library", "brand": brand or ""})
-    with _LOCK, _connect() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM pair_library WHERE asin=?", (asin,)
-        ).fetchone()
-        if exists:
-            sets, params = ["updated_at=CURRENT_TIMESTAMP"], []
-            if brand:
-                sets.append("brand=?");        params.append(brand)
-            if manufacturer:
-                sets.append("manufacturer=?"); params.append(manufacturer)
-            if amz_pack:
-                sets.append("amz_pack=?");     params.append(amz_pack)
-            params.append(asin)
-            conn.execute(
-                f"UPDATE pair_library SET {', '.join(sets)} WHERE asin=?", params
-            )
-            out["updated"] = 1
-        else:
-            conn.execute(
-                "INSERT INTO pair_library(asin, brand, manufacturer, amz_pack) VALUES (?, ?, ?, ?)",
-                (asin, brand or "", manufacturer or "", amz_pack or ""),
-            )
-            out["created"] = 1
+    exists = conn.execute(
+        "SELECT 1 FROM pair_library WHERE asin=?", (asin,)
+    ).fetchone()
+    if exists:
+        sets, params = ["updated_at=CURRENT_TIMESTAMP"], []
+        if brand:
+            sets.append("brand=?");        params.append(brand)
+        if manufacturer:
+            sets.append("manufacturer=?"); params.append(manufacturer)
+        if amz_pack:
+            sets.append("amz_pack=?");     params.append(amz_pack)
+        params.append(asin)
+        conn.execute(
+            f"UPDATE pair_library SET {', '.join(sets)} WHERE asin=?", params
+        )
+        out["updated"] = 1
+    else:
+        conn.execute(
+            "INSERT INTO pair_library(asin, brand, manufacturer, amz_pack) VALUES (?, ?, ?, ?)",
+            (asin, brand or "", manufacturer or "", amz_pack or ""),
+        )
+        out["created"] = 1
 
-        for id_type, values in (ids or {}).items():
-            vals = [v for v in (values or []) if v]
-            if not vals:
-                continue
-            # New primary incoming for this type on THIS ASIN — demote existing.
+    for id_type, values in (ids or {}).items():
+        vals = [v for v in (values or []) if v]
+        if not vals:
+            continue
+        # New primary incoming for this type on THIS ASIN — demote existing.
+        conn.execute(
+            "UPDATE pair_library_ids SET is_primary=0 WHERE asin=? AND id_type=?",
+            (asin, id_type),
+        )
+        for j, val in enumerate(vals):
+            prev = conn.execute(
+                "SELECT 1 FROM pair_library_ids "
+                "WHERE asin=? AND id_type=? AND identifier=?",
+                (asin, id_type, val),
+            ).fetchone()
+            if prev is None:
+                out["ids_added"] += 1
             conn.execute(
-                "UPDATE pair_library_ids SET is_primary=0 WHERE asin=? AND id_type=?",
-                (asin, id_type),
+                "INSERT INTO pair_library_ids(asin, id_type, identifier, is_primary, added_at) "
+                "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(asin, id_type, identifier) DO UPDATE SET "
+                "  is_primary=excluded.is_primary, added_at=CURRENT_TIMESTAMP",
+                (asin, id_type, val, 1 if j == 0 else 0),
             )
-            for j, val in enumerate(vals):
-                prev = conn.execute(
-                    "SELECT 1 FROM pair_library_ids "
-                    "WHERE asin=? AND id_type=? AND identifier=?",
-                    (asin, id_type, val),
-                ).fetchone()
-                if prev is None:
-                    out["ids_added"] += 1
-                conn.execute(
-                    "INSERT INTO pair_library_ids(asin, id_type, identifier, is_primary, added_at) "
-                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT(asin, id_type, identifier) DO UPDATE SET "
-                    "  is_primary=excluded.is_primary, added_at=CURRENT_TIMESTAMP",
-                    (asin, id_type, val, 1 if j == 0 else 0),
-                )
 
-                if id_type in ("upc", "ean"):
-                    # Mirror into verified_items so runs auto-approve this pair.
-                    # NOTE: we do NOT delete same-UPC rows on other ASINs — a
-                    # shared UPC legitimately maps to many ASINs.  Every barcode
-                    # form is mirrored because verified_items is keyed by the
-                    # raw string each flow carries.
-                    for form in _upc_mirror_forms(val):
-                        conn.execute(
-                            "INSERT INTO verified_items(upc, asin, data_json, review_status, verified_at) "
-                            "VALUES (?, ?, ?, 'Pair Library Import', CURRENT_TIMESTAMP) "
-                            "ON CONFLICT(upc, asin) DO UPDATE SET "
-                            "  review_status='Pair Library Import', verified_at=CURRENT_TIMESTAMP",
-                            (form, asin, _payload),
-                        )
-                        cur = conn.execute(
-                            "DELETE FROM blacklisted_pairs WHERE upc=? AND asin=?",
-                            (form, asin),
-                        )
-                        out["blacklist_cleared"] += cur.rowcount
+            if id_type in ("upc", "ean"):
+                # Mirror into verified_items so runs auto-approve this pair.
+                # NOTE: we do NOT delete same-UPC rows on other ASINs — a
+                # shared UPC legitimately maps to many ASINs.  Every barcode
+                # form is mirrored because verified_items is keyed by the
+                # raw string each flow carries.
+                for form in _upc_mirror_forms(val):
+                    conn.execute(
+                        "INSERT INTO verified_items(upc, asin, data_json, review_status, verified_at) "
+                        "VALUES (?, ?, ?, 'Pair Library Import', CURRENT_TIMESTAMP) "
+                        "ON CONFLICT(upc, asin) DO UPDATE SET "
+                        "  review_status='Pair Library Import', verified_at=CURRENT_TIMESTAMP",
+                        (form, asin, _payload),
+                    )
+                    cur = conn.execute(
+                        "DELETE FROM blacklisted_pairs WHERE upc=? AND asin=?",
+                        (form, asin),
+                    )
+                    out["blacklist_cleared"] += cur.rowcount
     return out
+
+
+def upsert_library_pairs_bulk(rows: list[dict], on_progress=None) -> dict:
+    """Same as upsert_library_pair(), but for a whole import file at once --
+    ONE connection + ONE _LOCK acquisition for the entire batch instead of one
+    pair per row. This is what actually makes a big Pair Library import fast
+    enough to finish inside a single HTTP request's timeout budget (a proxy/
+    tunnel in front of the app can time out an origin response well before
+    the work itself is done, independent of how this function performs).
+
+    `rows` is a list of {"asin", "ids", "brand", "manufacturer", "amz_pack"}.
+    Returns the same shape as a single upsert_library_pair() call, summed.
+    """
+    totals = {"created": 0, "updated": 0, "ids_added": 0, "blacklist_cleared": 0}
+    with _LOCK, _connect() as conn:
+        for i, row in enumerate(rows):
+            r = _upsert_library_pair_conn(
+                conn, row.get("asin", ""), row.get("ids") or {},
+                brand=row.get("brand", ""), manufacturer=row.get("manufacturer", ""),
+                amz_pack=row.get("amz_pack", ""),
+            )
+            for k in totals:
+                totals[k] += r[k]
+            if on_progress and (i % 50 == 0 or i == len(rows) - 1):
+                on_progress(i + 1, len(rows))
+    return totals
 
 
 def delete_library_pair(asin: str, id_type: str = "", identifier: str = "") -> dict:

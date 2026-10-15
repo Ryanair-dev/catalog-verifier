@@ -27,6 +27,9 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import threading
+import time
+import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -270,9 +273,38 @@ async def library_template(kind: str = "import") -> StreamingResponse:
     return _xlsx_response(wb, fname)
 
 
+# ── Pair Library import — background job ────────────────────────────────────
+# A big import file is genuinely slow (a real multi-step DB write per row --
+# see database.upsert_library_pairs_bulk's docstring), easily well over a
+# minute. Running it synchronously inside one HTTP request risks a reverse
+# proxy/tunnel in front of the app timing out the connection (HTTP 524) long
+# before the import itself finishes -- the import keeps running server-side,
+# but the browser never finds out. Fixed the same way every other
+# potentially-slow pipeline in this app already is: return a job_id
+# immediately, do the work in a background thread, poll for completion.
+_IMPORT_JOBS: dict[str, dict] = {}
+_IMPORT_JOBS_LOCK = threading.Lock()
+_IMPORT_JOB_TTL = 3600
+
+
+def _get_import_job(job_id: str) -> dict:
+    now = time.time()
+    with _IMPORT_JOBS_LOCK:
+        for jid in [j for j, jb in _IMPORT_JOBS.items()
+                    if jb["status"] != "running" and jb.get("completed_at")
+                    and now - jb["completed_at"] > _IMPORT_JOB_TTL]:
+            _IMPORT_JOBS.pop(jid, None)
+        job = _IMPORT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found (or expired).")
+    return job
+
+
 @router.post("/pairs/library/import")
 async def library_import(pairs_file: UploadFile = File(...)) -> dict:
-    """Import a fixed-template pair spreadsheet into the Pair Library."""
+    """Validates the file immediately (cheap — rejects a wrong template with a
+    normal 400 right away), then runs the actual import as a background job.
+    Poll GET /pairs/library/import/jobs/{job_id} for progress/result."""
     data = await read_upload_limited(pairs_file)
     cols, body = _parsed_rows(pairs_file.filename or "", data)
 
@@ -289,45 +321,73 @@ async def library_import(pairs_file: UploadFile = File(...)) -> dict:
                    + " | ".join(_IMPORT_HEADERS),
         )
 
-    def _process() -> dict:
-        totals = {"rows": 0, "pairs_created": 0, "pairs_updated": 0,
-                  "ids_added": 0, "blacklist_cleared": 0}
-        skipped: list[dict] = []
+    job_id = uuid.uuid4().hex[:12]
+    job = {"status": "running", "done": 0, "total": len(body), "result": None,
+           "error": None, "completed_at": None, "started": time.time()}
+    with _IMPORT_JOBS_LOCK:
+        _IMPORT_JOBS[job_id] = job
 
-        for row_no, cells in body:
-            if not any(_cell(c) for c in cells):
-                continue
-            totals["rows"] += 1
-            asin = _get(cells, cols, "asin").upper()
-            if not _ASIN_RE.fullmatch(asin):
-                skipped.append({"row": row_no, "reason": f"Invalid ASIN {asin!r}"})
-                continue
-            raw_upc = _get(cells, cols, "upc")
-            raw_ean = _get(cells, cols, "ean")
-            raw_mpn = _get(cells, cols, "mpn")
-            ids = _row_ids(raw_upc, raw_ean, raw_mpn)
-            if not ids:
-                reason = (
-                    "Invalid barcode — UPC/EAN must be 8/12/13/14 digits"
-                    if (raw_upc or raw_ean) else "No identifier (UPC/EAN/MPN)"
-                )
-                skipped.append({"row": row_no, "reason": reason})
-                continue
-            r = database.upsert_library_pair(
-                asin, ids,
-                brand=_get(cells, cols, "brand"),
-                manufacturer=_get(cells, cols, "manufacturer"),
-                amz_pack=_get(cells, cols, "amz_pack"),
-            )
-            totals["pairs_created"]     += r["created"]
-            totals["pairs_updated"]     += r["updated"]
-            totals["ids_added"]         += r["ids_added"]
-            totals["blacklist_cleared"] += r["blacklist_cleared"]
+    def _run() -> None:
+        try:
+            totals = {"rows": 0, "pairs_created": 0, "pairs_updated": 0,
+                      "ids_added": 0, "blacklist_cleared": 0}
+            skipped: list[dict] = []
+            to_upsert: list[dict] = []
 
-        return {**totals, "skipped": skipped[:30], "skipped_total": len(skipped)}
+            for row_no, cells in body:
+                if not any(_cell(c) for c in cells):
+                    continue
+                totals["rows"] += 1
+                asin = _get(cells, cols, "asin").upper()
+                if not _ASIN_RE.fullmatch(asin):
+                    skipped.append({"row": row_no, "reason": f"Invalid ASIN {asin!r}"})
+                    continue
+                raw_upc = _get(cells, cols, "upc")
+                raw_ean = _get(cells, cols, "ean")
+                raw_mpn = _get(cells, cols, "mpn")
+                ids = _row_ids(raw_upc, raw_ean, raw_mpn)
+                if not ids:
+                    reason = (
+                        "Invalid barcode — UPC/EAN must be 8/12/13/14 digits"
+                        if (raw_upc or raw_ean) else "No identifier (UPC/EAN/MPN)"
+                    )
+                    skipped.append({"row": row_no, "reason": reason})
+                    continue
+                to_upsert.append({
+                    "asin": asin, "ids": ids,
+                    "brand": _get(cells, cols, "brand"),
+                    "manufacturer": _get(cells, cols, "manufacturer"),
+                    "amz_pack": _get(cells, cols, "amz_pack"),
+                })
 
-    # Per-row SQLite writes on a big file would otherwise block the event loop.
-    return await asyncio.to_thread(_process)
+            def _progress(done: int, total: int) -> None:
+                job["done"], job["total"] = done, total
+
+            r = database.upsert_library_pairs_bulk(to_upsert, on_progress=_progress)
+            totals["pairs_created"]     = r["created"]
+            totals["pairs_updated"]     = r["updated"]
+            totals["ids_added"]         = r["ids_added"]
+            totals["blacklist_cleared"] = r["blacklist_cleared"]
+
+            job["result"] = {**totals, "skipped": skipped[:30], "skipped_total": len(skipped)}
+            job["status"] = "complete"
+        except Exception as exc:  # noqa: BLE001
+            job["status"], job["error"] = "error", str(exc)[:400]
+        finally:
+            job["completed_at"] = time.time()
+
+    threading.Thread(target=_run, name=f"pair-import-{job_id}", daemon=True).start()
+    return {"job_id": job_id}
+
+
+@router.get("/pairs/library/import/jobs/{job_id}")
+async def library_import_status(job_id: str) -> dict:
+    job = _get_import_job(job_id)
+    return {
+        "job_id": job_id, "status": job["status"],
+        "done": job["done"], "total": job["total"],
+        "error": job.get("error"), "result": job.get("result"),
+    }
 
 
 _EXPORT_HEADERS = ["ASIN", "UPC", "UPC Aliases", "EAN", "EAN Aliases",

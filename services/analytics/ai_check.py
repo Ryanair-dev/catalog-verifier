@@ -352,11 +352,9 @@ def stop_ai_check(run_id: int) -> None:
     """Signal the running AI check for this run to stop immediately."""
     with _RUNNING_LOCK:
         ev = _STOP_EVENTS.get(run_id)
-    log.warning("[ai_check] stop_ai_check called for run %s — ev=%s is_set=%s _RUNNING=%s",
-                run_id, ev, ev.is_set() if ev else "N/A", _RUNNING.get(run_id))
     if ev:
         ev.set()
-        log.warning("[ai_check] stop event SET for run %s", run_id)
+        log.info("[ai_check] stop requested for run %s", run_id)
 
 
 def is_running(run_id: int) -> bool:
@@ -448,10 +446,14 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
 
         with _RUNNING_LOCK:
             stop_ev = _STOP_EVENTS.get(run_id)
-        log.warning("[ai_check] pipeline got stop_ev=%s for run %s (id=%s)", stop_ev, run_id, id(stop_ev) if stop_ev else None)
         if stop_ev is None:
-            stop_ev = threading.Event()   # fallback; shouldn't happen
-            log.warning("[ai_check] WARNING: no stop event found for run %s — created fallback", run_id)
+            # start_ai_check() always populates _STOP_EVENTS[run_id] before
+            # launching this pipeline, so this should never happen -- if it
+            # does, it's worth knowing about (the stop button would silently
+            # do nothing for this run), hence log.error rather than silence.
+            stop_ev = threading.Event()   # fallback so the pipeline can still run
+            log.error("[ai_check] no stop event found for run %s — created fallback "
+                      "(the Stop button will not work for this run)", run_id)
 
         def _run_batch(src: dict, batch: list[dict]) -> list[dict]:
             # Each worker checks the stop event before spending an API call.

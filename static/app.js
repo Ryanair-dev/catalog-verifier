@@ -3442,32 +3442,56 @@
     const file = e.target.files[0];
     if (!file) return;
     const resEl = $("#plib-import-result");
-    resEl.textContent = "Importing…";
+    resEl.textContent = "Uploading…";
     const fd = new FormData();
     fd.append("pairs_file", file, file.name);
-    let j;
+    let start;
     try {
-      j = await api("/api/pairs/library/import", { method: "POST", body: fd, form: true });
+      start = await api("/api/pairs/library/import", { method: "POST", body: fd, form: true });
     } catch (err) {
       resEl.textContent = "";
       showToast(`Import failed: ${err.message}`, "error", 8000);
       return;
     }
-    const bits = [
-      `${j.pairs_created} new`, `${j.pairs_updated} updated`,
-      `${j.ids_added} identifiers added`,
-    ];
-    if (j.blacklist_cleared)  bits.push(`${j.blacklist_cleared} unblacklisted`);
-    if (j.skipped_total)      bits.push(`${j.skipped_total} skipped`);
-    resEl.textContent = `Last import: ${j.rows} rows — ${bits.join(", ")}.`;
-    if (j.skipped_total) {
-      const first = (j.skipped || []).slice(0, 3)
-        .map(s => `row ${s.row}: ${s.reason}`).join("; ");
-      showToast(`Imported with ${j.skipped_total} skipped row(s) — ${first}`, "warning", 9000);
-    } else {
-      showToast(`Pair Library import complete — ${j.rows} rows processed.`, "success");
-    }
-    loadPairLibStats();
+    // The import itself runs as a background job (can take a while on a big
+    // file — a single long-lived request risks a reverse-proxy/tunnel
+    // timeout), so poll instead of expecting the POST to carry the result.
+    const poll = async () => {
+      let j;
+      try {
+        j = await api(`/api/pairs/library/import/jobs/${start.job_id}`);
+      } catch (err) {
+        setTimeout(poll, 2000);
+        return;
+      }
+      if (j.status === "running") {
+        resEl.textContent = j.total ? `Importing… ${j.done}/${j.total}` : "Importing…";
+        setTimeout(poll, 1000);
+        return;
+      }
+      if (j.status === "error") {
+        resEl.textContent = "";
+        showToast(`Import failed: ${j.error || "unknown error"}`, "error", 8000);
+        return;
+      }
+      const r = j.result || {};
+      const bits = [
+        `${r.pairs_created} new`, `${r.pairs_updated} updated`,
+        `${r.ids_added} identifiers added`,
+      ];
+      if (r.blacklist_cleared)  bits.push(`${r.blacklist_cleared} unblacklisted`);
+      if (r.skipped_total)      bits.push(`${r.skipped_total} skipped`);
+      resEl.textContent = `Last import: ${r.rows} rows — ${bits.join(", ")}.`;
+      if (r.skipped_total) {
+        const first = (r.skipped || []).slice(0, 3)
+          .map(s => `row ${s.row}: ${s.reason}`).join("; ");
+        showToast(`Imported with ${r.skipped_total} skipped row(s) — ${first}`, "warning", 9000);
+      } else {
+        showToast(`Pair Library import complete — ${r.rows} rows processed.`, "success");
+      }
+      loadPairLibStats();
+    };
+    poll();
   });
 
   // ---- Pair Library: export by brand ---------------------------------------
