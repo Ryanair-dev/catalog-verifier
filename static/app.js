@@ -602,7 +602,6 @@
       "analytics-run":  $("#view-analytics-run"),
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
-      "seller-analytics":    $("#view-seller-analytics"),
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
@@ -8208,6 +8207,7 @@
     $("#tools-tab-mpn")?.classList.toggle("hidden", tab !== "mpn");
     $("#tools-tab-quicksearch")?.classList.toggle("hidden", tab !== "quicksearch");
     $("#tools-tab-po")?.classList.toggle("hidden", tab !== "po");
+    $("#tools-tab-seller")?.classList.toggle("hidden", tab !== "seller");
     if (tab === "mpn") _refreshMpnSyncStatus();
     if (tab === "po") {
       // PO Analytics used to re-sync on re-entering its own view (a job keeps

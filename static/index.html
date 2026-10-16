@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=16" />
+  <link rel="stylesheet" href="/static/styles.css?v=17" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
@@ -61,10 +61,6 @@
       <div class="nav-item" data-view="brand-analytics">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         Brand Analytics
-      </div>
-      <div class="nav-item" data-view="seller-analytics">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/></svg>
-        Seller Analytics
       </div>
       <div class="section-label">Marketplaces</div>
       <div class="nav-item" data-view="walmart-catalog">
@@ -1243,49 +1239,7 @@
       <!-- view-quick-search removed — Quick Search is now a Toolbox sub-tab (#tools-tab-quicksearch) -->
       <!-- view-tools removed — Tools is now a sidebar panel (#tools-panel) -->
 
-      <!-- ===== View: Seller Analytics ===== -->
-      <div id="view-seller-analytics" class="hidden">
-        <header class="view-header">
-          <div>
-            <h1 class="view-title">Seller Analytics</h1>
-            <p class="view-subtitle">Pull a seller's full Amazon catalog and run the same Offer Analytics breakdown against it — Keepa finds every ASIN they currently list, no recovery pass needed.</p>
-          </div>
-        </header>
-
-        <div style="padding:20px;display:flex;flex-direction:column;gap:16px;max-width:760px;">
-          <div class="card" style="padding:18px;">
-            <div class="abbr-section-title" style="margin-bottom:4px;">Seller</div>
-            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-              Amazon Seller ID (e.g. AC1LRL2P9US2W) — found in a storefront URL's <code>seller=</code> parameter.
-            </div>
-            <div style="display:flex;gap:8px;">
-              <input id="sa-seller-input" type="text" placeholder="AC1LRL2P9US2W"
-                style="flex:1;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-              <button id="sa-lookup-btn" class="btn btn-secondary" style="white-space:nowrap;">Look up</button>
-            </div>
-            <div id="sa-lookup-result" class="hidden" style="margin-top:10px;font-size:12px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;"></div>
-            <div id="sa-lookup-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
-          </div>
-
-          <div class="card" style="padding:18px;">
-            <div class="abbr-section-title" style="margin-bottom:4px;">Run Analysis</div>
-            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-              For every ASIN we already carry (a Main SKU exists in SellerCloud), Product Cost is the real latest PO cost. For everything else, Product Cost is a <strong>target price</strong> — the most we could pay and still clear the ROI below.
-            </div>
-            <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-              <div style="flex:1;min-width:140px;">
-                <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Target ROI %</label>
-                <input id="sa-roi-input" type="number" value="30" min="1" max="500" step="1"
-                  style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-              </div>
-              <button id="sa-run-btn" class="btn btn-primary" style="white-space:nowrap;">Run Analysis</button>
-            </div>
-            <div id="sa-progress" class="hidden" style="margin-top:12px;font-size:12px;color:#6b7480;"></div>
-            <div id="sa-error" class="hidden" style="margin-top:12px;font-size:12px;color:#dc2626;"></div>
-            <button id="sa-download-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:12px;">Download report</button>
-          </div>
-        </div>
-      </div>
+      <!-- view-seller-analytics removed — Seller Analytics is now a Toolbox sub-tab (#tools-tab-seller) -->
 
     </main>
   </div>
@@ -1597,6 +1551,10 @@
       <button class="lib-type-tab" data-tools-tab="quicksearch" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         Quick Search
+      </button>
+      <button class="lib-type-tab" data-tools-tab="seller" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/></svg>
+        Seller Analytics
       </button>
     </div>
 
@@ -2064,6 +2022,44 @@
       </div>
 
     </div><!-- /tools-tab-po -->
+
+    <div id="tools-tab-seller" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
+
+      <!-- ===== Seller Analytics: pull a seller's full Amazon catalog and run -->
+      <!-- the same Offer Analytics breakdown against it. -->
+      <div class="card" style="padding:18px;">
+        <div class="abbr-section-title" style="margin-bottom:4px;">Seller</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+          Amazon Seller ID (e.g. AC1LRL2P9US2W) — found in a storefront URL's <code>seller=</code> parameter.
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input id="sa-seller-input" type="text" placeholder="AC1LRL2P9US2W"
+            style="flex:1;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <button id="sa-lookup-btn" class="btn btn-secondary" style="white-space:nowrap;">Look up</button>
+        </div>
+        <div id="sa-lookup-result" class="hidden" style="margin-top:10px;font-size:12px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;"></div>
+        <div id="sa-lookup-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
+      </div>
+
+      <div class="card" style="padding:18px;">
+        <div class="abbr-section-title" style="margin-bottom:4px;">Run Analysis</div>
+        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
+          For every ASIN we already carry (a Main SKU exists in SellerCloud), Product Cost is the real latest PO cost. For everything else, Product Cost is a <strong>target price</strong> — the most we could pay and still clear the ROI below.
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
+          <div style="flex:1;min-width:140px;">
+            <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Target ROI %</label>
+            <input id="sa-roi-input" type="number" value="30" min="1" max="500" step="1"
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          </div>
+          <button id="sa-run-btn" class="btn btn-primary" style="white-space:nowrap;">Run Analysis</button>
+        </div>
+        <div id="sa-progress" class="hidden" style="margin-top:12px;font-size:12px;color:#6b7480;"></div>
+        <div id="sa-error" class="hidden" style="margin-top:12px;font-size:12px;color:#dc2626;"></div>
+        <button id="sa-download-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:12px;">Download report</button>
+      </div>
+
+    </div><!-- /tools-tab-seller -->
 
   </div><!-- /#tools-panel -->
 
@@ -3028,7 +3024,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=68"></script>
+  <script src="/static/app.js?v=69"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>

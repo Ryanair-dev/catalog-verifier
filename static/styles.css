@@ -620,6 +620,31 @@ html, body {
 }
 .tools-tab-bar .lib-type-tab svg { flex: none; }
 
+/* Dribbble-style "scrollbar tucked inside a dropdown" look for the Toolbox's
+   own horizontal tab scroller specifically — NOT the dropdown/popup
+   component, just borrowing that same inset-pill scrollbar treatment for
+   this scroller. A touch of bottom padding gives the thumb room to sit
+   below the pills rather than hugging them, and the thumb itself is a
+   short, softly-rounded capsule inset from both the top/bottom (via the
+   border + background-clip trick) and the left/right ends (via the
+   scrollbar-track's own margin) so it reads as floating inside the strip
+   rather than spanning it edge-to-edge. Scoped to .tools-tab-bar via a
+   compound selector so the Library panel's own tab-bar scrollbar (still
+   plain .lib-type-tabs) is untouched.
+*/
+.tools-tab-bar.lib-type-tabs { padding-bottom: 16px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar { height: 8px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-track { background: transparent; margin: 0 16px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-thumb {
+  background-color: var(--purple-200, #d4c5fa);
+  border-radius: 999px;
+  border: 2.5px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 150ms ease;
+}
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-thumb:hover { background-color: var(--purple-400, #8b76e5); }
+.tools-tab-bar.lib-type-tabs { scrollbar-color: var(--purple-200, #d4c5fa) transparent; }
+
 /* ---------- Abbreviation library rework ----------------------------- */
 
 .abbr-tabs {
