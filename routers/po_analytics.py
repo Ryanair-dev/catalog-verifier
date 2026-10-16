@@ -71,7 +71,7 @@ def _launch_po_analytics(po_numbers: list) -> str:
     job_id = uuid.uuid4().hex[:12]
     job = {"status": "running", "phase": "pulling SellerCloud PO data", "done": 0,
            "total": 0, "blob": None, "error": None, "filename": None,
-           "skipped_pos": [], "completed_at": None,
+           "skipped_pos": [], "used_ordered_qty": False, "completed_at": None,
            "started": time.time(), "phase_started": time.time()}
     with _JOBS_LOCK:
         _JOBS[job_id] = job
@@ -84,7 +84,25 @@ def _launch_po_analytics(po_numbers: list) -> str:
 
     def _run() -> None:
         try:
-            gathered = poa.gather(po_numbers)
+            try:
+                gathered = poa.gather(po_numbers)
+            except RuntimeError as exc:
+                # Nothing in the requested PO(s) (or their splits) has
+                # actually been received yet -- per the user, analyze it
+                # right away anyway rather than blocking until it arrives.
+                # Falls back to ordered-quantity mode -- the exact same data
+                # source the day-before-ETA automation already uses safely
+                # for not-yet-received POs (see po_analytics.gather's own
+                # docstring) -- instead of surfacing this as an error. Keyed
+                # off "are Received" specifically, since that substring only
+                # ever appears in THIS error message (a genuinely Cancelled
+                # PO with no usable split raises a different message that
+                # must still propagate as a real error).
+                if "are Received" not in str(exc):
+                    raise
+                job["phase"] = "pulling SellerCloud PO data (not yet received — using ordered qty)"
+                job["used_ordered_qty"] = True
+                gathered = poa.gather(po_numbers, require_received=False)
             job["skipped_pos"] = gathered.get("skipped_pos") or []
             # Name the file after the PO(s) actually analyzed, not what was typed
             # in -- a cancelled PO auto-resolves to its real split (see gather()),
@@ -124,7 +142,8 @@ async def po_analytics_status(job_id: str) -> dict:
         eta = max(0, round(el / job["done"] * (job["total"] - job["done"])))
     return {"status": job["status"], "phase": job["phase"], "done": job["done"],
             "total": job["total"], "eta_seconds": eta, "error": job["error"],
-            "filename": job.get("filename"), "skipped_pos": job.get("skipped_pos") or []}
+            "filename": job.get("filename"), "skipped_pos": job.get("skipped_pos") or [],
+            "used_ordered_qty": job.get("used_ordered_qty", False)}
 
 
 @router.get("/po-analytics/jobs/{job_id}/download")

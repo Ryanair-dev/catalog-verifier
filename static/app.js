@@ -9128,7 +9128,7 @@
       _pollPoAnalytics(r.job_id);
     } catch (e) {
       btn.disabled = false;
-      btn.textContent = "Run PO Analytics";
+      btn.textContent = "Run analysis";
       progress?.classList.add("hidden");
       errEl?.classList.remove("hidden");
       if (errEl) errEl.textContent = e.message;
@@ -9150,24 +9150,34 @@
         : (j.phase || "Working…");
     }
     if (j.status === "complete") {
-      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Run analysis"; }
       progress?.classList.add("hidden");
       dl?.classList.remove("hidden");
       if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
       if (skipEl) {
+        const parts = [];
+        if (j.used_ordered_qty) {
+          // Nothing in this PO (or its splits) has been received yet -- it
+          // was still analyzed right away, just using ordered quantity
+          // instead of received quantity (see routers/po_analytics.py's
+          // fallback). Surfaced here rather than silently, since the
+          // numbers in the report mean something different in this mode.
+          parts.push("Not yet received — analyzed using ordered quantity instead (see \"PO qty (Ordered)\" in the report)");
+        }
         if (j.skipped_pos?.length) {
           // A skip with a "note" successfully followed a split (not a failure,
           // just not what was literally typed in) -- phrase those positively
           // and separately from ones truly left out with nothing usable found.
           const followed = j.skipped_pos.filter(s => s.note);
           const leftOut = j.skipped_pos.filter(s => !s.note);
-          const parts = [];
           if (followed.length) {
             parts.push(...followed.map(s => `PO ${s.po} (${s.status}) → used its split instead`));
           }
           if (leftOut.length) {
             parts.push(...leftOut.map(s => `PO ${s.po} (${s.status}) — left out, no Received split found`));
           }
+        }
+        if (parts.length) {
           skipEl.textContent = parts.join("; ") + ".";
           skipEl.classList.remove("hidden");
         } else {
@@ -9177,7 +9187,7 @@
       return true;
     }
     if (j.status === "error") {
-      if (btn) { btn.disabled = false; btn.textContent = "Run PO Analytics"; }
+      if (btn) { btn.disabled = false; btn.textContent = "Run analysis"; }
       progress?.classList.add("hidden");
       errEl?.classList.remove("hidden");
       if (errEl) errEl.textContent = j.error || "Failed.";
