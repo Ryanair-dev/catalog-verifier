@@ -192,6 +192,10 @@ async def po_analytics_watchlist_add(body: WatchlistAdd) -> dict:
         raise HTTPException(status_code=400, detail="No PO number(s) found in input.")
     recipients = _parse_recipient_emails(body.recipients) or None
     added = po_automation.add_to_watchlist(nums, recipients=recipients)
+    # Pull this PO's current ETA/status/vendor/goods/amount right away instead
+    # of leaving it blank until the next scheduled (at most once-a-day) check
+    # or a manual "Check now" -- see refresh_tracking_for()'s own docstring.
+    await run_in_threadpool(po_automation.refresh_tracking_for, nums)
     return {"added": added, "requested": len(nums), "watchlist": po_automation.get_watchlist()}
 
 

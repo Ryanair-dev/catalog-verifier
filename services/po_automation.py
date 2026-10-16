@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS po_eta_automation (
     created_at     TEXT DEFAULT (datetime('now')),
     updated_at     TEXT DEFAULT (datetime('now'))
 );
+-- vendor/goods/amount (2026-10-16): the Awaiting Analysis panel's hover
+-- detail, straight off the same Inbound Shipments board row.
 CREATE TABLE IF NOT EXISTS automation_recipients (
     tool            TEXT PRIMARY KEY,
     recipients_json TEXT DEFAULT '[]',
@@ -117,6 +119,12 @@ def init_schema() -> None:
         wl_cols = {r[1] for r in conn.execute("PRAGMA table_info(po_automation_watchlist)").fetchall()}
         if "recipients_json" not in wl_cols:
             conn.execute("ALTER TABLE po_automation_watchlist ADD COLUMN recipients_json TEXT")
+        # Additive migration (2026-10-16): vendor/description-of-goods/amount,
+        # straight off the Inbound Shipments board, for the Awaiting Analysis
+        # panel's hover detail.
+        for col in ("vendor", "goods", "amount"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE po_eta_automation ADD COLUMN {col} TEXT")
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +143,8 @@ def get_watchlist() -> list[dict]:
         rows = conn.execute(
             """
             SELECT w.po_number, w.note, w.added_at, w.recipients_json,
-                   t.last_eta, t.status, t.sent_at, t.last_error
+                   t.last_eta, t.status, t.sent_at, t.last_error,
+                   t.vendor, t.goods, t.amount
             FROM po_automation_watchlist w
             LEFT JOIN po_eta_automation t ON t.po_number = w.po_number
             ORDER BY w.added_at DESC
@@ -182,6 +191,36 @@ def add_to_watchlist(po_numbers: list[int], note: str = "", recipients: list[str
             if po not in existing:
                 added += 1
     return added
+
+
+def refresh_tracking_for(po_numbers: list[int]) -> int:
+    """Pull the CURRENT Monday tracking data (ETA/status/vendor/goods/amount)
+    for exactly these PO numbers, right now -- rather than waiting for the
+    next scheduled check (at most once a day, at noon) or a manual "Check
+    now" click.
+
+    Fixes a real reported gap: a PO added any time other than right before
+    the daily check genuinely had no po_eta_automation row at all (it's only
+    ever created by check_and_trigger()'s own _upsert_tracking call), so the
+    Awaiting Analysis panel showed it with a blank ETA until the next check
+    cycle happened to run -- which, from the user's side, looked exactly
+    like "the ETA didn't pull until I hit refresh" even though nothing was
+    actually broken in the scheduler itself; the newly-added PO just hadn't
+    been tracked yet. Called right after add_to_watchlist() so the panel
+    shows a real ETA the moment a PO is added, not after the next check.
+
+    Returns how many of the requested POs were actually found on the live
+    Monday mirror (0 is a legitimate possibility, e.g. the board hasn't
+    created that PO's item yet) -- never raises; a failed Azure pull here
+    just means the ETA stays blank until the next scheduled/manual check,
+    same as before this function existed."""
+    po_set = {p for p in po_numbers if p}
+    if not po_set:
+        return 0
+    items = monday_eta.fetch_inbound_items()
+    relevant = [it for it in items if it.get("po_number") in po_set]
+    _upsert_tracking(relevant)
+    return len(relevant)
 
 
 def remove_from_watchlist(po_number: int) -> bool:
@@ -246,14 +285,18 @@ def _upsert_tracking(items: list[dict]) -> None:
             status = it.get("status")
             conn.execute(
                 """
-                INSERT INTO po_eta_automation (po_number, first_seen_eta, last_eta, status, updated_at)
-                VALUES (?, ?, ?, ?, datetime('now'))
+                INSERT INTO po_eta_automation
+                    (po_number, first_seen_eta, last_eta, status, vendor, goods, amount, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(po_number) DO UPDATE SET
                     last_eta = excluded.last_eta,
                     status = excluded.status,
+                    vendor = excluded.vendor,
+                    goods = excluded.goods,
+                    amount = excluded.amount,
                     updated_at = excluded.updated_at
                 """,
-                (po, eta, eta, status),
+                (po, eta, eta, status, it.get("vendor"), it.get("goods"), it.get("amount")),
             )
 
 

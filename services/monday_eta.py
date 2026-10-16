@@ -30,12 +30,19 @@ INBOUND_BOARD_ID = 581141334
 
 # Azure's mirror stores column_id as the composite string
 # "board_id:<id>|column_id:<name>" -- confirmed live. Using the exact strings
-# (not a LIKE scan) keeps this index-friendly.
+# (not a LIKE scan) keeps this index-friendly. vendor/goods/amount added
+# 2026-10-16 for the Awaiting Analysis panel's hover detail (per-column
+# titles confirmed live via monday.columns: "Vendor" is a dropdown column --
+# its readable label lives in column_values.text, same place a plain text
+# column's value does, verified against real rows).
 _FIELDS = {
     "po_number": "link",
     "eta_to_warehouse": "eta_to_warehouse",
     "status": "received9",
     "actual_arrived_date": "actual_arrived_date",
+    "vendor": "dropdown_mkxpj7b",
+    "goods": "goods",
+    "amount": "amount",
 }
 
 
@@ -46,7 +53,8 @@ def _col_id(name: str) -> str:
 def fetch_inbound_items() -> list[dict]:
     """One row per active board item:
       {item_id, po_number (int|None), eta_to_warehouse (str 'YYYY-MM-DD'|None),
-       status (str|None), actual_arrived_date (str|None), item_updated_at}.
+       status (str|None), actual_arrived_date (str|None), vendor (str|None),
+       goods (str|None), amount (str|None), item_updated_at}.
 
     Best-effort -- an Azure failure here must never crash a caller's scheduler
     loop; returns [] on any connection/query error.
@@ -60,9 +68,10 @@ def fetch_inbound_items() -> list[dict]:
         return []
     try:
         cur = conn.cursor()
-        po_col, eta_col, status_col, arrived_col = (
+        po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col = (
             _col_id(_FIELDS["po_number"]), _col_id(_FIELDS["eta_to_warehouse"]),
             _col_id(_FIELDS["status"]), _col_id(_FIELDS["actual_arrived_date"]),
+            _col_id(_FIELDS["vendor"]), _col_id(_FIELDS["goods"]), _col_id(_FIELDS["amount"]),
         )
         cur.execute(
             """
@@ -70,16 +79,19 @@ def fetch_inbound_items() -> list[dict]:
                    MAX(CASE WHEN cv.column_id = %s THEN cv.link_text_value END) AS po_number,
                    MAX(CASE WHEN cv.column_id = %s THEN cv.date_value END)      AS eta_to_warehouse,
                    MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS status,
-                   MAX(CASE WHEN cv.column_id = %s THEN cv.date_value END)      AS actual_arrived_date
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.date_value END)      AS actual_arrived_date,
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS vendor,
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS goods,
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS amount
             FROM monday.items i
             JOIN monday.column_values cv ON cv.item_id = i.id
             WHERE i.board_id = %s AND i.state = 'active'
-              AND cv.column_id IN (%s, %s, %s, %s)
+              AND cv.column_id IN (%s, %s, %s, %s, %s, %s, %s)
             GROUP BY i.id, i.updated_at
             """,
-            (po_col, eta_col, status_col, arrived_col,
+            (po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
              INBOUND_BOARD_ID,
-             po_col, eta_col, status_col, arrived_col),
+             po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col),
         )
         out: list[dict] = []
         for r in cur.fetchall():
@@ -92,6 +104,9 @@ def fetch_inbound_items() -> list[dict]:
                 "eta_to_warehouse": r[3],
                 "status": r[4],
                 "actual_arrived_date": r[5],
+                "vendor": (r[6] or "").strip() or None,
+                "goods": (r[7] or "").strip() or None,
+                "amount": (r[8] or "").strip() or None,
             })
         return out
     except Exception:  # noqa: BLE001

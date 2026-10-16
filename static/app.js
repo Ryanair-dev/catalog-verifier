@@ -671,18 +671,12 @@
     if (tool) container.appendChild(await _renderAutomationToolCard(tool));
   }
 
-  function _fmtNextRun(iso) {
-    if (!iso) return "";
-    try {
-      const d = new Date(iso);
-      return d.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
-    } catch { return iso; }
-  }
-
   // No on/off toggle (removed 2026-10-13c) and no default-recipients list
   // (removed 2026-10-15 — every Add-PO submission now requires its own
-  // recipients, so there's no fallback list left to configure). This card is
-  // now just the schedule status line + a manual "Check now" trigger.
+  // recipients, so there's no fallback list left to configure). Renamed
+  // "Automation Status" → "Status" and trimmed to just the watched/sent
+  // counts + a refresh button (2026-10-16) — the schedule-time line wasn't
+  // asked for and just added noise.
   async function _renderAutomationToolCard(tool) {
     const card = document.createElement("div");
     card.className = "card";
@@ -693,18 +687,17 @@
       try {
         const st = await api("/api/po-analytics/automation/status");
         statusHtml = `<div class="auto-status-line" style="font-size:11px;color:#94a3b8;">
-          Daily check at 12:00 ${st.timezone || "America/New_York"}, next ${_fmtNextRun(st.next_run)} ·
           ${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched ·
-          ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far
+          ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent
         </div>`;
       } catch { /* best-effort status line */ }
     }
 
     card.innerHTML = `
-      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Automation Status</div>
+      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Status</div>
       ${statusHtml}
       <div style="display:flex;gap:8px;align-items:center;">
-        <button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Check now</button>
+        <button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Refresh</button>
         <span class="auto-save-feedback" style="font-size:11px;"></span>
       </div>
     `;
@@ -713,7 +706,7 @@
     if (checkBtn) {
       checkBtn.addEventListener("click", async () => {
         checkBtn.disabled = true;
-        checkBtn.textContent = "Checking…";
+        checkBtn.textContent = "Refreshing…";
         try {
           const r = await api("/api/po-analytics/automation/check-now", { method: "POST" });
           showToast(`Checked ${r.checked} items — ${r.due} due, ${r.sent} sent${r.errors.length ? `, ${r.errors.length} errored` : ""}.`,
@@ -722,7 +715,7 @@
           showToast(`Check failed: ${err.message || err}`, "error");
         } finally {
           checkBtn.disabled = false;
-          checkBtn.textContent = "Check now";
+          checkBtn.textContent = "Refresh";
           loadAutomationSettings();
           _refreshPoaLists();
         }
@@ -740,9 +733,8 @@
       const statusEl = card.querySelector(".auto-status-line");
       if (statusEl) {
         statusEl.textContent =
-          `Daily check at 12:00 ${st.timezone || "America/New_York"}, next ${_fmtNextRun(st.next_run)} · ` +
           `${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched · ` +
-          `${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent so far`;
+          `${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent`;
       }
     } catch { /* best-effort */ }
   }
@@ -8826,20 +8818,34 @@
 
     if (awaitEl) {
       if (!awaiting.length) {
-        awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">Nothing waiting — add a PO on the left.</div>`;
+        awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">Nothing waiting — add a PO above.</div>`;
       } else {
         awaitEl.innerHTML = "";
         for (const r of awaiting) {
           const row = document.createElement("div");
-          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;flex-wrap:wrap;";
-          const line = _poaRowLine(r);
+          row.className = "has-tooltip";
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;flex-wrap:wrap;cursor:default;";
+          // The row itself is hoverable for the full detail; the visible line
+          // is intentionally just PO # + vendor (per the user's ask).
+          const amountTxt = r.amount != null && r.amount !== ""
+            ? "$" + Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : "—";
+          const tipLines = [
+            `PO ${r.po_number}`,
+            `Vendor: ${r.vendor || "—"}`,
+            `Description of goods: ${r.goods || "—"}`,
+            `Amount: ${amountTxt}`,
+            `Recipients: ${(r.recipients || []).join(", ") || "—"}`,
+          ];
+          row.setAttribute("data-tooltip", tipLines.join("\n"));
           row.innerHTML = `
-            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${line ? " · " + line : ""} · ${_poaRecipientsLine(r)}</span>
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${r.vendor ? " — " + escapeHtml(r.vendor) : ""}</span>
             <button class="icon-btn" data-po="${r.po_number}" title="Remove from watchlist" style="width:22px;height:22px;flex:none;">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
             </button>
           `;
           row.querySelector("button").addEventListener("click", async (e) => {
+            e.stopPropagation();
             const po = e.currentTarget.dataset.po;
             try {
               await api(`/api/po-analytics/automation/watchlist/${po}`, { method: "DELETE" });
@@ -8892,30 +8898,23 @@
     }
   }
 
-  // Recipients are chosen from a real popup list, not an auto-add-then-remove
-  // inline checklist: clicking the "Choose recipients…" box opens a floating
-  // dropdown (appended to <body>, position:fixed computed from the button's
-  // own rect, so it's never clipped by the side panel's internal scroll area
-  // or its CSS transform). _poaKnownRecipients is everyone PICKABLE (the 4
-  // usual people, plus anyone typed in via "+ Add" inside the popup, which
-  // persists across POs for the rest of the session); _poaSelectedRecipients
-  // is who's actually CHECKED for the PO about to be added — it starts EMPTY
-  // every time, so nothing is pre-chosen and you explicitly click who gets
-  // this one. Domain is always @fordmed.com (single org) so it's never
-  // typed — only the name shows, and only the name is typed to add someone
-  // new to the pickable set.
+  // Recipients are chosen from a real popup list: clicking the "Choose
+  // recipient" box opens a floating dropdown (appended to <body>,
+  // position:fixed computed from the button's own rect, so it's never
+  // clipped by the side panel's internal scroll area or its CSS transform).
+  // _poaKnownRecipients is everyone PICKABLE (the 4 usual people, plus
+  // anyone added via "+ Add Other", which persists across POs for the rest
+  // of the session); _poaSelectedRecipients is who's actually chosen for the
+  // PO about to be added — it starts EMPTY every time, so nothing is
+  // pre-chosen. The trigger button's own label never changes (always "Choose
+  // recipient") — who's picked is only shown inside the open popup itself,
+  // as a highlighted row, not a checkbox. Domain is always @fordmed.com
+  // (single org) so it's never typed — only the name shows, and only the
+  // name is typed (in the small "Add Other" modal) to add someone new.
   const POA_DEFAULT_RECIPIENT_NAMES = ["Raiann", "AviS", "MasonB", "VictoriaV"];
   let _poaKnownRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
   let _poaSelectedRecipients = [];
   let _poaRecipDropdownEl = null;   // the floating popup; only exists in the DOM while open
-
-  function _poaRecipLabel() {
-    const label = $("#poa-watch-recip-label");
-    if (!label) return;
-    label.textContent = _poaSelectedRecipients.length
-      ? _poaSelectedRecipients.join(", ")
-      : "Choose recipients…";
-  }
 
   function _onPoaRecipOutsideClick(e) {
     const trigger = $("#poa-watch-recip-btn");
@@ -8953,48 +8952,77 @@
     }
     list.innerHTML = "";
     for (const name of _poaKnownRecipients) {
-      const checked = _poaSelectedRecipients.includes(name);
+      const selected = _poaSelectedRecipients.includes(name);
       const row = document.createElement("div");
-      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;background:${checked ? "#eef2ff" : "transparent"};`;
-      row.innerHTML = `
-        <span style="width:16px;height:16px;border-radius:4px;flex:none;display:flex;align-items:center;justify-content:center;border:1.5px solid ${checked ? "#4f46e5" : "#cbd5e1"};background:${checked ? "#4f46e5" : "#fff"};">
-          ${checked ? `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6L9 17l-5-5"/></svg>` : ""}
-        </span>
-        <span style="color:#37404c;flex:1;">${escapeHtml(name)}</span>`;
+      // Whole-row highlight, no checkbox glyph — selecting a name just
+      // colors the row, same idea as a chip/tag picker.
+      row.style.cssText = `padding:7px 10px;border-radius:6px;font-size:13px;cursor:pointer;` +
+        (selected
+          ? `background:#4f46e5;color:#fff;font-weight:600;`
+          : `background:transparent;color:#37404c;`);
+      row.textContent = name;
       row.addEventListener("click", () => {
-        _poaSelectedRecipients = checked
+        _poaSelectedRecipients = selected
           ? _poaSelectedRecipients.filter(n => n !== name)
           : [..._poaSelectedRecipients, name];
         _renderPoaRecipDropdownList();
-        _poaRecipLabel();
       });
       list.appendChild(row);
     }
   }
 
-  function _poaAddRecipient() {
-    if (!_poaRecipDropdownEl) return;
-    const input = _poaRecipDropdownEl.querySelector("#poa-watch-recip-new");
-    if (!input) return;
-    let name = input.value.trim();
-    if (!name) return;
-    name = name.replace(/@.*$/, "").trim();   // tolerate a pasted full email — strip the domain back off
-    if (/\s/.test(name)) {
-      showToast("Just the name (e.g. \"Raiann\") — no spaces.", "error");
-      return;
-    }
-    if (!_poaKnownRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
-      _poaKnownRecipients.push(name);
-    }
-    // A name you just typed in is something you want on THIS PO — check it
-    // right away instead of making you click it a second time.
-    if (!_poaSelectedRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
-      _poaSelectedRecipients.push(name);
-    }
-    _renderPoaRecipDropdownList();
-    _poaRecipLabel();
-    input.value = "";
+  // "+ Add Other" opens a small standalone modal (reusing the app's standard
+  // .modal-backdrop pattern) instead of an inline textbox sitting in the
+  // popup list itself.
+  function _openPoaAddOtherModal() {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:600;";
+    backdrop.innerHTML = `
+      <div class="bg-white rounded-xl w-[340px] p-5 shadow-xl" role="dialog" aria-modal="true" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+        <div class="font-semibold" style="color:var(--navy-800);margin-bottom:10px;">Add other recipient</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="poa-add-other-input" type="text" placeholder="e.g. Raiann"
+            style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <span style="font-size:11px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="btn btn-secondary poa-add-other-cancel">Cancel</button>
+          <button class="btn btn-primary poa-add-other-ok">Add</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#poa-add-other-input");
     input.focus();
+
+    function close() { backdrop.remove(); document.removeEventListener("keydown", onKey); }
+    function submit() {
+      let name = input.value.trim();
+      if (!name) return;
+      name = name.replace(/@.*$/, "").trim();   // tolerate a pasted full email — strip the domain back off
+      if (/\s/.test(name)) {
+        showToast("Just the name (e.g. \"Raiann\") — no spaces.", "error");
+        return;
+      }
+      if (!_poaKnownRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+        _poaKnownRecipients.push(name);
+      }
+      // A name you just typed in is something you want on THIS PO — select
+      // it right away instead of making you click it a second time.
+      if (!_poaSelectedRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+        _poaSelectedRecipients.push(name);
+      }
+      _renderPoaRecipDropdownList();
+      close();
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      else if (e.key === "Enter") { e.preventDefault(); submit(); }
+    }
+    backdrop.querySelector(".poa-add-other-cancel").addEventListener("click", close);
+    backdrop.querySelector(".poa-add-other-ok").addEventListener("click", submit);
+    backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey);
   }
 
   function _openPoaRecipDropdown() {
@@ -9010,20 +9038,12 @@
       padding:10px;z-index:500;display:flex;flex-direction:column;gap:8px;`;
     el.innerHTML = `
       <div class="poa-recip-list" style="display:flex;flex-direction:column;gap:2px;overflow-y:auto;max-height:180px;"></div>
-      <div style="display:flex;gap:6px;align-items:center;border-top:1px solid #eef0f4;padding-top:8px;">
-        <input id="poa-watch-recip-new" type="text" placeholder="Add someone else — e.g. Raiann"
-          style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:6px 9px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-        <span style="font-size:11px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
-        <button id="poa-watch-recip-add" class="btn btn-secondary text-xs" type="button" style="white-space:nowrap;">+ Add</button>
-      </div>`;
+      <button id="poa-add-other-btn" class="btn btn-secondary text-xs" type="button" style="justify-content:center;border-top:1px solid #eef0f4;padding-top:8px;margin-top:2px;">+ Add Other</button>`;
     document.body.appendChild(el);
     _poaRecipDropdownEl = el;
     _renderPoaRecipDropdownList();
 
-    el.querySelector("#poa-watch-recip-add").addEventListener("click", _poaAddRecipient);
-    el.querySelector("#poa-watch-recip-new").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); _poaAddRecipient(); }
-    });
+    el.querySelector("#poa-add-other-btn").addEventListener("click", _openPoaAddOtherModal);
 
     // Defer attaching the outside-click listener so the same click that
     // opened the dropdown doesn't immediately close it again.
@@ -9034,7 +9054,6 @@
     }, 0);
   }
   $("#poa-watch-recip-btn")?.addEventListener("click", _openPoaRecipDropdown);
-  _poaRecipLabel();
 
   async function _addPoaWatch() {
     const input = $("#poa-watch-input");
@@ -9055,7 +9074,6 @@
       });
       input.value = "";
       _poaSelectedRecipients = [];   // nothing pre-chosen for the next PO — choose fresh each time
-      _poaRecipLabel();
       _closePoaRecipDropdown();
       showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${sentCount} recipient(s).`, r.added ? "success" : "info");
       await _refreshPoaLists();
