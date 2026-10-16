@@ -645,6 +645,20 @@ html, body {
 .tools-tab-bar.lib-type-tabs::-webkit-scrollbar-thumb:hover { background-color: var(--purple-400, #8b76e5); }
 .tools-tab-bar.lib-type-tabs { scrollbar-color: var(--purple-200, #d4c5fa) transparent; }
 
+/* Edge fade: a tab scrolling toward the left/right edge of the strip now
+   gradually loses opacity as it approaches the clip boundary, instead of
+   being fully visible right up until it's hard-cut by the panel's edge.
+   A CSS mask is the right tool for this (not a per-tab JS/scroll-position
+   opacity calculation) -- it fades whatever is CURRENTLY rendered at that
+   pixel position as content scrolls underneath it, so the fade is always
+   exactly at the visible edge regardless of how many tabs there are or how
+   far the strip has been scrolled. -webkit- prefix for Chrome/Edge/Safari;
+   the unprefixed property covers Firefox. */
+.tools-tab-bar.lib-type-tabs {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+}
+
 /* ---------- Abbreviation library rework ----------------------------- */
 
 .abbr-tabs {
