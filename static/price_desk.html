@@ -33,8 +33,14 @@
   --v1: #2563eb;  /* Cencora      — blue */
   --v2: #f59e0b;  /* Diamond      — amber */
   --v3: #1f9d55;  /* Quality King — green */
-  --shadow: none;          /* app is flat */
-  --drawer-shadow: -18px 0 60px -20px rgba(14,42,71,.22);
+  /* The app's second visual pass (after this page's own retheme) restored
+     real soft shadows + 16-20px card radii + pill-shaped primary buttons
+     everywhere else -- this page never got that follow-up, which is why it
+     reads as "a different app." Three-tier system matches static/styles.css
+     exactly (same rgba values), so elevation now looks consistent site-wide. */
+  --shadow-card: 0 1px 2px rgba(17,24,39,.04), 0 2px 8px rgba(17,24,39,.06);
+  --shadow-lg:   0 4px 16px rgba(17,24,39,.08), 0 2px 6px rgba(17,24,39,.05);
+  --shadow-xl:   0 12px 32px rgba(17,24,39,.12), 0 4px 12px rgba(17,24,39,.06);
 
   --display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --body:    'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -103,18 +109,32 @@ body {
   border-right: 1px solid var(--rule-soft);
   display: flex; flex-direction: column; gap: 1px;
   border-left: 3px solid var(--vc);
+  border-radius: 0 10px 10px 0;
+  transition: background-color 150ms ease;
 }
+.cad:hover { background: var(--paper); }
 .cad b { font-family: var(--display); text-transform: uppercase; letter-spacing: .06em; font-size: 13px; font-weight: 600; }
 .cad span { font-size: 10.5px; color: var(--ink-soft); }
 .cad .num { font-size: 11px; }
 
 /* -- stats -------------------------------------------------------------- */
+/* Was a seamless hairline-divided strip (1px gap, shared background) -- now
+   discrete floating cards with the app's own .stat-card treatment (16px
+   radius, soft shadow, hover-lift), sitting on the page's own grey-50
+   background so they read as "floating" the same way the rest of the app's
+   stat cards do. */
 .stats {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
-  gap: 1px; background: var(--rule-soft);
-  border-bottom: 1px solid var(--rule);
+  gap: 12px; background: transparent;
+  padding: 16px clamp(14px, 2.4vw, 26px);
 }
-.stat { background: var(--paper); padding: 16px clamp(14px, 2.4vw, 26px) 18px; }
+.stat {
+  background: var(--card); border: 1px solid var(--rule-soft);
+  border-radius: 16px; padding: 16px clamp(14px, 2.4vw, 26px) 18px;
+  box-shadow: var(--shadow-card);
+  transition: transform 150ms, border-color 150ms, box-shadow 150ms;
+}
+.stat:hover { transform: translateY(-2px); border-color: var(--accent-soft); box-shadow: var(--shadow-lg); }
 .stat .lbl { font-size: 10px; color: var(--ink-faint); }
 .stat .v {
   font-family: var(--mono); font-variant-numeric: tabular-nums;
@@ -138,7 +158,7 @@ body {
   width: 100%; padding: 9px 12px 9px 30px;
   font-family: var(--mono); font-size: 12.5px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px;
+  border: 1px solid var(--rule); border-radius: 8px;
 }
 .search input::placeholder { color: var(--ink-faint); }
 .search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; stroke: var(--ink-faint); fill: none; stroke-width: 2; }
@@ -147,30 +167,33 @@ body {
 .chip {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11px; font-weight: 600;
-  padding: 6px 11px; border-radius: 2px; cursor: pointer;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer;
   background: var(--paper); color: var(--ink-soft);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--vc, var(--rule));
-  transition: background .16s, color .16s, transform .16s;
+  transition: background .16s, color .16s, transform .16s, box-shadow .16s;
 }
-.chip:hover { transform: translateY(-1px); }
-.chip[aria-pressed="true"] { background: var(--vc, var(--accent)); color: var(--card); border-color: var(--vc, var(--accent)); }
+.chip:hover { transform: translateY(-1px); box-shadow: var(--shadow-card); }
+.chip[aria-pressed="true"] { background: var(--vc, var(--accent)); color: var(--card); border-color: var(--vc, var(--accent)); box-shadow: var(--shadow-card); }
 .chip.plain { border-left-width: 1px; }
 .chip.plain[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 /* an action, not a filter -- the stamp colour marks it as the thing that does
-   something rather than the things that narrow the list */
+   something rather than the things that narrow the list. Same pill shape as
+   .chip generally, but these are this page's primary actions, so they get
+   the app's primary-button elevation (shadow-card at rest, shadow-lg hover). */
 .chip.act {
   border-left-width: 1px; border-color: var(--stamp); color: var(--stamp);
   background: var(--stamp-soft);
+  box-shadow: var(--shadow-card);
 }
-.chip.act:hover { background: var(--stamp); color: var(--card); }
-.chip.act[disabled] { opacity: .55; cursor: progress; }
+.chip.act:hover { background: var(--stamp); color: var(--card); box-shadow: var(--shadow-lg); }
+.chip.act[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
 
 .toast {
   position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px);
   background: var(--ink); color: var(--paper);
   font-family: var(--mono); font-size: 12.5px;
-  padding: 11px 18px; border-radius: 2px; box-shadow: var(--shadow);
+  padding: 11px 18px; border-radius: 12px; box-shadow: var(--shadow-xl);
   max-width: min(560px, 92vw); z-index: 60;
   opacity: 0; pointer-events: none; transition: opacity .22s, transform .22s;
 }
@@ -185,16 +208,18 @@ body {
 .assign input {
   font-family: var(--mono); font-size: 13px; padding: 7px 9px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; width: 130px;
+  border: 1px solid var(--rule); border-radius: 8px; width: 130px;
 }
 .assign input.pack { width: 62px; }
 .assign button {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
-  font-size: 11px; font-weight: 600; padding: 8px 13px; cursor: pointer;
+  font-size: 11px; font-weight: 600; padding: 8px 15px; cursor: pointer;
   background: var(--accent); color: var(--card);
-  border: 1px solid var(--accent); border-radius: 2px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  box-shadow: var(--shadow-card); transition: background-color 150ms, box-shadow 150ms;
 }
-.assign button[disabled] { opacity: .55; cursor: progress; }
+.assign button:hover { background: var(--purple-800, #3f2a8c); box-shadow: var(--shadow-lg); }
+.assign button[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
 .assign .hint { font-size: 11px; color: var(--ink-faint); margin-top: 8px; }
 
 /* -- import modal ------------------------------------------------------- */
@@ -202,28 +227,29 @@ body {
   position: fixed; z-index: 41; left: 50%; top: 50%;
   transform: translate(-50%, -46%) scale(.985);
   width: min(680px, 94vw); max-height: 88vh; overflow-y: auto;
-  background: var(--card); border: 2px solid var(--ink); border-radius: 3px;
-  box-shadow: 0 24px 70px -24px rgba(0,0,0,.6);
+  background: var(--card); border: 1px solid var(--rule-soft); border-radius: 18px;
+  box-shadow: var(--shadow-xl);
   padding: 22px clamp(16px, 3vw, 28px) 0;
   opacity: 0; pointer-events: none;
   transition: opacity .2s, transform .24s cubic-bezier(.22,1,.36,1);
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
 .m-title { font-size: 24px; margin: 3px 40px 14px 0; line-height: 1.15; }
-.m-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--ink); }
+.m-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--rule); }
 .m-tab {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11.5px; font-weight: 600; padding: 9px 15px; cursor: pointer;
   background: none; border: 1px solid var(--rule); border-bottom: none;
-  color: var(--ink-soft); border-radius: 2px 2px 0 0; margin-bottom: -1px;
+  color: var(--ink-soft); border-radius: 8px 8px 0 0; margin-bottom: -2px;
+  transition: background-color 150ms, color 150ms, border-color 150ms;
 }
-.m-tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.m-tab[aria-selected="true"] { background: var(--accent); color: var(--card); border-color: var(--accent); }
 .m-pane { padding: 16px 0 4px; }
 .m-help { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 62ch; }
-#pairsText {
+#pairsText, #lookupText {
   width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
   padding: 10px; background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; resize: vertical;
+  border: 1px solid var(--rule); border-radius: 8px; resize: vertical;
 }
 .m-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 11px; }
 .m-field { display: flex; flex-direction: column; gap: 3px; }
@@ -232,23 +258,27 @@ body {
 .filebtn {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
   font-size: 10.5px; font-weight: 600; padding: 8px 12px; cursor: pointer;
-  border: 1px dashed var(--rule); border-radius: 2px; color: var(--ink-soft);
-  background: var(--paper);
+  border: 1px dashed var(--rule); border-radius: 10px; color: var(--ink-soft);
+  background: var(--paper); transition: border-color 150ms, color 150ms;
 }
 .filebtn:hover { border-color: var(--accent); color: var(--accent); }
 .filebtn input { display: none; }
 .m-file { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); align-self: center; }
+/* .m-go = this app's .btn-primary (pill + elevation); .m-ghost = .btn-secondary
+   (10px radius, no elevation at rest) -- same primary/secondary distinction
+   used everywhere else in the app. */
 .m-go, .m-ghost {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
-  font-size: 11px; font-weight: 600; padding: 9px 14px; cursor: pointer;
-  border-radius: 2px;
+  font-size: 11px; font-weight: 600; padding: 9px 16px; cursor: pointer;
+  transition: background-color 150ms, color 150ms, border-color 150ms, box-shadow 150ms;
 }
-.m-go { background: var(--accent); color: var(--card); border: 1px solid var(--accent); }
-.m-ghost { background: var(--paper); color: var(--ink-soft); border: 1px solid var(--rule); }
-.m-ghost:hover { color: var(--accent); border-color: var(--accent); }
-.m-go[disabled], .m-ghost[disabled] { opacity: .5; cursor: not-allowed; }
+.m-go { background: var(--accent); color: var(--card); border: 1px solid var(--accent); border-radius: 999px; box-shadow: var(--shadow-card); }
+.m-go:hover { background: var(--purple-800, #3f2a8c); box-shadow: var(--shadow-lg); }
+.m-ghost { background: var(--paper); color: var(--ink-soft); border: 1px solid var(--rule); border-radius: 10px; }
+.m-ghost:hover { color: var(--accent); border-color: var(--accent); background: var(--card); }
+.m-go[disabled], .m-ghost[disabled] { opacity: .5; cursor: not-allowed; box-shadow: none; }
 .m-out {
-  margin: 14px 0 4px; padding: 12px 14px; border-radius: 2px;
+  margin: 14px 0 4px; padding: 12px 14px; border-radius: 10px;
   background: var(--paper); border: 1px solid var(--rule);
   border-left: 3px solid var(--accent);
   font-size: 12.5px; max-height: 220px; overflow-y: auto;
@@ -272,7 +302,7 @@ select {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11px; font-weight: 600; padding: 6px 8px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 8px; cursor: pointer;
 }
 .count { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); white-space: nowrap; }
 .count b { color: var(--ink); font-size: 13px; }
@@ -314,7 +344,7 @@ select {
 .item-sub .num { font-size: 10.5px; color: var(--ink-faint); }
 .flag {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
-  font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 1px;
+  font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
   background: var(--stale-soft); color: var(--stale);
 }
 .flag.none { background: var(--accent-soft); color: var(--accent); }
@@ -383,20 +413,25 @@ select {
   opacity: 0; pointer-events: none; transition: opacity .28s; z-index: 40;
 }
 .scrim.open { opacity: 1; pointer-events: auto; }
+/* Edge-to-edge sliding panel, same convention as the app's own .side-panel --
+   no border-radius (it's flush against the viewport edge top-to-bottom),
+   just a thin rule-colored border instead of a heavy 2px black one, and the
+   app's own shadow-xl instead of a bespoke directional shadow. */
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(470px, 94vw);
-  background: var(--card); border-left: 2px solid var(--ink);
-  box-shadow: var(--drawer-shadow);
+  background: var(--card); border-left: 1px solid var(--rule);
+  box-shadow: var(--shadow-xl);
   transform: translateX(101%); transition: transform .34s cubic-bezier(.22,1,.36,1);
   z-index: 41; overflow-y: auto; padding: 22px clamp(16px, 3vw, 26px) 40px;
 }
 .drawer.open { transform: none; }
 .drawer-x {
-  position: absolute; top: 14px; right: 16px; background: none; border: 1px solid var(--rule);
-  color: var(--ink-soft); width: 26px; height: 26px; border-radius: 2px; cursor: pointer;
+  position: absolute; top: 14px; right: 16px; background: none; border: none;
+  color: var(--ink-soft); width: 30px; height: 30px; border-radius: 10px; cursor: pointer;
   font-family: var(--mono); font-size: 13px; line-height: 1;
+  transition: background-color 120ms, color 120ms;
 }
-.drawer-x:hover { color: var(--stamp); border-color: var(--stamp); }
+.drawer-x:hover { color: var(--ink); background: var(--rule-soft); }
 .d-title { font-size: 20px; line-height: 1.2; margin: 4px 40px 6px 0; }
 .d-ids { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
 .d-ids div .lbl { font-size: 9px; color: var(--ink-faint); display: block; }
