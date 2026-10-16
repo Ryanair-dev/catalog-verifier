@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=14" />
+  <link rel="stylesheet" href="/static/styles.css?v=15" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
@@ -1560,11 +1560,16 @@
   </div>
 
   <!-- ==================== Tools side panel ==================== -->
-  <div id="tools-panel" class="side-panel side-panel-wide">
-    <div class="side-panel-header">
-      <div>
-        <div class="font-semibold" style="color:var(--navy-800)">Toolbox</div>
-        <div class="text-xs" style="color:#6b7480;">Eligibility, storage fees, brand/MPN checks &amp; quick single-item search.</div>
+  <div id="tools-panel" class="side-panel side-panel-wide tools-panel">
+    <div class="side-panel-header tools-panel-header">
+      <div class="flex items-center gap-3">
+        <div class="tools-panel-header-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </div>
+        <div>
+          <div class="tools-panel-title">Toolbox</div>
+          <div class="tools-panel-subtitle">Eligibility, storage fees, brand/MPN checks &amp; quick search</div>
+        </div>
       </div>
       <button id="tools-close" class="icon-btn" title="Close">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -1572,12 +1577,27 @@
     </div>
 
     <!-- Toolbox sub-tabs -->
-    <div class="lib-type-tabs" role="tablist">
-      <button class="lib-type-tab active" data-tools-tab="asin" type="button">ASIN Check</button>
-      <button class="lib-type-tab" data-tools-tab="po" type="button">PO Analytics</button>
-      <button class="lib-type-tab" data-tools-tab="brand" type="button">Brand Check</button>
-      <button class="lib-type-tab" data-tools-tab="mpn" type="button">MPN Check</button>
-      <button class="lib-type-tab" data-tools-tab="quicksearch" type="button">Quick Search</button>
+    <div class="lib-type-tabs tools-tab-bar" role="tablist">
+      <button class="lib-type-tab active" data-tools-tab="asin" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/></svg>
+        ASIN Check
+      </button>
+      <button class="lib-type-tab" data-tools-tab="po" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+        PO Analytics
+      </button>
+      <button class="lib-type-tab" data-tools-tab="brand" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L3 13V3h10l7.59 7.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.3"/></svg>
+        Brand Check
+      </button>
+      <button class="lib-type-tab" data-tools-tab="mpn" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5v14M7 5v14M10 5v14M14 5v14M17 5v14M21 5v14"/></svg>
+        MPN Check
+      </button>
+      <button class="lib-type-tab" data-tools-tab="quicksearch" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Quick Search
+      </button>
     </div>
 
     <div id="tools-tab-asin" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">

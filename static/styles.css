@@ -554,6 +554,69 @@ html, body {
   display: flex; align-items: center; justify-content: space-between;
 }
 
+/* ---------- Toolbox panel — dedicated look (scoped to #tools-panel so the --
+   Library/Settings panels, which share .side-panel, are unaffected) --------- */
+
+/* A touch of spring in the slide-in, just for this one panel. */
+.tools-panel.open { transition: transform 320ms cubic-bezier(0.34, 1.15, 0.64, 1); }
+
+.tools-panel-header {
+  background: linear-gradient(135deg, var(--purple-50, #f4f0ff) 0%, #fff 65%);
+  border-bottom: 1px solid var(--purple-100, #ece6fb);
+  padding: 19px 20px;
+}
+.tools-panel-header-icon {
+  width: 38px; height: 38px; border-radius: 11px; flex: none;
+  background: linear-gradient(135deg, var(--purple-500), var(--purple-400));
+  box-shadow: var(--shadow-card);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+}
+.tools-panel-title {
+  font-weight: 700; font-size: 15px; color: var(--navy-800); letter-spacing: -0.01em;
+}
+.tools-panel-subtitle {
+  font-size: 11.5px; color: #8089a0; margin-top: 2px; line-height: 1.4;
+}
+
+/* Icon + label pill tabs, replacing the plain underline style just for the
+   Toolbox's 5 sub-tabs — scoped via .tools-tab-bar so .lib-type-tab's base
+   (shared with the Library panel's Abbreviations/Brands/Manufacturers tabs)
+   stays untouched elsewhere. */
+/* Compound selector (not just .tools-tab-bar alone) — .lib-type-tabs' own
+   base rule appears later in this file and shares the same specificity, so
+   a same-specificity override must out-rank it structurally, not rely on
+   coming after it in source order. */
+.tools-tab-bar.lib-type-tabs {
+  gap: 7px;
+  padding: 12px 16px;
+  background: #fbfaff;
+  border-bottom: 1px solid var(--grey-100);
+}
+.tools-tab-bar .lib-type-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--grey-100);
+  background: #fff;
+  color: var(--grey-500);
+  margin-bottom: 0;
+  transition: background 150ms, color 150ms, border-color 150ms, box-shadow 150ms, transform 100ms;
+}
+.tools-tab-bar .lib-type-tab:hover {
+  background: var(--purple-50, #f4f0ff);
+  color: var(--purple-700);
+  border-color: var(--purple-100, #ece6fb);
+}
+.tools-tab-bar .lib-type-tab:active { transform: scale(0.97); }
+.tools-tab-bar .lib-type-tab.active {
+  background: linear-gradient(135deg, var(--purple-600, #5b3dd1), var(--purple-500));
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 10px rgba(91, 61, 209, 0.28);
+}
+.tools-tab-bar .lib-type-tab svg { flex: none; }
+
 /* ---------- Abbreviation library rework ----------------------------- */
 
 .abbr-tabs {
