@@ -1,3 +1,4 @@
+<!-- doc-check: sp-api-b856 -->
 # SP-API (`services/spapi/`)
 
 ## What this does

@@ -1,3 +1,4 @@
+<!-- doc-check: vendor-offers-a5ac -->
 # Vendor Offers / Price Desk
 
 ## What this does

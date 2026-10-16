@@ -1,3 +1,4 @@
+<!-- doc-check: offer-analytics-1d77 -->
 # Offer Analytics (the "Analytics" tab, nav label "Offer Analysis")
 
 ## What this does

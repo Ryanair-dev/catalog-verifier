@@ -1,3 +1,4 @@
+<!-- doc-check: verify-scan-d56a -->
 # Verify / Scan (legacy verification flow)
 
 ## What this does

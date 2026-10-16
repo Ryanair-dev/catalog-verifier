@@ -1,3 +1,4 @@
+<!-- doc-check: pair-manager-9c5e -->
 # Pair Manager / Pair Library
 
 ## What this does

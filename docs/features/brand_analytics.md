@@ -1,3 +1,4 @@
+<!-- doc-check: brand-analytics-16dc -->
 # Brand Analytics
 
 ## What this does

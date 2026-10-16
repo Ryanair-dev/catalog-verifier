@@ -1,3 +1,4 @@
+<!-- doc-check: database-b128 -->
 # Database (`services/database.py`)
 
 ## What this does

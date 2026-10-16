@@ -1,3 +1,4 @@
+<!-- doc-check: azure-sql-4047 -->
 # Azure SQL (`services/azure_sql.py`)
 
 ## What this does

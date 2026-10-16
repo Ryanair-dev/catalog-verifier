@@ -1,3 +1,4 @@
+<!-- doc-check: keepa-0447 -->
 # Keepa (`services/keepa.py`)
 
 ## What this does

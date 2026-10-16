@@ -1,3 +1,4 @@
+<!-- doc-check: job-persistence-c60b -->
 # Job Persistence (`background_jobs`)
 
 ## What this does

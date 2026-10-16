@@ -1,3 +1,4 @@
+<!-- doc-check: create-skus-f0fa -->
 # Create SKUs — SellerCloud integration
 <!-- nav label "Create SKUs"; internal route/module still named create-po / create_po -->
 
