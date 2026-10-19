@@ -34,7 +34,11 @@ INBOUND_BOARD_ID = 581141334
 # 2026-10-16 for the Awaiting Analysis panel's hover detail (per-column
 # titles confirmed live via monday.columns: "Vendor" is a dropdown column --
 # its readable label lives in column_values.text, same place a plain text
-# column's value does, verified against real rows).
+# column's value does, verified against real rows). purchaser added 2026-10-19
+# for the PO P&L report's "assigned by <person>" filter -- "Purchaser"
+# (purchaser3) is a Monday PEOPLE column (can hold several names at once,
+# e.g. "Mason Bennet, Avi Schoemann, Victoria Romanoff"), whose joined names
+# land in column_values.text exactly like any other column -- confirmed live.
 _FIELDS = {
     "po_number": "link",
     "eta_to_warehouse": "eta_to_warehouse",
@@ -43,6 +47,7 @@ _FIELDS = {
     "vendor": "dropdown_mkxpj7b",
     "goods": "goods",
     "amount": "amount",
+    "purchaser": "purchaser3",
 }
 
 
@@ -54,7 +59,7 @@ def fetch_inbound_items() -> list[dict]:
     """One row per active board item:
       {item_id, po_number (int|None), eta_to_warehouse (str 'YYYY-MM-DD'|None),
        status (str|None), actual_arrived_date (str|None), vendor (str|None),
-       goods (str|None), amount (str|None), item_updated_at}.
+       goods (str|None), amount (str|None), purchaser (str|None), item_updated_at}.
 
     Best-effort -- an Azure failure here must never crash a caller's scheduler
     loop; returns [] on any connection/query error.
@@ -68,10 +73,12 @@ def fetch_inbound_items() -> list[dict]:
         return []
     try:
         cur = conn.cursor()
-        po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col = (
+        (po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
+         purchaser_col) = (
             _col_id(_FIELDS["po_number"]), _col_id(_FIELDS["eta_to_warehouse"]),
             _col_id(_FIELDS["status"]), _col_id(_FIELDS["actual_arrived_date"]),
             _col_id(_FIELDS["vendor"]), _col_id(_FIELDS["goods"]), _col_id(_FIELDS["amount"]),
+            _col_id(_FIELDS["purchaser"]),
         )
         cur.execute(
             """
@@ -82,16 +89,18 @@ def fetch_inbound_items() -> list[dict]:
                    MAX(CASE WHEN cv.column_id = %s THEN cv.date_value END)      AS actual_arrived_date,
                    MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS vendor,
                    MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS goods,
-                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS amount
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS amount,
+                   MAX(CASE WHEN cv.column_id = %s THEN cv.text END)            AS purchaser
             FROM monday.items i
             JOIN monday.column_values cv ON cv.item_id = i.id
             WHERE i.board_id = %s AND i.state = 'active'
-              AND cv.column_id IN (%s, %s, %s, %s, %s, %s, %s)
+              AND cv.column_id IN (%s, %s, %s, %s, %s, %s, %s, %s)
             GROUP BY i.id, i.updated_at
             """,
             (po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
-             INBOUND_BOARD_ID,
-             po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col),
+             purchaser_col, INBOUND_BOARD_ID,
+             po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
+             purchaser_col),
         )
         out: list[dict] = []
         for r in cur.fetchall():
@@ -107,6 +116,7 @@ def fetch_inbound_items() -> list[dict]:
                 "vendor": (r[6] or "").strip() or None,
                 "goods": (r[7] or "").strip() or None,
                 "amount": (r[8] or "").strip() or None,
+                "purchaser": (r[9] or "").strip() or None,
             })
         return out
     except Exception:  # noqa: BLE001
@@ -114,3 +124,27 @@ def fetch_inbound_items() -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+def pos_for_purchaser(name: str) -> set[int]:
+    """PO numbers for every CURRENT (live, non-archived) Inbound Shipments
+    board item whose Purchaser people-column includes `name` (substring,
+    case-insensitive -- the column often holds several names at once, e.g.
+    "Mason Bennet, Avi Schoemann, Victoria Romanoff", and this counts as a
+    match on any of them, not just a sole assignee).
+
+    KNOWN GAP: this only sees items on the LIVE board right now. Older POs
+    that have since been archived off this board (the team has done this
+    before -- see the module docstring's "Archive 4" note) won't show up
+    here even if they're still sitting in the cash-cycle data. Flagged, not
+    silently papered over -- a PO P&L dashboard built on this will undercount
+    if archived-board POs are expected to still appear."""
+    name_l = (name or "").strip().lower()
+    if not name_l:
+        return set()
+    out: set[int] = set()
+    for item in fetch_inbound_items():
+        p = (item.get("purchaser") or "").lower()
+        if name_l in p and item.get("po_number"):
+            out.add(item["po_number"])
+    return out

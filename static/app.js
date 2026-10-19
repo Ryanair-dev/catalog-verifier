@@ -8184,6 +8184,166 @@
   });
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
 
+  // ========================================================================
+  //  Reports panel — PO P&L is dashboard #1; more register their own
+  //  data-reports-tab button + #reports-tab-<id> pane as they're built.
+  // ========================================================================
+  $("#open-reports-btn")?.addEventListener("click", () => {
+    _openPanel("reports-panel");
+    _loadReportsPoPnlFilters();
+    _loadReportsPoPnl();
+  });
+  $("#reports-close")?.addEventListener("click", () => _closeActivePanel());
+
+  function _switchReportsTab(tab) {
+    $$("#reports-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.reportsTab === tab));
+    $("#reports-tab-po-pnl")?.classList.toggle("hidden", tab !== "po-pnl");
+  }
+  $$("#reports-panel .lib-type-tab").forEach(tabBtn => {
+    tabBtn.addEventListener("click", () => _switchReportsTab(tabBtn.dataset.reportsTab));
+  });
+
+  const _fmtUsd0 = n => "$" + Math.round(n || 0).toLocaleString();
+  const _fmtUsd2 = n => "$" + (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _fmtInt = n => Math.round(n || 0).toLocaleString();
+
+  async function _loadReportsPoPnlFilters() {
+    const vendorSel = $("#rpt-po-pnl-vendor"), brandSel = $("#rpt-po-pnl-brand");
+    if (!vendorSel || !brandSel) return;
+    const keepVendor = vendorSel.value, keepBrand = brandSel.value;
+    try {
+      const j = await api("/api/reports/po-pnl/filters");
+      vendorSel.innerHTML = `<option value="">All vendors</option>` +
+        (j.vendors || []).map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+      brandSel.innerHTML = `<option value="">All brands</option>` +
+        (j.brands || []).map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+      vendorSel.value = keepVendor; brandSel.value = keepBrand;
+    } catch { /* best-effort — dropdowns just stay at "All" */ }
+  }
+
+  function _rptPoPnlRowHtml(po, idx) {
+    const brandsTxt = (po.brands || []).join(", ") || "—";
+    const pct = Math.round((po.pct_sold || 0) * 100);
+    return `
+      <tr class="rpt-po-row" data-idx="${idx}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;">
+        <td style="padding:7px 4px;color:#94a3b8;"><span class="rpt-po-caret" style="display:inline-block;transition:transform 120ms;">▸</span></td>
+        <td style="padding:7px 8px;font-weight:600;color:#1e293b;">${po.po_number}</td>
+        <td style="padding:7px 8px;color:#374151;">${escapeHtml(po.vendor || "—")}</td>
+        <td style="padding:7px 8px;color:#6b7480;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(brandsTxt)}">${escapeHtml(brandsTxt)}</td>
+        <td style="padding:7px 8px;color:#6b7480;">${po.received_date || "—"}</td>
+        <td style="padding:7px 8px;text-align:right;">${_fmtInt(po.qty_received)}</td>
+        <td style="padding:7px 8px;text-align:right;">${_fmtInt(po.sold_qty)}</td>
+        <td style="padding:7px 8px;text-align:right;${po.left_qty > 0 ? "color:#b45309;font-weight:600;" : ""}">${_fmtInt(po.left_qty)}</td>
+        <td style="padding:7px 8px;text-align:right;">${pct}%</td>
+        <td style="padding:7px 8px;text-align:right;">${_fmtUsd0(po.bought_cost)}</td>
+        <td style="padding:7px 8px;text-align:right;color:#16a34a;">${_fmtUsd0(po.sold_revenue)}</td>
+        <td style="padding:7px 8px;text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
+        <td style="padding:7px 8px;text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
+      </tr>
+      <tr class="rpt-po-detail hidden" data-idx="${idx}">
+        <td colspan="13" style="padding:0;">
+          <div style="padding:8px 16px 14px 34px;background:#f8fafc;">
+            <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+              <thead>
+                <tr style="text-align:left;color:#94a3b8;">
+                  <th style="padding:4px 6px;">SKU</th><th style="padding:4px 6px;">Brand</th>
+                  <th style="padding:4px 6px;">ASIN</th>
+                  <th style="padding:4px 6px;text-align:right;">Qty Bought</th>
+                  <th style="padding:4px 6px;text-align:right;">Qty Sold</th>
+                  <th style="padding:4px 6px;text-align:right;">Qty Left</th>
+                  <th style="padding:4px 6px;text-align:right;">Bought $</th>
+                  <th style="padding:4px 6px;text-align:right;">Sold $</th>
+                  <th style="padding:4px 6px;text-align:right;">Left $</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${(po.items || []).map(it => `
+                  <tr>
+                    <td style="padding:3px 6px;font-family:monospace;">${escapeHtml(it.product_id)}</td>
+                    <td style="padding:3px 6px;">${escapeHtml(it.brand || "—")}</td>
+                    <td style="padding:3px 6px;font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.qty_received)}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.sold_qty)}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.left_qty)}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
+                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.left_value)}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+        </td>
+      </tr>`;
+  }
+
+  async function _loadReportsPoPnl(refresh) {
+    const tbody = $("#rpt-po-pnl-tbody");
+    const empty = $("#rpt-po-pnl-empty");
+    const loading = $("#rpt-po-pnl-loading");
+    if (!tbody) return;
+    const params = new URLSearchParams({
+      vendor: $("#rpt-po-pnl-vendor")?.value || "",
+      po_number: $("#rpt-po-pnl-po")?.value.trim() || "",
+      brand: $("#rpt-po-pnl-brand")?.value || "",
+      item: $("#rpt-po-pnl-item")?.value.trim() || "",
+      bucket: $("#rpt-po-pnl-bucket-archive")?.checked ? "archive" : "active",
+      refresh: refresh ? "true" : "false",
+    });
+    loading?.classList.remove("hidden");
+    try {
+      const j = await api(`/api/reports/po-pnl?${params.toString()}`);
+      const pos = j.pos || [];
+      const s = j.summary || {};
+      if ($("#rpt-po-pnl-sum-count")) $("#rpt-po-pnl-sum-count").textContent = _fmtInt(s.po_count);
+      if ($("#rpt-po-pnl-sum-bought")) $("#rpt-po-pnl-sum-bought").textContent = _fmtUsd0(s.bought_cost);
+      if ($("#rpt-po-pnl-sum-sold")) $("#rpt-po-pnl-sum-sold").textContent = _fmtUsd0(s.sold_revenue);
+      if ($("#rpt-po-pnl-sum-profit")) $("#rpt-po-pnl-sum-profit").textContent = _fmtUsd0(s.sold_profit);
+      if ($("#rpt-po-pnl-sum-left")) $("#rpt-po-pnl-sum-left").textContent = _fmtUsd0(s.left_value);
+
+      if (!pos.length) {
+        tbody.innerHTML = "";
+        empty?.classList.remove("hidden");
+        if (empty) empty.textContent = "No POs match these filters.";
+      } else {
+        empty?.classList.add("hidden");
+        tbody.innerHTML = pos.map((po, i) => _rptPoPnlRowHtml(po, i)).join("");
+        tbody.querySelectorAll(".rpt-po-row").forEach(row => {
+          row.addEventListener("click", () => {
+            const idx = row.dataset.idx;
+            const detail = tbody.querySelector(`.rpt-po-detail[data-idx="${idx}"]`);
+            const caret = row.querySelector(".rpt-po-caret");
+            const nowHidden = detail?.classList.toggle("hidden");
+            if (caret) caret.style.transform = nowHidden ? "" : "rotate(90deg)";
+          });
+        });
+      }
+    } catch (e) {
+      tbody.innerHTML = "";
+      empty?.classList.remove("hidden");
+      if (empty) empty.textContent = "Couldn't load: " + (e.message || e);
+    } finally {
+      loading?.classList.add("hidden");
+    }
+  }
+
+  $("#rpt-po-pnl-refresh")?.addEventListener("click", () => _loadReportsPoPnl(true));
+  $("#rpt-po-pnl-vendor")?.addEventListener("change", () => _loadReportsPoPnl());
+  $("#rpt-po-pnl-brand")?.addEventListener("change", () => _loadReportsPoPnl());
+  let _rptPoPnlDebounce = null;
+  function _rptPoPnlDebouncedLoad() {
+    clearTimeout(_rptPoPnlDebounce);
+    _rptPoPnlDebounce = setTimeout(() => _loadReportsPoPnl(), 400);
+  }
+  $("#rpt-po-pnl-po")?.addEventListener("input", _rptPoPnlDebouncedLoad);
+  $("#rpt-po-pnl-item")?.addEventListener("input", _rptPoPnlDebouncedLoad);
+  $("#rpt-po-pnl-bucket-archive")?.addEventListener("change", () => {
+    const archiveOn = $("#rpt-po-pnl-bucket-archive")?.checked;
+    const lblA = $("#rpt-po-pnl-bucket-label-active"), lblB = $("#rpt-po-pnl-bucket-label-archive");
+    if (lblA) lblA.style.color = archiveOn ? "#94a3b8" : "#1e293b";
+    if (lblB) lblB.style.color = archiveOn ? "#1e293b" : "#94a3b8";
+    _loadReportsPoPnl();
+  });
+
   // Eligibility store switch — shows which stores are actually usable, since
   // a store can have working SP-API credentials (catalog search would work)
   // but still be missing its own seller ID (eligibility specifically needs

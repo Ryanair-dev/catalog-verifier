@@ -20,6 +20,7 @@ This file is read automatically by Claude Code at the start of every session. It
 
 | Doc | Covers |
 |---|---|
+| [`reports.md`](docs/features/reports.md) | Reports — new top-level dashboard section; PO P&L (per-PO bought/sold/left) is dashboard #1 |
 | [`po_analytics.md`](docs/features/po_analytics.md) | PO Analytics — on-demand + day-before-ETA-automated PO profitability reports |
 | [`offer_analytics.md`](docs/features/offer_analytics.md) | Offer Analysis (Analytics tab) — SP-API search/match/score pipeline, AI Check, Quick Search; the biggest doc, includes the full scoring-engine/pipeline/API-endpoint architecture |
 | [`brand_analytics.md`](docs/features/brand_analytics.md) | Brand Analytics — Keepa+SP-API brand/manufacturer ASIN discovery, AI Fill, category filtering |
@@ -87,6 +88,7 @@ catalog-verifier/
 │   ├── verify.py                    Legacy single-shot verify (kept for compat)
 │   ├── analytics.py                 Analytics (Offer Analysis) runs CRUD + verdict overrides + export
 │   ├── brand_analytics.py           Brand Analytics CRUD + discover + AI fill + export
+│   ├── reports.py                   Reports dashboards (PO P&L today; more register here as built)
 │   ├── po_analytics.py              PO Analytics on-demand run + automation endpoints
 │   ├── vendor_offers.py             Vendor Offers / Price Desk CRUD + exports + DB sync
 │   ├── create_po.py                 Create SKUs: upload sheet -> SKUs -> import files
@@ -115,8 +117,9 @@ catalog-verifier/
 │   ├── sku_exports.py               Create SKUs export history log
 │   ├── azure_sql.py                 Live SellerCloud catalog mirror (see docs/infra/azure_sql.md)
 │   ├── keepa.py                     Keepa API client (see docs/infra/keepa.md)
-│   ├── monday_eta.py                PO Analytics' Monday.com board mirror reader
+│   ├── monday_eta.py                PO Analytics' Monday.com board mirror reader (also: Reports' purchaser lookup)
 │   ├── po_automation.py             PO Analytics' day-before-ETA automation orchestration
+│   ├── reports_po_pnl.py            Reports: PO P&L dashboard (queries the Azure PO→sale allocation view)
 │   ├── graph_mail.py                PO Analytics' Microsoft Graph sendMail wrapper
 │   ├── vendor_offers.py             Vendor Offers core ingest/pairing/ledger logic
 │   ├── vendor_offers_db_sync.py     Vendor Offers Azure DB sync (5 known vendors)
