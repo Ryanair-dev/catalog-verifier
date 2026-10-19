@@ -112,11 +112,33 @@ def _bb_window(stats: dict):
     return top, tp, ap
 
 
+# Per user request (2026-10-19): "out of 400 tokens (we upgraded just now) we
+# leave like 5% of tokens left" -- user was seeing real 429s on Keepa's own
+# dashboard. Confirmed live why: `need` below used to badly UNDERESTIMATE the
+# real per-ASIN cost of a /product buybox+stats+fbaFees+rating call -- a
+# 2-tokens/ASIN guess against a measured REAL cost of 6 tokens/ASIN (verified
+# live, twice, both the stats=30 and stats=90 calls: 18 tokensConsumed for a
+# 3-ASIN batch = 6.0/ASIN each time). For a 100-ASIN batch that's a real cost
+# of 600 tokens against an estimated "need" of only 200 -- `_wait_tokens`
+# would happily let the call through with, say, 250 tokens left (>= the
+# wrong 200 estimate), the request would then actually consume 600, driving
+# the real balance deeply NEGATIVE, which is exactly what trips Keepa's own
+# 429 on the next request until the bucket refills back to positive.
+# `need` below now reflects the measured real cost. `_RESERVE_PCT` is the
+# explicit safety margin on top the user asked for -- computed as a
+# percentage of the ACCOUNT'S LIVE `refillRate` (not a hardcoded "400"),
+# so it keeps tracking correctly through any future plan upgrade/downgrade.
+_RESERVE_PCT = 0.05
+
+
 def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
     for _ in range(90):
         try:
             j = sess.get(f"{_ENDPOINT}/token", timeout=10).json()
-            if int(j.get("tokensLeft", 0)) >= need:
+            left = int(j.get("tokensLeft", 0))
+            refill_rate = int(j.get("refillRate") or 0)
+            reserve = int(refill_rate * _RESERVE_PCT) if refill_rate else 0
+            if left >= need + reserve:
                 return
             time.sleep(max(2, int((j.get("refillIn") or 3000) / 1000)))
         except Exception:  # noqa: BLE001
@@ -140,10 +162,16 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
     # reviews (`hasReviews: true`), which is why "Total Ratings Count" was
     # silently 0 for every single row. Verified live: the exact same ASIN
     # returned current[17]=-1 without this param and current[17]=7414 with it.
-    # A 100-ASIN buybox batch costs well more than the old flat 20-token check
-    # verified -- wait for a realistic amount up front so we don't walk straight
-    # into a "not enough tokens" response from Keepa's own server.
-    need = max(20, len(asins) * 2)
+    # Real measured cost (2026-10-19, live): 6 tokens/ASIN for this exact param
+    # combination (buybox+stock+fbaFees+rating+stats), confirmed identically on
+    # BOTH the stats=30 and stats=90 calls. The old `* 2` estimate here was a 3x
+    # UNDERCOUNT -- it let `_wait_tokens` pass a call through with, say, 250
+    # tokens left for a 100-ASIN batch (>= the wrong 200 estimate), the request
+    # then actually consumed 600, driving the real balance deeply NEGATIVE --
+    # which is exactly what trips Keepa's own 429 on the next request until the
+    # bucket refills back to positive. This single fix is the real root cause
+    # of the 429s the user was seeing on Keepa's own dashboard.
+    need = max(20, len(asins) * 6)
     for attempt in range(12):
         _wait_tokens(sess, need)
         try:
