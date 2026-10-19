@@ -968,6 +968,13 @@
         // _voResumePendingExport() can show the same thing on a later reload
         // even if this exact poll never got to run (tab discarded, etc).
         _voShowReadyBar(job);
+        if (pj.email_to && pj.email_to.length) {
+          if (pj.email_sent) {
+            showToast(`Also emailed to ${pj.email_to.join(", ")}.`, "success");
+          } else if (pj.email_error) {
+            showToast(`Export is ready, but the email failed to send: ${pj.email_error}`, "warning");
+          }
+        }
         _voExportJob = null;
         _voResetFrameBtn();
         return;

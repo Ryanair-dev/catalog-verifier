@@ -676,6 +676,18 @@ select {
       SP-API call per ASIN, so this takes a little longer).</span>
   </div>
 
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:14px">
+    <span class="lbl" style="font-size:10px;color:var(--ink-faint)">Email it when done?</span>
+    <div class="chips">
+      <button class="chip plain" id="optEmailYes" type="button" aria-pressed="false">Yes</button>
+      <button class="chip plain" id="optEmailNo" type="button" aria-pressed="true">No</button>
+    </div>
+    <input id="optEmailAddr" type="text" placeholder="name@fordmed.com" disabled
+      style="margin-top:2px;width:100%;box-sizing:border-box;font-size:12px;padding:7px 9px;
+             border:1px solid var(--rule,#e2e6ec);border-radius:6px;outline:none;color:var(--ink,#1e293b);" />
+    <span class="m-help" style="margin:0">Sends the finished workbook as an email attachment once it's ready — comma-separate multiple addresses.</span>
+  </div>
+
   <div class="m-row" style="margin-top:18px">
     <button class="m-go" id="expStart" type="button" style="width:100%;justify-content:center">Start export</button>
   </div>
@@ -1146,16 +1158,17 @@ const EXPORT_LABEL = btnExport ? btnExport.textContent : "Export to Excel";
 const _voEmbedded = !!(window.parent && window.parent !== window
   && typeof window.parent._voStartExport === "function");
 
-function runExport(onlyAvailable, applyFilters, populateKeepa) {
+function runExport(onlyAvailable, applyFilters, populateKeepa, emailTo) {
   if (_voEmbedded) {
     window.parent._voStartExport({
       upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
       has_asin: !!state.asin, only_available: !!onlyAvailable,
       apply_filters: !!applyFilters, populate_keepa: populateKeepa !== false,
+      email_to: emailTo || "",
     });
     return;
   }
-  startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa);
+  startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa, emailTo);
 }
 
 // One consolidated export-options modal: scope / Keepa / filters, each a
@@ -1176,6 +1189,17 @@ function _expResetOptions() {
   _expSetPressed("optKeepaYes", true); _expSetPressed("optKeepaNo", false);
   _expSetPressed("optFilterYes", false); _expSetPressed("optFilterNo", true);
   _expSetFiltersEnabled(true);
+  _expSetPressed("optEmailYes", false); _expSetPressed("optEmailNo", true);
+  _expSetEmailEnabled(false);
+  const addr = document.getElementById("optEmailAddr");
+  if (addr) addr.value = "";
+}
+function _expSetEmailEnabled(on) {
+  const addr = document.getElementById("optEmailAddr");
+  if (!addr) return;
+  addr.disabled = !on;
+  addr.style.background = on ? "" : "var(--card2,#f8fafc)";
+  if (on) addr.focus();
 }
 function _expSetFiltersEnabled(on) {
   const grp = document.getElementById("filtersGroup");
@@ -1199,7 +1223,7 @@ function closeExportScope() {
 }
 
 // Start the export job with the chosen options, then poll → download.
-async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) {
+async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa, emailTo) {
   btnExport.textContent = "Starting…";
   try {
     const start = await fetch("/api/vendor-offers/analytics-export/start", {
@@ -1207,11 +1231,13 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
       body: JSON.stringify({ upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
                              has_asin: !!state.asin, only_available: !!onlyAvailable,
                              apply_filters: !!applyFilters,
-                             populate_keepa: populateKeepa !== false }),
+                             populate_keepa: populateKeepa !== false,
+                             email_to: emailTo || "" }),
     });
     const sj = await start.json().catch(() => ({}));
     if (!start.ok) throw new Error(sj.detail || start.statusText);
     exportJob = { id: sj.job_id, cancelled: false };
+    let finalJob = null;
     for (;;) {
       await new Promise(r => setTimeout(r, 1500));
       const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}`);
@@ -1219,7 +1245,7 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
       if (!ps.ok) throw new Error(pj.detail || ps.statusText);
       if (pj.status === "cancelled") { toast("Export cancelled."); return; }
       if (pj.status === "error") throw new Error(pj.error || "export failed");
-      if (pj.status === "complete") break;
+      if (pj.status === "complete") { finalJob = pj; break; }
       // second click cancels; show phase, %, and ETA
       if (pj.total) {
         const pct = Math.round(pj.done / pj.total * 100);
@@ -1233,6 +1259,10 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
     const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/download`);
     await downloadFromResponse(dl, "offer_analytics.xlsx");
     toast("Offer Analytics export downloaded.");
+    if (finalJob && finalJob.email_to && finalJob.email_to.length) {
+      if (finalJob.email_sent) toast(`Also emailed to ${finalJob.email_to.join(", ")}.`);
+      else if (finalJob.email_error) toast(`Email failed: ${finalJob.email_error}`, false);
+    }
   } catch (err) {
     toast("Export failed: " + err.message, false);
   } finally {
@@ -1265,13 +1295,20 @@ if (btnExport) {
     _expGroup("optScopeAll", "optScopeAvail");
     _expGroup("optKeepaYes", "optKeepaNo", (keepaOn) => _expSetFiltersEnabled(keepaOn));
     _expGroup("optFilterYes", "optFilterNo");
+    _expGroup("optEmailYes", "optEmailNo", (on) => _expSetEmailEnabled(on));
     document.getElementById("expStart").addEventListener("click", () => {
       const onlyAvailable = document.getElementById("optScopeAvail").getAttribute("aria-pressed") === "true";
       const populateKeepa = document.getElementById("optKeepaYes").getAttribute("aria-pressed") === "true";
       const applyFilters = populateKeepa
         && document.getElementById("optFilterYes").getAttribute("aria-pressed") === "true";
+      const emailOn = document.getElementById("optEmailYes").getAttribute("aria-pressed") === "true";
+      const emailTo = emailOn ? document.getElementById("optEmailAddr").value.trim() : "";
+      if (emailOn && !emailTo) {
+        toast("Enter at least one recipient, or switch \"Email it when done\" back to No.", false);
+        return;
+      }
       closeExportScope();
-      runExport(onlyAvailable, applyFilters, populateKeepa);
+      runExport(onlyAvailable, applyFilters, populateKeepa, emailTo);
     });
   }
 }

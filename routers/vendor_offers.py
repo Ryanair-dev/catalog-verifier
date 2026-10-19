@@ -23,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from services import database
+from services import graph_mail
 from services import vendor_offers as vo
 from services import vendor_offers_db_sync as vo_sync
 from services import vendor_offers_export as vo_export
@@ -86,6 +87,19 @@ _AJOBS_LOCK = threading.Lock()
 _AJOB_TTL = 3600
 
 
+def _parse_export_emails(raw: str) -> list[str]:
+    """Same loose comma/semicolon/newline splitting + '@'/no-space validation
+    every other recipients field in this app already uses (routers/settings.py,
+    routers/po_analytics.py) — kept as its own small copy rather than importing
+    a sibling router's private helper."""
+    parts = re.split(r"[\n,;]+", raw or "")
+    cleaned = [p.strip() for p in parts if p.strip()]
+    for e in cleaned:
+        if "@" not in e or " " in e:
+            raise HTTPException(status_code=400, detail=f"'{e}' doesn't look like a valid email address.")
+    return cleaned
+
+
 def _get_ajob(job_id: str) -> dict:
     # BUG FIXED: eviction used to measure the TTL from "started" (job creation),
     # not from completion -- so a job that legitimately took longer than
@@ -113,7 +127,11 @@ def _get_ajob(job_id: str) -> dict:
 async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     """Start building the Offer-Analytics (template) workbook. Body (optional):
     { upcs: [...] } restricts to the current view; { prep_fee } sets Prep & Out;
-    { live: false } skips the per-ASIN SP-API enrichment (Approved + Storage)."""
+    { live: false } skips the per-ASIN SP-API enrichment (Approved + Storage);
+    { email_to: "a@x.com, b@x.com" } emails the finished xlsx to these
+    addresses once the job completes (validated eagerly here — a typo'd
+    address 400s immediately instead of only surfacing after a possibly
+    hours-long export finishes)."""
     body = body or {}
     upcs = body.get("upcs") or None
     focus = (body.get("focus_vendor") or "").strip() or None
@@ -124,10 +142,15 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     prep = body.get("prep_fee")
     prep = float(prep) if prep is not None else None      # None → build reads the setting
     live = bool(body.get("live", True))
+    email_to = _parse_export_emails(body.get("email_to") or "")
+    if email_to and not graph_mail.is_configured():
+        raise HTTPException(status_code=400,
+            detail="Email isn't configured on this server (.env OUTLOOK_*) — uncheck \"Email it when done\" or ask an admin to add it.")
     params = {
         "upcs": upcs, "focus_vendor": focus, "has_asin": has_asin,
         "only_available": only_available, "apply_filters": apply_filters,
         "populate_keepa": populate_keepa, "prep_fee": prep, "live": live,
+        "email_to": email_to,
     }
     job_id, filename = _launch_export(params)
     return {"job_id": job_id, "filename": filename}
@@ -146,12 +169,13 @@ def _launch_export(params: dict) -> tuple[str, str]:
     prep = params.get("prep_fee")
     prep = float(prep) if prep is not None else None
     live = bool(params.get("live", True))
+    email_to = params.get("email_to") or []
 
     job_id = uuid.uuid4().hex[:12]
     filename = vo_tpl.export_filename(focus)              # increment the per-vendor/day seq once
     job = {"status": "running", "phase": "pulling Amazon data", "done": 0,
            "total": 0, "blob": None, "error": None, "started": time.time(),
-           "completed_at": None,
+           "completed_at": None, "email_to": email_to, "email_sent": False, "email_error": None,
            "phase_started": time.time(), "filename": filename, "cancel": False}
     with _AJOBS_LOCK:
         _ANALYTICS_JOBS[job_id] = job
@@ -170,6 +194,22 @@ def _launch_export(params: dict) -> tuple[str, str]:
                 populate_keepa=populate_keepa,
                 on_progress=_progress, should_cancel=lambda: job["cancel"])
             job["phase"], job["status"] = "done", "complete"
+            if email_to:
+                # Email failure must never undo an already-successful export —
+                # the file is still there to download either way, this is a
+                # best-effort add-on, not the primary deliverable.
+                try:
+                    scope = f"vendor: {focus}" if focus else "the whole desk"
+                    subject = f"Offer Analytics export — {filename.rsplit('.', 1)[0]}"
+                    body_html = (
+                        f"<p>Attached is the Offer Analytics export you requested "
+                        f"(scope: <b>{scope}</b>).</p>"
+                    )
+                    graph_mail.send_mail(email_to, subject, body_html, attachments=[(filename, job["blob"])])
+                    job["email_sent"] = True
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("[analytics-export] email send failed")
+                    job["email_error"] = str(exc)[:300]
         except vo_tpl.ExportCancelled:
             job["status"], job["phase"] = "cancelled", "cancelled"
         except Exception as exc:  # noqa: BLE001
@@ -219,7 +259,9 @@ async def analytics_export_status(job_id: str) -> dict:
         el = time.time() - job.get("phase_started", job["started"])   # ETA within the current phase
         eta = max(0, round(el / job["done"] * (job["total"] - job["done"])))
     return {"status": job["status"], "phase": job["phase"], "done": job["done"],
-            "total": job["total"], "eta_seconds": eta, "error": job["error"]}
+            "total": job["total"], "eta_seconds": eta, "error": job["error"],
+            "email_to": job.get("email_to") or [], "email_sent": job.get("email_sent", False),
+            "email_error": job.get("email_error")}
 
 
 @router.get("/vendor-offers/analytics-export/jobs/{job_id}/download")
