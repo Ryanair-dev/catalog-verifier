@@ -692,20 +692,21 @@
       } catch { /* best-effort status line */ }
     }
 
+    const refreshIconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
     card.innerHTML = `
-      <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Status</div>
-      ${statusHtml}
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="btn btn-secondary text-xs" data-act="check-now" data-tool="${tool.tool}">Refresh</button>
-        <span class="auto-save-feedback" style="font-size:11px;"></span>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Status</div>
+        <button class="icon-btn" data-act="check-now" data-tool="${tool.tool}" title="Refresh" style="width:28px;height:28px;flex:none;">${refreshIconSvg}</button>
       </div>
+      ${statusHtml}
+      <span class="auto-save-feedback" style="font-size:11px;"></span>
     `;
 
     const checkBtn = card.querySelector('[data-act="check-now"]');
     if (checkBtn) {
       checkBtn.addEventListener("click", async () => {
         checkBtn.disabled = true;
-        checkBtn.textContent = "Refreshing…";
+        checkBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1.2s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>`;
         try {
           const r = await api("/api/po-analytics/automation/check-now", { method: "POST" });
           showToast(`Checked ${r.checked} items — ${r.due} due, ${r.sent} sent${r.errors.length ? `, ${r.errors.length} errored` : ""}.`,
@@ -714,7 +715,7 @@
           showToast(`Check failed: ${err.message || err}`, "error");
         } finally {
           checkBtn.disabled = false;
-          checkBtn.textContent = "Refresh";
+          checkBtn.innerHTML = refreshIconSvg;
           loadAutomationSettings();
           _refreshPoaLists();
         }
@@ -8817,20 +8818,6 @@
   // split into two lists: not yet sent (Awaiting Analysis) and already sent
   // (Archive, with a re-download link to the exact report that went out).
 
-  function _poaRowLine(r) {
-    const bits = [];
-    if (r.last_eta) bits.push(`ETA ${r.last_eta}`);
-    if (r.status) bits.push(r.status);
-    return bits.join(" · ");
-  }
-
-  function _poaRecipientsLine(r) {
-    const list = (r.recipients || []).join(", ");
-    if (!list) return `<span style="color:#b45309;">no recipients configured</span>`;
-    const tag = r.recipients_override ? "" : " (default)";
-    return `<span style="color:#6b7480;">→ ${list}${tag}</span>`;
-  }
-
   async function _refreshPoaLists() {
     const awaitEl = $("#poa-awaiting-list");
     const archEl = $("#poa-archive-list");
@@ -8902,12 +8889,27 @@
         archEl.innerHTML = "";
         for (const r of sent) {
           const row = document.createElement("div");
+          row.className = "has-tooltip";
           row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;flex-wrap:wrap;";
-          const line = _poaRowLine(r);
-          const sentDate = (r.sent_at || "").slice(0, 10);
+          // Compact per the user's spec: PO#, date sent (M/D/Y), recipient
+          // count, and an icon-only download button -- who the recipients
+          // were + the PO's own Monday status (e.g. "Invoice Uploaded")
+          // only show up on hover, via the same tooltip pattern Awaiting
+          // Analysis already uses.
+          const sentIso = (r.sent_at || "").slice(0, 10);
+          const dp = sentIso.split("-");
+          const dateTxt = dp.length === 3 ? `${parseInt(dp[1], 10)}/${parseInt(dp[2], 10)}/${dp[0]}` : (sentIso || "—");
+          const nRecip = (r.recipients || []).length;
+          const tipLines = [
+            `Recipients: ${(r.recipients || []).join(", ") || "—"}`,
+            `Status: ${r.status || "—"}`,
+          ];
+          row.setAttribute("data-tooltip", tipLines.join("\n"));
           row.innerHTML = `
-            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${line ? " · " + line : ""} · <span style="color:var(--green-500,#16a34a);">sent ${sentDate}</span> · ${_poaRecipientsLine(r)}</span>
-            <button class="btn btn-secondary text-xs" data-po="${r.po_number}" style="flex:none;">Download</button>
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b> — ${dateTxt} — ${nRecip} recipient${nRecip === 1 ? "" : "s"}</span>
+            <button class="icon-btn" data-po="${r.po_number}" title="Download report" style="width:26px;height:26px;flex:none;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16"/></svg>
+            </button>
           `;
           row.querySelector("button").addEventListener("click", async (e) => {
             const po = e.currentTarget.dataset.po;
@@ -8949,6 +8951,16 @@
   let _poaKnownRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
   let _poaSelectedRecipients = [];
   let _poaRecipDropdownEl = null;   // the floating popup; only exists in the DOM while open
+
+  // The trigger button's label now shows the COUNT of chosen recipients
+  // (reverses an earlier, deliberately-static-label decision) so it's
+  // visible without opening the popup.
+  function _updatePoaRecipLabel() {
+    const el = $("#poa-watch-recip-label");
+    if (!el) return;
+    const n = _poaSelectedRecipients.length;
+    el.textContent = n > 0 ? `${n} recipient${n === 1 ? "" : "s"} chosen` : "Choose recipient";
+  }
 
   function _onPoaRecipOutsideClick(e) {
     const trigger = $("#poa-watch-recip-btn");
@@ -9000,6 +9012,7 @@
           ? _poaSelectedRecipients.filter(n => n !== name)
           : [..._poaSelectedRecipients, name];
         _renderPoaRecipDropdownList();
+        _updatePoaRecipLabel();
       });
       list.appendChild(row);
     }
@@ -9047,6 +9060,7 @@
         _poaSelectedRecipients.push(name);
       }
       _renderPoaRecipDropdownList();
+      _updatePoaRecipLabel();
       close();
     }
     function onKey(e) {
@@ -9108,6 +9122,7 @@
       });
       input.value = "";
       _poaSelectedRecipients = [];   // nothing pre-chosen for the next PO — choose fresh each time
+      _updatePoaRecipLabel();
       _closePoaRecipDropdown();
       showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${sentCount} recipient(s).`, r.added ? "success" : "info");
       await _refreshPoaLists();

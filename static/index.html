@@ -1957,6 +1957,11 @@
 
     <div id="tools-tab-po" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
 
+      <!-- ===== Status — watched/sent counts + a manual refresh. Pinned to the -->
+      <!-- top per user request. Default/tool-wide recipients were removed -->
+      <!-- (2026-10-15) — every Add-PO submission now requires its own. -->
+      <div id="poa-automation-card"></div>
+
       <!-- ===== Analyze a PO (on-demand): runs right now, independent of the -->
       <!-- day-before-ETA automation below. -->
       <div class="card" style="padding:16px;">
@@ -1992,11 +1997,6 @@
         </div>
         <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;">Add</button>
       </div>
-
-      <!-- ===== Status — watched/sent counts + a manual refresh. Default/ -->
-      <!-- tool-wide recipients were removed (2026-10-15) — every Add-PO -->
-      <!-- submission now requires its own recipients. -->
-      <div id="poa-automation-card"></div>
 
       <!-- ===== Awaiting Analysis — PO # + vendor; hover a row for the full -->
       <!-- detail (description of goods, amount, recipients). -->
