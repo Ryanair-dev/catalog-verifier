@@ -8222,52 +8222,62 @@
   }
 
   function _rptPoPnlRowHtml(po, idx) {
-    const brandsTxt = (po.brands || []).join(", ") || "—";
+    const brands = po.brands || [];
+    const brandsHtml = brands.length
+      ? brands.map(b => `<span class="rpt-brand-pill">${escapeHtml(b)}</span>`).join("")
+      : `<span style="color:#cbd5e1;">—</span>`;
     const pct = Math.round((po.pct_sold || 0) * 100);
     return `
-      <tr class="rpt-po-row" data-idx="${idx}" style="border-bottom:1px solid #f1f5f9;cursor:pointer;">
-        <td style="padding:7px 4px;color:#94a3b8;"><span class="rpt-po-caret" style="display:inline-block;transition:transform 120ms;">▸</span></td>
-        <td style="padding:7px 8px;font-weight:600;color:#1e293b;">${po.po_number}</td>
-        <td style="padding:7px 8px;color:#374151;">${escapeHtml(po.vendor || "—")}</td>
-        <td style="padding:7px 8px;color:#6b7480;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(brandsTxt)}">${escapeHtml(brandsTxt)}</td>
-        <td style="padding:7px 8px;color:#6b7480;">${po.received_date || "—"}</td>
-        <td style="padding:7px 8px;text-align:right;">${_fmtInt(po.qty_received)}</td>
-        <td style="padding:7px 8px;text-align:right;">${_fmtInt(po.sold_qty)}</td>
-        <td style="padding:7px 8px;text-align:right;${po.left_qty > 0 ? "color:#b45309;font-weight:600;" : ""}">${_fmtInt(po.left_qty)}</td>
-        <td style="padding:7px 8px;text-align:right;">${pct}%</td>
-        <td style="padding:7px 8px;text-align:right;">${_fmtUsd0(po.bought_cost)}</td>
-        <td style="padding:7px 8px;text-align:right;color:#16a34a;">${_fmtUsd0(po.sold_revenue)}</td>
-        <td style="padding:7px 8px;text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
-        <td style="padding:7px 8px;text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
+      <tr class="rpt-po-row" data-idx="${idx}">
+        <td><span class="rpt-caret">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </span></td>
+        <td style="font-weight:600;color:#1e293b;">${po.po_number}</td>
+        <td style="color:#374151;">${escapeHtml(po.vendor || "—")}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(brands.join(", "))}">${brandsHtml}</td>
+        <td style="color:#6b7480;">${po.received_date || "—"}</td>
+        <td style="text-align:right;">${_fmtInt(po.qty_received)}</td>
+        <td style="text-align:right;">${_fmtInt(po.sold_qty)}</td>
+        <td style="text-align:right;${po.left_qty > 0 ? "color:#b45309;font-weight:600;" : ""}">${_fmtInt(po.left_qty)}</td>
+        <td style="text-align:right;">
+          <div class="rpt-pct-wrap">
+            <span class="rpt-pct-track"><span class="rpt-pct-fill" style="width:${Math.min(100, Math.max(0, pct))}%;"></span></span>
+            <span class="rpt-pct-text">${pct}%</span>
+          </div>
+        </td>
+        <td style="text-align:right;">${_fmtUsd0(po.bought_cost)}</td>
+        <td style="text-align:right;color:#16a34a;">${_fmtUsd0(po.sold_revenue)}</td>
+        <td style="text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
+        <td style="text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
       </tr>
       <tr class="rpt-po-detail hidden" data-idx="${idx}">
         <td colspan="13" style="padding:0;">
-          <div style="padding:8px 16px 14px 34px;background:#f8fafc;">
-            <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+          <div class="rpt-detail-wrap">
+            <table class="rpt-detail-table">
               <thead>
-                <tr style="text-align:left;color:#94a3b8;">
-                  <th style="padding:4px 6px;">SKU</th><th style="padding:4px 6px;">Brand</th>
-                  <th style="padding:4px 6px;">ASIN</th>
-                  <th style="padding:4px 6px;text-align:right;">Qty Bought</th>
-                  <th style="padding:4px 6px;text-align:right;">Qty Sold</th>
-                  <th style="padding:4px 6px;text-align:right;">Qty Left</th>
-                  <th style="padding:4px 6px;text-align:right;">Bought $</th>
-                  <th style="padding:4px 6px;text-align:right;">Sold $</th>
-                  <th style="padding:4px 6px;text-align:right;">Left $</th>
+                <tr>
+                  <th>SKU</th><th>Brand</th>
+                  <th>ASIN</th>
+                  <th style="text-align:right;">Qty Bought</th>
+                  <th style="text-align:right;">Qty Sold</th>
+                  <th style="text-align:right;">Qty Left</th>
+                  <th style="text-align:right;">Bought $</th>
+                  <th style="text-align:right;">Sold $</th>
+                  <th style="text-align:right;">Left $</th>
                 </tr>
               </thead>
               <tbody>
                 ${(po.items || []).map(it => `
                   <tr>
-                    <td style="padding:3px 6px;font-family:monospace;">${escapeHtml(it.product_id)}</td>
-                    <td style="padding:3px 6px;">${escapeHtml(it.brand || "—")}</td>
-                    <td style="padding:3px 6px;font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.qty_received)}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.sold_qty)}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtInt(it.left_qty)}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
-                    <td style="padding:3px 6px;text-align:right;">${_fmtUsd2(it.left_value)}</td>
+                    <td style="font-family:monospace;">${escapeHtml(it.product_id)}</td>
+                    <td>${escapeHtml(it.brand || "—")}</td>
+                    <td style="font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
+                    <td style="text-align:right;">${_fmtInt(it.qty_received)}</td>
+                    <td style="text-align:right;">${_fmtInt(it.sold_qty)}</td>
+                    <td style="text-align:right;">${_fmtInt(it.left_qty)}</td>
+                    <td style="text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
+                    <td style="text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
+                    <td style="text-align:right;">${_fmtUsd2(it.left_value)}</td>
                   </tr>`).join("")}
               </tbody>
             </table>
@@ -8279,7 +8289,9 @@
   async function _loadReportsPoPnl(refresh) {
     const tbody = $("#rpt-po-pnl-tbody");
     const empty = $("#rpt-po-pnl-empty");
+    const emptyText = $("#rpt-po-pnl-empty-text");
     const loading = $("#rpt-po-pnl-loading");
+    const refreshBtn = $("#rpt-po-pnl-refresh");
     if (!tbody) return;
     const params = new URLSearchParams({
       vendor: $("#rpt-po-pnl-vendor")?.value || "",
@@ -8290,6 +8302,7 @@
       refresh: refresh ? "true" : "false",
     });
     loading?.classList.remove("hidden");
+    if (refresh) refreshBtn?.classList.add("spinning");
     try {
       const j = await api(`/api/reports/po-pnl?${params.toString()}`);
       const pos = j.pos || [];
@@ -8303,7 +8316,7 @@
       if (!pos.length) {
         tbody.innerHTML = "";
         empty?.classList.remove("hidden");
-        if (empty) empty.textContent = "No POs match these filters.";
+        if (emptyText) emptyText.textContent = "No POs match these filters.";
       } else {
         empty?.classList.add("hidden");
         tbody.innerHTML = pos.map((po, i) => _rptPoPnlRowHtml(po, i)).join("");
@@ -8311,8 +8324,9 @@
           row.addEventListener("click", () => {
             const idx = row.dataset.idx;
             const detail = tbody.querySelector(`.rpt-po-detail[data-idx="${idx}"]`);
-            const caret = row.querySelector(".rpt-po-caret");
+            const caret = row.querySelector(".rpt-caret");
             const nowHidden = detail?.classList.toggle("hidden");
+            row.classList.toggle("rpt-row-open", !nowHidden);
             if (caret) caret.style.transform = nowHidden ? "" : "rotate(90deg)";
           });
         });
@@ -8320,9 +8334,10 @@
     } catch (e) {
       tbody.innerHTML = "";
       empty?.classList.remove("hidden");
-      if (empty) empty.textContent = "Couldn't load: " + (e.message || e);
+      if (emptyText) emptyText.textContent = "Couldn't load: " + (e.message || e);
     } finally {
       loading?.classList.add("hidden");
+      refreshBtn?.classList.remove("spinning");
     }
   }
 
@@ -8336,11 +8351,18 @@
   }
   $("#rpt-po-pnl-po")?.addEventListener("input", _rptPoPnlDebouncedLoad);
   $("#rpt-po-pnl-item")?.addEventListener("input", _rptPoPnlDebouncedLoad);
-  $("#rpt-po-pnl-bucket-archive")?.addEventListener("change", () => {
-    const archiveOn = $("#rpt-po-pnl-bucket-archive")?.checked;
-    const lblA = $("#rpt-po-pnl-bucket-label-active"), lblB = $("#rpt-po-pnl-bucket-label-archive");
-    if (lblA) lblA.style.color = archiveOn ? "#94a3b8" : "#1e293b";
-    if (lblB) lblB.style.color = archiveOn ? "#1e293b" : "#94a3b8";
+  function _rptSetBucket(bucket) {
+    const cb = $("#rpt-po-pnl-bucket-archive");
+    if (cb) cb.checked = bucket === "archive";
+    $("#rpt-po-pnl-bucket-btn-active")?.classList.toggle("active", bucket === "active");
+    $("#rpt-po-pnl-bucket-btn-archive")?.classList.toggle("active", bucket === "archive");
+  }
+  $("#rpt-po-pnl-bucket-btn-active")?.addEventListener("click", () => {
+    _rptSetBucket("active");
+    _loadReportsPoPnl();
+  });
+  $("#rpt-po-pnl-bucket-btn-archive")?.addEventListener("click", () => {
+    _rptSetBucket("archive");
     _loadReportsPoPnl();
   });
 

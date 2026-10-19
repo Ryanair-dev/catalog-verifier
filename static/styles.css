@@ -623,6 +623,139 @@ html, body {
 }
 .tools-tab-bar .lib-type-tab svg, .reports-tab-bar .lib-type-tab svg { flex: none; }
 
+/* ---------- Reports / PO P&L dashboard (2026-10-19, UI/UX pass) ---------- */
+
+.rpt-scope-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--purple-50, #f4f0ff); border: 1px solid var(--purple-100, #ece6fb);
+  color: var(--navy-800); font-size: 12px; padding: 8px 14px; border-radius: 999px;
+}
+.rpt-scope-chip b { color: var(--purple-700, #5b3dd1); font-weight: 700; }
+.rpt-scope-chip svg { flex: none; color: var(--purple-500); }
+
+.rpt-filter-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  padding: 16px 18px;
+}
+.rpt-field { flex: 1; min-width: 150px; position: relative; }
+.rpt-field label {
+  display: block; font-size: 11px; font-weight: 700; color: var(--grey-500);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px;
+}
+.rpt-field .rpt-field-icon {
+  position: absolute; left: 10px; top: 32px; color: var(--grey-400, #a3aab8); pointer-events: none;
+}
+.rpt-field input, .rpt-field select {
+  width: 100%; box-sizing: border-box; font-size: 13px; padding: 9px 10px 9px 32px;
+  border: 1.5px solid var(--grey-100); border-radius: 10px; outline: none; color: var(--navy-800);
+  background: #fff; transition: border-color 150ms, box-shadow 150ms;
+}
+.rpt-field input:focus, .rpt-field select:focus {
+  border-color: var(--purple-400, #8b76e5); box-shadow: 0 0 0 3px var(--purple-50, #f4f0ff);
+}
+.rpt-field input::placeholder { color: var(--grey-400, #a3aab8); }
+
+.rpt-refresh-btn {
+  width: 38px; height: 38px; border-radius: 10px; flex: none;
+  background: var(--purple-50, #f4f0ff); color: var(--purple-600, #5b3dd1);
+  border: 1.5px solid var(--purple-100, #ece6fb);
+}
+.rpt-refresh-btn:hover { background: var(--purple-100, #ece6fb); color: var(--purple-700); }
+.rpt-refresh-btn.spinning svg { animation: spin 0.9s linear infinite; }
+
+/* Active / Archive — a real segmented view switch (two distinct views), not
+   a feature on/off toggle, so it gets the same pill-segment treatment as
+   the app's other mode switches (.seg-radio) rather than .toggle-pill. */
+.rpt-seg {
+  display: inline-flex; background: var(--grey-100); padding: 4px; border-radius: 12px;
+  font-size: 12.5px; font-weight: 600;
+}
+.rpt-seg button {
+  padding: 7px 16px; border-radius: 9px; color: var(--grey-500);
+  transition: all 150ms; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: none;
+}
+.rpt-seg button.active {
+  background: #fff; color: var(--navy-800); box-shadow: var(--shadow-card);
+}
+.rpt-seg button .rpt-seg-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--grey-400, #a3aab8);
+}
+.rpt-seg button.active .rpt-seg-dot { background: var(--teal-500); }
+.rpt-seg button[data-bucket="archive"].active .rpt-seg-dot { background: var(--purple-500); }
+
+.rpt-loading {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--grey-500); margin-left: auto;
+}
+.rpt-loading svg { animation: spin 0.9s linear infinite; }
+
+/* Summary stat tiles — small colored icon badge above the existing
+   .stat-label/.stat-value typography, reusing that component rather than
+   inventing new type scales. */
+.rpt-stat-icon {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-bottom: 10px;
+}
+.rpt-stat-icon.rpt-i-count  { background: var(--grey-100); color: var(--grey-500); }
+.rpt-stat-icon.rpt-i-bought { background: #eef2ff; color: #4f46e5; }
+.rpt-stat-icon.rpt-i-sold   { background: var(--teal-100, #d9f6f4); color: var(--teal-600, #0f8a8d); }
+.rpt-stat-icon.rpt-i-profit { background: var(--purple-50, #f4f0ff); color: var(--purple-600, #5b3dd1); }
+.rpt-stat-icon.rpt-i-left   { background: #fef3e2; color: #b45309; }
+
+/* Table card */
+.rpt-table-card {
+  border: 1px solid var(--grey-100); border-radius: 16px; overflow: hidden;
+  box-shadow: var(--shadow-card); background: #fff;
+}
+.rpt-table-scroll { overflow-x: auto; }
+.rpt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rpt-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; color: var(--grey-500); font-weight: 700; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .03em;
+  background: #fbfaff; border-bottom: 1px solid var(--grey-100);
+  padding: 11px 10px; white-space: nowrap;
+}
+.rpt-table tbody tr.rpt-po-row {
+  border-bottom: 1px solid var(--grey-100); cursor: pointer; transition: background 120ms;
+}
+.rpt-table tbody tr.rpt-po-row:hover { background: var(--purple-50, #f4f0ff); }
+.rpt-table tbody tr.rpt-po-row.rpt-row-open { background: #fbfaff; }
+.rpt-table td { padding: 10px; vertical-align: middle; }
+.rpt-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 6px; color: var(--grey-400, #a3aab8);
+  transition: transform 160ms, background 120ms, color 120ms;
+}
+.rpt-po-row:hover .rpt-caret { background: #fff; color: var(--purple-600, #5b3dd1); }
+
+.rpt-brand-pill {
+  display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px;
+  border-radius: 999px; background: var(--grey-100); color: var(--grey-600, #4b5563);
+  margin: 1px 3px 1px 0; white-space: nowrap;
+}
+
+.rpt-pct-wrap { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.rpt-pct-track {
+  width: 46px; height: 6px; border-radius: 999px; background: var(--grey-100); overflow: hidden; flex: none;
+}
+.rpt-pct-fill { height: 100%; border-radius: 999px; background: var(--teal-500); transition: width 300ms ease; }
+.rpt-pct-text { font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+
+.rpt-detail-wrap { padding: 4px 20px 18px 46px; background: #fbfaff; }
+.rpt-detail-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.rpt-detail-table th {
+  text-align: left; color: var(--grey-500); font-weight: 700; font-size: 10px;
+  text-transform: uppercase; letter-spacing: .03em; padding: 4px 8px;
+}
+.rpt-detail-table td { padding: 5px 8px; color: var(--navy-800); }
+.rpt-detail-table tr:nth-child(odd) td { background: #fff; }
+.rpt-detail-table tr:nth-child(even) td { background: #f8fafc; }
+.rpt-detail-table tr td:first-child, .rpt-detail-table tr th:first-child { border-radius: 8px 0 0 8px; }
+.rpt-detail-table tr td:last-child, .rpt-detail-table tr th:last-child { border-radius: 0 8px 8px 0; }
+
 /* Dribbble-style "scrollbar tucked inside a dropdown" look for the Toolbox's
    own horizontal tab scroller specifically — NOT the dropdown/popup
    component, just borrowing that same inset-pill scrollbar treatment for
