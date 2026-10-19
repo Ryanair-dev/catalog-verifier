@@ -36,7 +36,7 @@ All SQLite I/O for the whole app lives in `services/database.py` — a single fi
 | `vo_vendors` / `vo_products` / `vo_asin_listings` / `vo_vendor_offers` | Vendor Offers / Price Desk. See `docs/features/vendor_offers.md`. |
 | `sku_exports` | Create SKUs export log (incl. `files_blob` for re-export). See `docs/features/create_skus.md`. |
 | `background_jobs` | Shared "survive a restart" shadow table for in-memory background jobs. See `docs/infra/job_persistence.md`. |
-| `storage_fee_cache` | 60-day TTL cache of computed FBA storage fees per ASIN. See `docs/features/toolbox.md`. |
+| `storage_fee_cache` | 90-day TTL cache of computed FBA storage fees per ASIN (was 60 days — extended 2026-10-19). See `docs/features/toolbox.md`. |
 | `keepa_product_cache` | 2-day TTL cache of Keepa live `/product` results per ASIN. See `docs/infra/keepa.md`. |
 | `eligibility_cache` | 7-day TTL cache of SP-API eligibility status per ASIN — opt-in, used only by `enrich_asins` (Vendor Offers/PO Analytics/Seller Analytics). See `docs/infra/sp_api.md`. |
 | `health_check_runs` / `health_check_results` | Weekly catalog health-check job (Eligibility + DOG over the Pair Library). See `docs/features/pair_manager.md`. |

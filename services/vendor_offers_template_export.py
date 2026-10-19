@@ -375,10 +375,16 @@ def _storage_est(h, l, w) -> float | None:
 def enrich_asins(asins, on_progress=None, should_cancel=None,
                   check_generic: bool = False) -> tuple[dict, dict, dict, dict]:
     """Live per-ASIN SP-API enrichment → ({asin: eligibility}, {asin: storage_fee_offpeak},
-    {asin: generic_status}, {asin: storage_fee_peak}). getListingsRestrictions (Approved)
-    runs for every ASIN; getCatalogItem (dims → storage fee off-peak AND Q4 peak, 404=DOG)
-    is SKIPPED for ASINs whose storage is already cached (bi-monthly TTL), which removes
-    most of the getCatalogItem throttling on repeat exports.
+    {asin: generic_status}, {asin: storage_fee_peak}). Eligibility (getListingsRestrictions)
+    is checked FIRST for every ASIN (not cached or live-checked); getCatalogItem (dims →
+    storage fee off-peak AND Q4 peak) only runs when the ASIN is confirmed NOT dead AND its
+    storage isn't already cached (90-day TTL) — a DOG ASIN (determined via classify()'s own
+    `dog` field, same signal the restrictions check already produces) never needs
+    getCatalogItem at all, since there are no dimensions to compute for a delisted product.
+    This ordering (2026-10-19, eligibility before catalog — was the reverse) both removes a
+    redundant getCatalogItem-based DOG check that duplicated what eligibility already told
+    us, and shifts load off getCatalogItem's much tighter rate limit (2 req/sec vs
+    getListingsRestrictions' 5 req/sec) onto the endpoint actually least likely to 429.
 
     Storage is cached via the SAME shared `storage_fee_cache` table the Toolbox's
     ASIN-lookup tool uses (services/storage_fees.py storage_cache_get/put, which persists
@@ -394,9 +400,10 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     (2026-10-19: "cache eligibility for 1 week") — this is scoped to THIS
     pipeline only; the Toolbox's own standalone eligibility checker stays
     fully live, unaffected, by design (see that cache helper's own docstring).
-    A fresh DOG finding from the catalog call above always overrides a stale
-    cached eligibility value, and every newly-determined (or corrected)
-    eligibility result is written back to the cache, refreshing it.
+    A fresh DOG finding from the catalog call (the defense-in-depth fallback
+    described above) always overrides whatever eligibility said, and every
+    newly-determined (or corrected) eligibility result is written back to the
+    cache, refreshing it.
 
     When check_generic=True, an additional Generic-ASIN classification
     (services.generic_check.classify_generic -- one more catalog call + a non-persisting
@@ -444,7 +451,31 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
         e = s = s_peak = g = status = None
         elig_from_cache = False
         have = asin in cached
-        if not have:                                         # only hit the catalog when not cached
+
+        # Eligibility FIRST, not the catalog -- two reasons (per user question
+        # 2026-10-19, "don't we find dog asins when we do the eligibility
+        # check?"): (1) classify()'s own `dog` field (derived from Amazon's
+        # ASIN_NOT_FOUND reasonCode -- confirmed live, 2026-09-04) is a real,
+        # already-working DOG signal that this function used to ignore
+        # entirely, instead paying for a SEPARATE getCatalogItem call just to
+        # find the exact same thing via a 404; (2) getListingsRestrictions has
+        # a looser rate limit than getCatalogItem (5 req/sec vs 2 req/sec --
+        # the tighter one is what's actually been producing 429s), so
+        # resolving DOG here first means a dead ASIN can skip getCatalogItem
+        # entirely -- no dimensions are needed for a product that no longer
+        # exists in the catalog.
+        cached_status = elig_cached.get(asin)
+        if cached_status is not None:
+            e = cached_status
+            elig_from_cache = True
+        else:
+            try:
+                cls = classify(asin, rapi.get_restrictions(asin, seller))
+                e = "DOG" if cls.get("dog") else cls["status"]
+            except Exception:  # noqa: BLE001
+                pass
+
+        if e != "DOG" and not have:   # only hit the catalog when genuinely needed: live + dims not cached
             try:
                 raw = capi.get_by_asin(asin, included_data="attributes,summaries")
                 dims = extract_dimensions(raw.get("attributes") or {})
@@ -453,20 +484,14 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                 status = "ok" if s is not None else "no_dimensions"
             except requests.HTTPError as ex:
                 if getattr(ex.response, "status_code", None) == 404:
+                    # Defense-in-depth fallback: eligibility said "not DOG" (or
+                    # wasn't checked), but the catalog itself 404s -- this is a
+                    # fresher, more authoritative signal and always overrides.
                     e = "DOG"
                     status = "dog"
             except Exception:  # noqa: BLE001
                 status = "error"
-        if e != "DOG":                                        # a fresh DOG (above) always wins over a stale cache entry
-            cached_status = elig_cached.get(asin)
-            if cached_status is not None:
-                e = cached_status
-                elig_from_cache = True
-            else:
-                try:
-                    e = classify(asin, rapi.get_restrictions(asin, seller))["status"]
-                except Exception:  # noqa: BLE001
-                    pass
+
         if check_generic and e != "DOG":
             try:
                 gj = classify_generic(asin)

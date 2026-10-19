@@ -220,17 +220,25 @@ def calc_storage_fee(
 
 
 # --------------------------------------------------------------------------- #
-# Storage-result cache (bi-monthly / 60-day TTL)                              #
+# Storage-result cache (90-day TTL, ~3 months)                                #
 #                                                                             #
-# Dimensions + storage fee are stable for weeks, so the ASIN-lookup Tool      #
-# caches the FULL per-ASIN result (fees, dims, tier, DOG) keyed by ASIN and   #
-# only re-fetches getCatalogItem when a row is missing or older than the TTL. #
-# Shares the `storage_fee_cache` table with the Offer-Analytics export (which #
-# reads the `storage_fee` column); the extra `data_json` column holds the     #
-# full result the Tool needs. Eligibility is NEVER cached here — it stays live.#
+# A product's physical package dimensions essentially never change once      #
+# listed (barring a rare packaging redesign), so there's little reason to    #
+# re-fetch getCatalogItem for an ASIN we've already measured recently -- per #
+# user request (2026-10-19): "do we actually need to always look out for     #
+# dimensions? ... store them for like 2-3 months" (was 60 days). The         #
+# ASIN-lookup Tool caches the FULL per-ASIN result (fees, dims, tier, DOG)    #
+# keyed by ASIN and only re-fetches getCatalogItem when a row is missing or   #
+# older than the TTL. Shares the `storage_fee_cache` table with the          #
+# Offer-Analytics export (which reads the `storage_fee` column); the extra   #
+# `data_json` column holds the full result the Tool needs. Eligibility is    #
+# NEVER cached in THIS table — it stays live here; the separate, shorter     #
+# (7-day) `eligibility_cache` table in services/restrictions.py is an        #
+# unrelated, opt-in cache used only by the Vendor Offers export pipeline —   #
+# see that module's own docstring.                                           #
 # --------------------------------------------------------------------------- #
 
-_STORAGE_TTL_DAYS = 60
+_STORAGE_TTL_DAYS = 90
 # statuses safe to cache — a live dims/DOG answer; transient errors are NOT cached
 _CACHEABLE_STATUSES = {"ok", "no_dimensions", "dog"}
 
