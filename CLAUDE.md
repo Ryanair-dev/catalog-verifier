@@ -23,7 +23,7 @@ This file is read automatically by Claude Code at the start of every session. It
 | [`po_analytics.md`](docs/features/po_analytics.md) | PO Analytics — on-demand + day-before-ETA-automated PO profitability reports |
 | [`offer_analytics.md`](docs/features/offer_analytics.md) | Offer Analysis (Analytics tab) — SP-API search/match/score pipeline, AI Check, Quick Search; the biggest doc, includes the full scoring-engine/pipeline/API-endpoint architecture |
 | [`brand_analytics.md`](docs/features/brand_analytics.md) | Brand Analytics — Keepa+SP-API brand/manufacturer ASIN discovery, AI Fill, category filtering |
-| [`seller_analytics.md`](docs/features/seller_analytics.md) | Seller Analytics — **placeholder, undocumented**; built after this restructure's source material ended |
+| [`seller_analytics.md`](docs/features/seller_analytics.md) | Seller Analytics — analyze a competitor's (or your own) full Amazon seller ASIN catalog in the Offer Analytics template format |
 | [`vendor_offers.md`](docs/features/vendor_offers.md) | Vendor Offers / Price Desk — cross-vendor buy-side price comparison + "Offer Analytics export" (NOT the same thing as `offer_analytics.md` — see that doc's own note on the naming collision) |
 | [`create_skus.md`](docs/features/create_skus.md) | Create SKUs — SellerCloud SKU generation + bulk-import file wizard |
 | [`pair_manager.md`](docs/features/pair_manager.md) | Pair Manager / Pair Library — manually-confirmed identifier→ASIN library, spreadsheet import/export, weekly catalog health-check job |
