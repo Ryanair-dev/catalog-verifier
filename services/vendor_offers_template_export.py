@@ -372,90 +372,74 @@ def _storage_est(h, l, w) -> float | None:
     return round(cubic_ft * 0.78, 2)
 
 
-_STORAGE_TTL_DAYS = 60   # bi-monthly: cached storage older than this is re-fetched
-
-
-def _storage_cache_get(asins) -> dict:
-    """{asin: storage_fee (may be None)} for entries cached within the TTL."""
-    cutoff = (dt.datetime.now() - dt.timedelta(days=_STORAGE_TTL_DAYS)).isoformat()
-    out: dict = {}
-    clean = sorted({a.strip().upper() for a in asins if a})
-    with database._connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS storage_fee_cache "
-                     "(asin TEXT PRIMARY KEY, storage_fee REAL, as_of TEXT)")
-        for i in range(0, len(clean), 400):
-            ch = clean[i:i + 400]
-            q = ",".join("?" * len(ch))
-            for asin, fee in conn.execute(
-                    f"SELECT asin, storage_fee FROM storage_fee_cache "
-                    f"WHERE as_of >= ? AND asin IN ({q})", [cutoff, *ch]):
-                out[asin] = fee
-    return out
-
-
-def _storage_cache_put(mapping: dict) -> None:
-    if not mapping:
-        return
-    now = dt.datetime.now().isoformat()
-    with database._LOCK, database._connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS storage_fee_cache "
-                     "(asin TEXT PRIMARY KEY, storage_fee REAL, as_of TEXT)")
-        conn.executemany(
-            "INSERT INTO storage_fee_cache(asin, storage_fee, as_of) VALUES(?,?,?) "
-            "ON CONFLICT(asin) DO UPDATE SET storage_fee=excluded.storage_fee, as_of=excluded.as_of",
-            [(a, fee, now) for a, fee in mapping.items()])
-
-
 def enrich_asins(asins, on_progress=None, should_cancel=None,
-                  check_generic: bool = False) -> tuple[dict, dict, dict]:
-    """Live per-ASIN SP-API enrichment → ({asin: eligibility}, {asin: storage_fee},
-    {asin: generic_status}). getListingsRestrictions (Approved) runs for every ASIN;
-    getCatalogItem (dims → storage fee, 404=DOG) is SKIPPED for ASINs whose storage
-    is already cached (bi-monthly TTL), which removes most of the getCatalogItem
-    throttling on repeat exports. When check_generic=True, an additional Generic-ASIN
-    classification (services.generic_check.classify_generic -- one more catalog call +
-    a non-persisting putListingsItem VALIDATION_PREVIEW per ASIN) runs alongside the
-    others in the same worker pool -- opt-in because it doubles the SP-API load per
-    ASIN; skipped for an ASIN already known DOG. 5 workers; failures skipped (that
-    cell falls back / stays blank)."""
+                  check_generic: bool = False) -> tuple[dict, dict, dict, dict]:
+    """Live per-ASIN SP-API enrichment → ({asin: eligibility}, {asin: storage_fee_offpeak},
+    {asin: generic_status}, {asin: storage_fee_peak}). getListingsRestrictions (Approved)
+    runs for every ASIN; getCatalogItem (dims → storage fee off-peak AND Q4 peak, 404=DOG)
+    is SKIPPED for ASINs whose storage is already cached (bi-monthly TTL), which removes
+    most of the getCatalogItem throttling on repeat exports.
+
+    Storage is cached via the SAME shared `storage_fee_cache` table the Toolbox's
+    ASIN-lookup tool uses (services/storage_fees.py storage_cache_get/put, which persists
+    the full result incl. both fees in a `data_json` column) -- this function used to keep
+    its OWN simpler cache that only ever wrote the off-peak figure, silently discarding
+    the peak value it had already computed on every live lookup (fixed 2026-10-19, per
+    user request: "let's store all the peak and non peak storage"). Sharing one cache also
+    means a Vendor-Offers export and a Toolbox storage check for the same ASIN now reuse
+    each other's work instead of each paying for their own getCatalogItem call.
+
+    When check_generic=True, an additional Generic-ASIN classification
+    (services.generic_check.classify_generic -- one more catalog call + a non-persisting
+    putListingsItem VALIDATION_PREVIEW per ASIN) runs alongside the others in the same
+    worker pool -- opt-in because it doubles the SP-API load per ASIN; skipped for an ASIN
+    already known DOG. 5 workers; failures skipped (that cell falls back / stays blank)."""
     import requests
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from services.spapi.client import get_catalog_api
     from services.spapi.config import load_sp_api_credentials, sp_api_configured
     from services.restrictions import classify, get_restrictions_api
-    from services.storage_fees import calc_storage_fee, extract_dimensions
+    from services.storage_fees import calc_storage_fee, extract_dimensions, storage_cache_get, storage_cache_put
     from services.generic_check import classify_generic
 
     elig: dict = {}
     generic: dict = {}
+    storage_peak: dict = {}
     uniq = sorted({a.strip().upper() for a in asins if a})
     if not uniq or not sp_api_configured():
         if on_progress:
             on_progress(0, 0)
-        return elig, {}, generic
+        return elig, {}, generic, storage_peak
 
-    cached = _storage_cache_get(uniq)                        # {asin: fee|None} within TTL
-    storage: dict = {a: f for a, f in cached.items() if f is not None}
-    to_cache: dict = {}
+    cached = storage_cache_get(uniq)                          # {asin: full result dict} within TTL
+    storage: dict = {}
+    for a, r in cached.items():
+        if r.get("fee_offpeak") is not None:
+            storage[a] = r["fee_offpeak"]
+        if r.get("fee_peak") is not None:
+            storage_peak[a] = r["fee_peak"]
+    to_cache: list[dict] = []
 
     seller = load_sp_api_credentials().seller_id
     rapi = get_restrictions_api()
     capi = get_catalog_api()
 
     def one(asin: str):
-        e = s = g = None
+        e = s = s_peak = g = status = None
         have = asin in cached
         if not have:                                         # only hit the catalog when not cached
             try:
                 raw = capi.get_by_asin(asin, included_data="attributes,summaries")
                 dims = extract_dimensions(raw.get("attributes") or {})
-                s, _peak = calc_storage_fee(dims["length_cm"], dims["width_cm"],
-                                            dims["height_cm"], dims["weight_g"])
+                s, s_peak = calc_storage_fee(dims["length_cm"], dims["width_cm"],
+                                             dims["height_cm"], dims["weight_g"])
+                status = "ok" if s is not None else "no_dimensions"
             except requests.HTTPError as ex:
                 if getattr(ex.response, "status_code", None) == 404:
                     e = "DOG"
+                    status = "dog"
             except Exception:  # noqa: BLE001
-                pass
+                status = "error"
         if e != "DOG":
             try:
                 e = classify(asin, rapi.get_restrictions(asin, seller))["status"]
@@ -469,7 +453,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                     e = "DOG"
             except Exception:  # noqa: BLE001
                 pass
-        return asin, e, s, have, g
+        return asin, e, s, s_peak, have, g, status
 
     done = 0
     with ThreadPoolExecutor(max_workers=5) as ex:
@@ -479,20 +463,23 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                 for fut in futs:
                     fut.cancel()
                 raise ExportCancelled()
-            a, e, s, have, g = f.result()
+            a, e, s, s_peak, have, g, status = f.result()
             if e is not None:
                 elig[a] = e
             if g is not None:
                 generic[a] = g
             if not have:
-                to_cache[a] = s                              # cache even None (avoids refetch)
+                if status in ("ok", "no_dimensions", "dog"):   # cache even a None fee (avoids refetch)
+                    to_cache.append({"asin": a, "status": status, "fee_offpeak": s, "fee_peak": s_peak})
                 if s is not None:
                     storage[a] = s
+                if s_peak is not None:
+                    storage_peak[a] = s_peak
             done += 1
             if on_progress:
                 on_progress(done, len(uniq))
-    _storage_cache_put(to_cache)
-    return elig, storage, generic
+    storage_cache_put(to_cache)
+    return elig, storage, generic, storage_peak
 
 
 # ── build ──────────────────────────────────────────────────────────────────
@@ -560,10 +547,75 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     chosen = {u: asins_for(u) for u in upc_list}                 # upc -> [asin, ...]
     chosen_asins = sorted({a for lst in chosen.values() for a in lst})
 
-    # LIVE Keepa /product for the chosen ASINs (NOT the stale Azure table).
-    _kp = (lambda d, t: on_progress(d, t, "Keepa live prices")) if on_progress else None
-    keepa = keepa_api.fetch_products(chosen_asins, on_progress=_kp,
-                                     should_cancel=should_cancel) if populate_keepa else {}
+    # Keepa (live /product pricing) and the per-ASIN SP-API enrichment (eligibility +
+    # storage fee, both off-peak and Q4 peak) hit two entirely DIFFERENT external
+    # services with their own independent rate limiters -- there's no reason they
+    # were ever run one after the other. Per user report (2026-10-19): "if I choose
+    # with keepa data - does it first find keepa data, and only then finds the
+    # storage and eligibility? because storage should be instant no?" -- confirmed
+    # that's exactly what the old code did (one call, then the other); now both run
+    # concurrently in their own threads, joined before building rows, while the
+    # (Azure-only, no Keepa/SP-API involved) SellerCloud/SellerSnap lookups run on
+    # this thread in the meantime -- three independent data sources overlapped
+    # instead of chained. Progress from both threads is combined into one running
+    # done/total so the job's own progress bar still reads sensibly.
+    import threading
+    _prog_lock = threading.Lock()
+    _prog = {"kd": 0, "kt": 0, "ed": 0, "et": 0}
+
+    def _combined_progress():
+        if not on_progress:
+            return
+        with _prog_lock:
+            kd, kt, ed, et = _prog["kd"], _prog["kt"], _prog["ed"], _prog["et"]
+        kd_open, ed_open = kt and kd < kt, et and ed < et
+        if kd_open and ed_open:
+            phase = "Keepa live prices + eligibility/storage"
+        elif kd_open:
+            phase = "Keepa live prices"
+        elif ed_open:
+            phase = "eligibility check"
+        else:
+            phase = "finishing"
+        on_progress(kd + ed, kt + et, phase)
+
+    def _kp(d, t):
+        with _prog_lock:
+            _prog["kd"], _prog["kt"] = d, t
+        _combined_progress()
+
+    def _ep(d, t):
+        with _prog_lock:
+            _prog["ed"], _prog["et"] = d, t
+        _combined_progress()
+
+    keepa_box: list = [{}]
+    elig_box: list = [({}, {}, {}, {})]
+    thread_errors: list = []
+
+    def _run_keepa():
+        try:
+            if populate_keepa:
+                keepa_box[0] = keepa_api.fetch_products(chosen_asins, on_progress=_kp,
+                                                         should_cancel=should_cancel)
+            else:
+                _kp(0, 0)
+        except Exception as exc:  # noqa: BLE001
+            thread_errors.append(exc)
+
+    def _run_elig():
+        try:
+            if live:
+                elig_box[0] = enrich_asins(chosen_asins, _ep, should_cancel, check_generic=apply_filters)
+            else:
+                _ep(0, 0)
+        except Exception as exc:  # noqa: BLE001
+            thread_errors.append(exc)
+
+    t_keepa = threading.Thread(target=_run_keepa, name="offer-export-keepa", daemon=True)
+    t_elig = threading.Thread(target=_run_elig, name="offer-export-elig", daemon=True)
+    t_keepa.start()
+    t_elig.start()
 
     amz_pack = _amz_pack_by_asin()
     elig_cache = _eligibility_by_asin()
@@ -576,11 +628,13 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     last_po = _last_po_by_sku(                                    # Last cost + Vendor (latest PO ≥ 2025)
         [v["main_sku"] for v in sku_by_asin.values() if v.get("main_sku")])
 
-    live_elig, live_storage, live_generic = ({}, {}, {})
-    if live:
-        _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
-        live_elig, live_storage, live_generic = enrich_asins(
-            chosen_asins, _ep, should_cancel, check_generic=apply_filters)
+    t_keepa.join()
+    t_elig.join()
+    if thread_errors:
+        raise thread_errors[0]
+
+    keepa = keepa_box[0]
+    live_elig, live_storage, live_generic, live_storage_peak = elig_box[0]
 
     def z(v):                                        # Keepa numeric: blank → 0
         f = _f(v)

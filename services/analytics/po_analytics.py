@@ -421,7 +421,10 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
     keepa = keepa_api.fetch_products(asins, on_progress=_kp, should_cancel=should_cancel)
 
     _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
-    live_elig, live_storage, live_generic = enrich_asins(asins, _ep, should_cancel, check_generic=True)
+    # enrich_asins now also returns a peak-storage dict (2026-10-19, shared cache
+    # fix) -- not used here yet, this report has no peak-storage column.
+    live_elig, live_storage, live_generic, _live_storage_peak = enrich_asins(
+        asins, _ep, should_cancel, check_generic=True)
 
     _dp = (lambda d, t: on_progress(d, t, "fetching dimensions")) if on_progress else None
     dims_by_asin = _fetch_dimensions(asins, _dp, should_cancel)

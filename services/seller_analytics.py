@@ -113,7 +113,9 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
     live_elig, live_storage, live_generic = ({}, {}, {})
     if live:
         _ep = (lambda d, t: on_progress(d, t, "eligibility check")) if on_progress else None
-        live_elig, live_storage, live_generic = enrich_asins(asins, _ep, should_cancel)
+        # enrich_asins now also returns a peak-storage dict (2026-10-19, shared
+        # cache fix) -- not used here yet, this report has no peak-storage column.
+        live_elig, live_storage, live_generic, _live_storage_peak = enrich_asins(asins, _ep, should_cancel)
 
     def z(v):
         fv = _f(v)
