@@ -8273,23 +8273,44 @@
     if (el) el.textContent = n > 0 ? `${n} brand${n === 1 ? "" : "s"}` : "";
   });
 
-  // Sample-size mode: fixed count vs percentage of the total Amazon ASINs
+  // Sample-size mode: one slider (default Percent) toggles between a fixed
+  // count and a percentage of the total Amazon ASINs, sharing ONE number
+  // box whose min/max/placeholder-ish default swap with the mode -- each
+  // mode remembers its own last-typed value via data- attributes so
+  // flipping the slider back and forth doesn't clobber what was typed.
   function _syncBrandCheckMode() {
     const pct = $("#brand-check-mode-pct")?.checked;
-    const cVal = $("#brand-check-count-val");
-    const pVal = $("#brand-check-pct-val");
-    if (cVal) { cVal.disabled = !!pct; cVal.style.background = pct ? "#f8fafc" : ""; }
-    if (pVal) { pVal.disabled = !pct; pVal.style.background = pct ? "" : "#f8fafc"; }
+    const val = $("#brand-check-sample-val");
+    const suf = $("#brand-check-mode-suffix");
+    const lblCount = $("#brand-check-mode-label-count");
+    const lblPct = $("#brand-check-mode-label-pct");
+    if (!val) return;
+    const newMode = pct ? "pct" : "count";
+    const oldMode = val.dataset.mode;
+    if (oldMode && oldMode !== newMode) val.dataset[oldMode] = val.value;
+    if (pct) {
+      val.min = "1"; val.max = "100";
+      val.value = val.dataset.pct || "10";
+      if (suf) suf.textContent = "% of each brand's live ASINs.";
+    } else {
+      val.min = "1"; val.max = "300";
+      val.value = val.dataset.count || "8";
+      if (suf) suf.textContent = "of each brand's live ASINs (capped at 300).";
+    }
+    val.dataset.mode = newMode;
+    if (lblCount) lblCount.style.color = pct ? "#94a3b8" : "#1e293b";
+    if (lblPct) lblPct.style.color = pct ? "#1e293b" : "#94a3b8";
   }
-  $("#brand-check-mode-count")?.addEventListener("change", _syncBrandCheckMode);
   $("#brand-check-mode-pct")?.addEventListener("change", _syncBrandCheckMode);
+  _syncBrandCheckMode();
 
   function _brandCheckParams() {
+    const val = $("#brand-check-sample-val");
     if ($("#brand-check-mode-pct")?.checked) {
-      const pct = parseFloat($("#brand-check-pct-val")?.value);
+      const pct = parseFloat(val?.value);
       return { sample_pct: Math.max(1, Math.min(100, isNaN(pct) ? 10 : pct)) };
     }
-    const n = parseInt($("#brand-check-count-val")?.value, 10);
+    const n = parseInt(val?.value, 10);
     return { sample_size: Math.max(1, Math.min(300, isNaN(n) ? 8 : n)) };
   }
 
@@ -8454,16 +8475,29 @@
   // ------------------------------------------------------------------------
   //  MPN Check
   // ------------------------------------------------------------------------
+  // Default is "one manufacturer for all"; sliding toggles ON the
+  // per-line/multi-manufacturer feature, which LOCKS (not hides) the
+  // single-manufacturer textbox since it's no longer the source of truth.
   function _syncMpnCheckMode() {
-    const oneMode = $("#mpn-check-mode-one")?.checked;
-    $("#mpn-check-one-wrap")?.classList.toggle("hidden", !oneMode);
+    const multiMode = $("#mpn-check-mode-multi")?.checked;
+    const oneMode = !multiMode;
+    const mfrInput = $("#mpn-check-one-mfr");
+    if (mfrInput) {
+      mfrInput.disabled = multiMode;
+      mfrInput.style.background = multiMode ? "#f8fafc" : "";
+      mfrInput.style.color = multiMode ? "#94a3b8" : "";
+    }
+    const lblOne = $("#mpn-check-mode-label-one");
+    const lblMulti = $("#mpn-check-mode-label-multi");
+    if (lblOne) lblOne.style.color = oneMode ? "#1e293b" : "#94a3b8";
+    if (lblMulti) lblMulti.style.color = multiMode ? "#1e293b" : "#94a3b8";
     const ta = $("#mpn-check-input");
     if (ta) ta.placeholder = oneMode
       ? "1-0425N\n1271\n\u2026 one MPN per line"
       : "1-0425N\tMedline\n1271\tTeleflex\n\u2026 one per line, MPN then manufacturer (tab, comma, or spaces apart)";
   }
-  $("#mpn-check-mode-col")?.addEventListener("change", _syncMpnCheckMode);
-  $("#mpn-check-mode-one")?.addEventListener("change", _syncMpnCheckMode);
+  $("#mpn-check-mode-multi")?.addEventListener("change", _syncMpnCheckMode);
+  _syncMpnCheckMode();
 
   // Parses the textarea into [{mpn, manufacturer}], preserving order and
   // duplicates (the backend matches each row independently, so a repeated
@@ -8597,7 +8631,7 @@
     const exportBtn = $("#mpn-check-export-btn");
     if (!input || !btn) return;
 
-    const oneMode = $("#mpn-check-mode-one")?.checked;
+    const oneMode = !$("#mpn-check-mode-multi")?.checked;
     const oneMfr = oneMode ? ($("#mpn-check-one-mfr")?.value || "").trim() : null;
     if (oneMode && !oneMfr) { showToast("Enter the manufacturer/brand to apply to every MPN.", "warning"); return; }
 
@@ -9249,19 +9283,33 @@
     if (_saPoll) { clearTimeout(_saPoll); _saPoll = null; }
   }
 
-  async function _saLookupSeller() {
-    const input = $("#sa-seller-input");
-    const btn = $("#sa-lookup-btn");
+  // One button now does both: look up the seller's identity (shown inline)
+  // AND kick off the full export in the same action -- merged per user
+  // request ("make both the run analysis and seller into one box... we get
+  // the same label information of the seller + it starts exporting").
+  async function _saRunAll() {
+    const sellerInput = $("#sa-seller-input");
+    const roiInput = $("#sa-roi-input");
+    const btn = $("#sa-run-btn");
+    const dl = $("#sa-download-btn");
+    const progress = $("#sa-progress");
+    const errEl = $("#sa-error");
     const resEl = $("#sa-lookup-result");
-    const errEl = $("#sa-lookup-error");
-    if (!input || !btn) return;
-    const sellerId = input.value.trim();
-    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
+    if (!sellerInput || !btn) return;
 
+    const sellerId = sellerInput.value.trim();
+    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
+    const roiPct = parseFloat(roiInput?.value) || 30;
+
+    _clearSaPoll();
     btn.disabled = true;
     btn.textContent = "Looking up…";
-    resEl?.classList.add("hidden");
+    dl?.classList.add("hidden");
     errEl?.classList.add("hidden");
+    resEl?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Looking up seller…";
+
     try {
       const r = await api("/api/seller-analytics/lookup", { method: "POST", body: { seller_id: sellerId } });
       if (resEl) {
@@ -9272,40 +9320,22 @@
         resEl.classList.remove("hidden");
       }
     } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run Analysis";
+      progress?.classList.add("hidden");
       errEl?.classList.remove("hidden");
       if (errEl) errEl.textContent = e.message;
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Look up";
+      return;
     }
-  }
-  $("#sa-lookup-btn")?.addEventListener("click", _saLookupSeller);
 
-  async function _saStartRun() {
-    const sellerInput = $("#sa-seller-input");
-    const roiInput = $("#sa-roi-input");
-    const btn = $("#sa-run-btn");
-    const dl = $("#sa-download-btn");
-    const progress = $("#sa-progress");
-    const errEl = $("#sa-error");
-    if (!sellerInput || !btn) return;
-
-    const sellerId = sellerInput.value.trim();
-    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
-    const roiPct = parseFloat(roiInput?.value) || 30;
-
-    _clearSaPoll();
-    btn.disabled = true;
-    btn.textContent = "Running…";
-    dl?.classList.add("hidden");
-    errEl?.classList.add("hidden");
+    btn.textContent = "Starting…";
     progress?.classList.remove("hidden");
-    if (progress) progress.textContent = "Starting…";
-
+    if (progress) progress.textContent = "Starting export…";
     try {
       const r = await api("/api/seller-analytics/start", {
         method: "POST", body: { seller_id: sellerId, roi_pct: roiPct },
       });
+      btn.textContent = "Running…";
       _pollSellerAnalytics(r.job_id);
     } catch (e) {
       btn.disabled = false;
@@ -9315,7 +9345,7 @@
       if (errEl) errEl.textContent = e.message;
     }
   }
-  $("#sa-run-btn")?.addEventListener("click", _saStartRun);
+  $("#sa-run-btn")?.addEventListener("click", _saRunAll);
 
   function _pollSellerAnalytics(jobId) {
     const btn = $("#sa-run-btn");

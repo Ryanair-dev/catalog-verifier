@@ -1697,21 +1697,16 @@
         <!-- Sample-size settings -->
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
           <span style="font-size:11px;color:#94a3b8;">Check:</span>
-          <div class="seg-radio" role="radiogroup" aria-label="Sample size mode">
-            <label>
-              <input type="radio" name="brand-check-mode" id="brand-check-mode-count" value="count" checked />
-              Fixed
-            </label>
-            <label>
-              <input type="radio" name="brand-check-mode" id="brand-check-mode-pct" value="pct" />
-              Percent
-            </label>
-          </div>
-          <input id="brand-check-count-val" type="number" min="1" max="300" value="8"
-            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-          <input id="brand-check-pct-val" type="number" min="1" max="100" value="10" disabled
-            style="width:60px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;background:#f8fafc;" />
-          <span style="font-size:11px;color:#94a3b8;">of each brand's live ASINs (capped at 300).</span>
+          <span id="brand-check-mode-label-count" style="font-size:11px;font-weight:600;color:#94a3b8;">Fixed</span>
+          <label class="toggle-pill">
+            <input type="checkbox" id="brand-check-mode-pct" checked />
+            <span class="slider"></span>
+          </label>
+          <span id="brand-check-mode-label-pct" style="font-size:11px;font-weight:600;color:#1e293b;">Percent</span>
+          <input id="brand-check-sample-val" type="number" min="1" max="100" value="10"
+            data-mode="pct" data-pct="10" data-count="8"
+            style="width:70px;box-sizing:border-box;font-size:12px;padding:5px 6px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <span id="brand-check-mode-suffix" style="font-size:11px;color:#94a3b8;">% of each brand's live ASINs.</span>
         </div>
 
         <textarea id="brand-check-input" rows="7"
@@ -1762,20 +1757,16 @@
         </div>
 
         <!-- Manufacturer mode -->
-        <div style="margin-bottom:8px;">
-          <div class="seg-radio" role="radiogroup" aria-label="Manufacturer input mode">
-            <label>
-              <input type="radio" name="mpn-check-mode" id="mpn-check-mode-col" value="col" checked />
-              per line (2nd column)
-            </label>
-            <label>
-              <input type="radio" name="mpn-check-mode" id="mpn-check-mode-one" value="one" />
-              one manufacturer for all
-            </label>
-          </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap;">
+          <span id="mpn-check-mode-label-one" style="font-size:11px;font-weight:600;color:#1e293b;">One manufacturer for all</span>
+          <label class="toggle-pill">
+            <input type="checkbox" id="mpn-check-mode-multi" />
+            <span class="slider"></span>
+          </label>
+          <span id="mpn-check-mode-label-multi" style="font-size:11px;font-weight:600;color:#94a3b8;">Per line (2nd column)</span>
         </div>
 
-        <div id="mpn-check-one-wrap" class="hidden" style="margin-bottom:8px;">
+        <div id="mpn-check-one-wrap" style="margin-bottom:8px;">
           <input id="mpn-check-one-mfr" type="text" placeholder="Manufacturer / brand for every MPN below"
             style="width:100%;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
         </div>
@@ -2025,35 +2016,27 @@
 
     <div id="tools-tab-seller" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
 
-      <!-- ===== Seller Analytics: pull a seller's full Amazon catalog and run -->
-      <!-- the same Offer Analytics breakdown against it. -->
+      <!-- ===== Seller Analytics: look up a seller's identity and run the same -->
+      <!-- Offer Analytics breakdown against their full Amazon catalog, in one go. -->
       <div class="card" style="padding:18px;">
-        <div class="abbr-section-title" style="margin-bottom:4px;">Seller</div>
+        <div class="abbr-section-title" style="margin-bottom:4px;">Seller Analytics</div>
         <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-          Amazon Seller ID (e.g. AC1LRL2P9US2W) — found in a storefront URL's <code>seller=</code> parameter.
-        </div>
-        <div style="display:flex;gap:8px;">
-          <input id="sa-seller-input" type="text" placeholder="AC1LRL2P9US2W"
-            style="flex:1;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-          <button id="sa-lookup-btn" class="btn btn-secondary" style="white-space:nowrap;">Look up</button>
-        </div>
-        <div id="sa-lookup-result" class="hidden" style="margin-top:10px;font-size:12px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;"></div>
-        <div id="sa-lookup-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
-      </div>
-
-      <div class="card" style="padding:18px;">
-        <div class="abbr-section-title" style="margin-bottom:4px;">Run Analysis</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-          For every ASIN we already carry (a Main SKU exists in SellerCloud), Product Cost is the real latest PO cost. For everything else, Product Cost is a <strong>target price</strong> — the most we could pay and still clear the ROI below.
+          Amazon Seller ID (e.g. AC1LRL2P9US2W) — found in a storefront URL's <code>seller=</code> parameter. For every ASIN we already carry (a Main SKU exists in SellerCloud), Product Cost is the real latest PO cost; for everything else it's a <strong>target price</strong> — the most we could pay and still clear the ROI below.
         </div>
         <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;">
-          <div style="flex:1;min-width:140px;">
+          <div style="flex:2;min-width:200px;">
+            <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Seller ID</label>
+            <input id="sa-seller-input" type="text" placeholder="AC1LRL2P9US2W"
+              style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          </div>
+          <div style="flex:1;min-width:120px;">
             <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Target ROI %</label>
             <input id="sa-roi-input" type="number" value="30" min="1" max="500" step="1"
               style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
           </div>
           <button id="sa-run-btn" class="btn btn-primary" style="white-space:nowrap;">Run Analysis</button>
         </div>
+        <div id="sa-lookup-result" class="hidden" style="margin-top:12px;font-size:12px;color:#334155;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;"></div>
         <div id="sa-progress" class="hidden" style="margin-top:12px;font-size:12px;color:#6b7480;"></div>
         <div id="sa-error" class="hidden" style="margin-top:12px;font-size:12px;color:#dc2626;"></div>
         <button id="sa-download-btn" class="btn btn-secondary hidden" style="width:100%;justify-content:center;margin-top:12px;">Download report</button>
