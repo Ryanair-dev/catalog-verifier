@@ -14,6 +14,7 @@ spent and the remaining bucket balance. Requires KEEPA_API in the environment.
 from __future__ import annotations
 
 import collections
+import datetime as dt
 import json
 import logging
 import os
@@ -21,6 +22,8 @@ import re
 import time
 
 import requests
+
+from services import database
 
 log = logging.getLogger(__name__)
 
@@ -266,23 +269,83 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
     return row
 
 
+_PRODUCT_CACHE_TTL_DAYS = 2   # per user request (2026-10-19): "keepa data for 2 days"
+
+
+def _ensure_product_cache_table(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS keepa_product_cache "
+                 "(asin TEXT PRIMARY KEY, data_json TEXT, as_of TEXT)")
+
+
+def _product_cache_get(asins) -> dict:
+    """{asin: full result dict} for entries cached within the TTL. Honest tradeoff,
+    not hidden: Buy Box price/rank/etc. can genuinely move within 2 days, so a
+    cache hit may show slightly stale pricing -- the user explicitly chose this
+    tradeoff (fewer live Keepa calls/tokens spent) over always-fresh data."""
+    cutoff = (dt.datetime.now() - dt.timedelta(days=_PRODUCT_CACHE_TTL_DAYS)).isoformat()
+    out: dict = {}
+    clean = sorted({a.strip().upper() for a in asins if a})
+    if not clean:
+        return out
+    with database._connect() as conn:
+        _ensure_product_cache_table(conn)
+        for i in range(0, len(clean), 400):
+            ch = clean[i:i + 400]
+            q = ",".join("?" * len(ch))
+            for asin, dj in conn.execute(
+                    f"SELECT asin, data_json FROM keepa_product_cache "
+                    f"WHERE as_of >= ? AND asin IN ({q})", [cutoff, *ch]):
+                try:
+                    out[asin] = json.loads(dj)
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def _product_cache_put(rows: dict) -> None:
+    if not rows:
+        return
+    now = dt.datetime.now().isoformat()
+    with database._LOCK, database._connect() as conn:
+        _ensure_product_cache_table(conn)
+        conn.executemany(
+            "INSERT INTO keepa_product_cache(asin, data_json, as_of) VALUES(?,?,?) "
+            "ON CONFLICT(asin) DO UPDATE SET data_json=excluded.data_json, as_of=excluded.as_of",
+            [(a, json.dumps(r), now) for a, r in rows.items()])
+
+
 def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
-    """LIVE Keepa /product for `asins` → {asin: {…}} with the same keys the Offer
+    """Keepa /product for `asins` → {asin: {…}} with the same keys the Offer
     Analytics export reads (title, current/30d/90d buy box, fba fee, ranks, BB
     seller + share, Amazon %, FBA/FBM counts, brand, category, ratings, dims,
-    parent/variation). Two calls per 100-ASIN batch (stats=30 and stats=90) so the
-    30d AND 90d buy-box-share percentages are both correct."""
+    parent/variation). Two LIVE calls per 100-ASIN batch (stats=30 and stats=90)
+    so the 30d AND 90d buy-box-share percentages are both correct.
+
+    Cached for 2 days (`_PRODUCT_CACHE_TTL_DAYS`, per user request 2026-10-19) —
+    an ASIN already fetched recently skips the live call entirely (saves both
+    time and Keepa tokens, the latter a real past failure mode for long exports
+    — see this module's own `_call_product` token-exhaustion handling)."""
     if not is_configured():
         return {}
     sess = _session()
     uniq = sorted({a.strip().upper() for a in asins if a})
     out: dict = {}
     seller_ids: set = set()
-    done, total = 0, len(uniq)
-    for i in range(0, len(uniq), _PRODUCT_BATCH):
+
+    cached = _product_cache_get(uniq)
+    out.update(cached)
+    to_fetch = [a for a in uniq if a not in cached]
+
+    total = len(uniq)
+    done = len(uniq) - len(to_fetch)
+    if on_progress:
+        on_progress(done, total)
+
+    fresh: dict = {}
+    for i in range(0, len(to_fetch), _PRODUCT_BATCH):
         if should_cancel and should_cancel():
             break
-        batch = uniq[i:i + _PRODUCT_BATCH]
+        batch = to_fetch[i:i + _PRODUCT_BATCH]
         try:
             j30 = _call_product(sess, batch, 30)
             j90 = _call_product(sess, batch, 90)
@@ -300,15 +363,18 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
             if not asin:
                 continue
             row = _flatten_product(p, (p30.get(asin, {}).get("stats") or {}), (p.get("stats") or {}))
-            out[asin.strip().upper()] = row
+            key = asin.strip().upper()
+            out[key] = row
+            fresh[key] = row
             if row.get("buybox_seller_id"):
                 seller_ids.add(row["buybox_seller_id"])
         done += len(batch)
         if on_progress:
             on_progress(done, total)
     names = _call_sellers(sess, seller_ids)
-    for row in out.values():
+    for key, row in fresh.items():
         row["buybox_seller_name"] = names.get(row.get("buybox_seller_id"))
+    _product_cache_put(fresh)
     return out
 
 

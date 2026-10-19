@@ -389,6 +389,15 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     means a Vendor-Offers export and a Toolbox storage check for the same ASIN now reuse
     each other's work instead of each paying for their own getCatalogItem call.
 
+    Eligibility (getListingsRestrictions) is ALSO cached now (7-day TTL,
+    services.restrictions.eligibility_cache_get/put), per user request
+    (2026-10-19: "cache eligibility for 1 week") — this is scoped to THIS
+    pipeline only; the Toolbox's own standalone eligibility checker stays
+    fully live, unaffected, by design (see that cache helper's own docstring).
+    A fresh DOG finding from the catalog call above always overrides a stale
+    cached eligibility value, and every newly-determined (or corrected)
+    eligibility result is written back to the cache, refreshing it.
+
     When check_generic=True, an additional Generic-ASIN classification
     (services.generic_check.classify_generic -- one more catalog call + a non-persisting
     putListingsItem VALIDATION_PREVIEW per ASIN) runs alongside the others in the same
@@ -398,7 +407,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from services.spapi.client import get_catalog_api
     from services.spapi.config import load_sp_api_credentials, sp_api_configured
-    from services.restrictions import classify, get_restrictions_api
+    from services.restrictions import classify, get_restrictions_api, eligibility_cache_get, eligibility_cache_put
     from services.storage_fees import calc_storage_fee, extract_dimensions, storage_cache_get, storage_cache_put
     from services.generic_check import classify_generic
 
@@ -420,12 +429,20 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
             storage_peak[a] = r["fee_peak"]
     to_cache: list[dict] = []
 
+    # Eligibility cache (7-day TTL) — OPT-IN here per user request (2026-10-19);
+    # see services/restrictions.py's own eligibility_cache_get/put docstring for
+    # why this is scoped to this export pipeline only, not the Toolbox's
+    # standalone "always live" ASIN-lookup eligibility checker.
+    elig_cached = eligibility_cache_get(uniq)
+    elig_to_cache: dict = {}
+
     seller = load_sp_api_credentials().seller_id
     rapi = get_restrictions_api()
     capi = get_catalog_api()
 
     def one(asin: str):
         e = s = s_peak = g = status = None
+        elig_from_cache = False
         have = asin in cached
         if not have:                                         # only hit the catalog when not cached
             try:
@@ -440,11 +457,16 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                     status = "dog"
             except Exception:  # noqa: BLE001
                 status = "error"
-        if e != "DOG":
-            try:
-                e = classify(asin, rapi.get_restrictions(asin, seller))["status"]
-            except Exception:  # noqa: BLE001
-                pass
+        if e != "DOG":                                        # a fresh DOG (above) always wins over a stale cache entry
+            cached_status = elig_cached.get(asin)
+            if cached_status is not None:
+                e = cached_status
+                elig_from_cache = True
+            else:
+                try:
+                    e = classify(asin, rapi.get_restrictions(asin, seller))["status"]
+                except Exception:  # noqa: BLE001
+                    pass
         if check_generic and e != "DOG":
             try:
                 gj = classify_generic(asin)
@@ -453,7 +475,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                     e = "DOG"
             except Exception:  # noqa: BLE001
                 pass
-        return asin, e, s, s_peak, have, g, status
+        return asin, e, s, s_peak, have, elig_from_cache, g, status
 
     done = 0
     with ThreadPoolExecutor(max_workers=5) as ex:
@@ -463,9 +485,11 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                 for fut in futs:
                     fut.cancel()
                 raise ExportCancelled()
-            a, e, s, s_peak, have, g, status = f.result()
+            a, e, s, s_peak, have, elig_from_cache, g, status = f.result()
             if e is not None:
                 elig[a] = e
+                if not elig_from_cache:                        # newly-determined (or a fresher DOG) -> (re)cache it
+                    elig_to_cache[a] = e
             if g is not None:
                 generic[a] = g
             if not have:
@@ -479,6 +503,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
             if on_progress:
                 on_progress(done, len(uniq))
     storage_cache_put(to_cache)
+    eligibility_cache_put(elig_to_cache)
     return elig, storage, generic, storage_peak
 
 

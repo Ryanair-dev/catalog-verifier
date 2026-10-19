@@ -7,20 +7,79 @@ shared SP-API infrastructure (auth, rate limiter, credential loader).
 Public API:
   get_restrictions_api()  -> RestrictionsAPI  (cached singleton)
   classify(asin, raw)     -> {"asin", "status", "reasons"}
+  eligibility_cache_get/put -> opt-in 7-day eligibility cache (see below)
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from functools import lru_cache
 
 import requests
 
+from services import database
 from .spapi.auth import LWATokenManager
 from .spapi.config import load_sp_api_credentials
 from .spapi.rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Eligibility cache (7-day TTL) — OPT-IN, per user request (2026-10-19):      #
+# "cache eligibility for 1 week" in the context of the Vendor Offers export   #
+# pipeline specifically. Deliberately NOT wired into the standalone Toolbox   #
+# "Eligibility Check" tool (routers/eligibility.py), which has its own        #
+# long-standing, explicitly-confirmed design: eligibility there is ALWAYS     #
+# live, never cached, because a user specifically wanted to see it change     #
+# day-to-day as Amazon's own gating changes (see that router's own history).  #
+# This cache exists for callers that explicitly opt in by calling it          #
+# themselves (currently just services/vendor_offers_template_export.py       #
+# enrich_asins) -- classify()/get_restrictions_api() are UNCHANGED and stay   #
+# fully live for every other existing caller.                                #
+# --------------------------------------------------------------------------- #
+_ELIGIBILITY_CACHE_TTL_DAYS = 7
+
+
+def _ensure_eligibility_cache_table(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS eligibility_cache "
+                 "(asin TEXT PRIMARY KEY, status TEXT, as_of TEXT)")
+
+
+def eligibility_cache_get(asins) -> dict:
+    """{asin: status} for entries cached within the TTL. Honest tradeoff, not
+    hidden: Amazon's own gating can genuinely change within a week (confirmed
+    live in an earlier session — a brand got newly restricted between two
+    days), so a cache hit may show a slightly stale status. The user
+    explicitly chose this tradeoff for the export pipeline."""
+    cutoff = (dt.datetime.now() - dt.timedelta(days=_ELIGIBILITY_CACHE_TTL_DAYS)).isoformat()
+    out: dict = {}
+    clean = sorted({a.strip().upper() for a in asins if a})
+    if not clean:
+        return out
+    with database._connect() as conn:
+        _ensure_eligibility_cache_table(conn)
+        for i in range(0, len(clean), 400):
+            ch = clean[i:i + 400]
+            q = ",".join("?" * len(ch))
+            for asin, status in conn.execute(
+                    f"SELECT asin, status FROM eligibility_cache "
+                    f"WHERE as_of >= ? AND asin IN ({q})", [cutoff, *ch]):
+                if status:
+                    out[asin] = status
+    return out
+
+
+def eligibility_cache_put(mapping: dict) -> None:
+    if not mapping:
+        return
+    now = dt.datetime.now().isoformat()
+    with database._LOCK, database._connect() as conn:
+        _ensure_eligibility_cache_table(conn)
+        conn.executemany(
+            "INSERT INTO eligibility_cache(asin, status, as_of) VALUES(?,?,?) "
+            "ON CONFLICT(asin) DO UPDATE SET status=excluded.status, as_of=excluded.as_of",
+            [(a, s, now) for a, s in mapping.items() if s])
 
 ENDPOINT       = "https://sellingpartnerapi-na.amazon.com"
 MARKETPLACE_ID = "ATVPDKIKX0DER"   # US — overridden by creds.marketplace_id

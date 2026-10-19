@@ -16,6 +16,10 @@ A buy-side cross-vendor price comparison tool ("Price Desk") — ingests multipl
 
 ## Changelog
 
+**Changes this session (2026-10-19c) — Keepa data now cached 2 days, eligibility now cached 7 days (both opt-in, this pipeline only):**
+- User (same conversation as the concurrency fix below): "could you please cache eligiblility for 1 week, and keepa data for 2 days." Both are implemented as shared, reusable cache layers in their OWN infra modules, not duplicated here — see `docs/infra/keepa.md` (`fetch_products` 2-day cache) and `docs/infra/sp_api.md` (`services/restrictions.py`'s new opt-in 7-day eligibility cache, explicitly NOT applied to the Toolbox's own "always live" eligibility checker). `enrich_asins()` in this file is the one place that opts into the eligibility cache; it and `build_template_xlsx`'s Keepa call both benefit from the Keepa cache automatically since that one lives inside `fetch_products` itself.
+- Scope: `services/restrictions.py`, `services/keepa.py`, `services/vendor_offers_template_export.py` (`enrich_asins`'s `one()` updated to consult/update the eligibility cache). **Needs a backend restart.**
+
 **Changes this session (2026-10-19b) — Offer Analytics export: Keepa and eligibility/storage now run CONCURRENTLY, not one-after-the-other; storage cache fixed to store BOTH peak and off-peak (was silently discarding peak):**
 - User: "when I am exporting from the vendor offer analytics, if I choose with keepa data - does it first find keepa data, and only then finds the storage and eligibility? because storage should be instant no? Lets store all the peak and non peak storage."
 - **Confirmed the first half by reading the code, not guessing**: yes — `build_template_xlsx` called `keepa_api.fetch_products(...)` (phase "Keepa live prices"), THEN called `enrich_asins(...)` (phase "eligibility check", which also computes storage) only after Keepa fully finished. There was never a real reason for this — Keepa and SP-API (what `enrich_asins` actually calls) are two completely separate external services with their own independent rate limiters, so nothing was ever shared between the two phases that required serializing them.
