@@ -69,7 +69,7 @@
       </div>
 
       <div class="section-label">Reports</div>
-      <div class="nav-item" id="open-reports-btn">
+      <div class="nav-item" data-view="reports">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         Reports
       </div>
@@ -1247,6 +1247,121 @@
 
       <!-- view-seller-analytics removed — Seller Analytics is now a Toolbox sub-tab (#tools-tab-seller) -->
 
+      <!-- ===== View: Reports — PO P&L is dashboard #1; more register their own -->
+      <!-- data-reports-tab button + #reports-tab-<id> pane as they're built. -->
+      <div id="view-reports" class="hidden">
+        <header class="view-header">
+          <div>
+            <h1 class="view-title">Reports</h1>
+            <p class="view-subtitle">P&amp;L and other dashboards.</p>
+          </div>
+        </header>
+
+        <div class="lib-type-tabs reports-tab-bar" role="tablist" style="padding-left:24px;padding-right:24px;">
+          <button class="lib-type-tab active" data-reports-tab="po-pnl" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+            PO P&amp;L
+          </button>
+        </div>
+
+        <div id="reports-tab-po-pnl" style="padding:18px 24px 32px;display:flex;flex-direction:column;gap:14px;">
+
+          <div style="font-size:11px;color:#94a3b8;">
+            Every PO assigned to <b id="rpt-po-pnl-purchaser-label">Avi Schoemann</b> on the Inbound Shipments board — bought, sold, and
+            left, in units and dollars. A PO moves to <b>Archive</b> once it's 100% sold through.
+          </div>
+
+          <!-- Filters -->
+          <div class="card" style="padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Vendor</label>
+              <select id="rpt-po-pnl-vendor" style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">
+                <option value="">All vendors</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:110px;">
+              <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">PO #</label>
+              <input id="rpt-po-pnl-po" type="text" placeholder="e.g. 51563"
+                style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+            </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Brand</label>
+              <select id="rpt-po-pnl-brand" style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">
+                <option value="">All brands</option>
+              </select>
+            </div>
+            <div style="flex:1;min-width:150px;">
+              <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Item (SKU or ASIN)</label>
+              <input id="rpt-po-pnl-item" type="text" placeholder="e.g. OFF018107 or B014TDI4GA"
+                style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+            </div>
+            <button id="rpt-po-pnl-refresh" class="icon-btn" title="Refresh" style="width:32px;height:32px;flex:none;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          </div>
+
+          <!-- Active / Archive -->
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span id="rpt-po-pnl-bucket-label-active" style="font-size:12px;font-weight:600;color:#1e293b;">Active</span>
+            <label class="toggle-pill">
+              <input type="checkbox" id="rpt-po-pnl-bucket-archive" />
+              <span class="slider"></span>
+            </label>
+            <span id="rpt-po-pnl-bucket-label-archive" style="font-size:12px;font-weight:600;color:#94a3b8;">Archive (100% sold)</span>
+            <span id="rpt-po-pnl-loading" class="hidden" style="font-size:11px;color:#94a3b8;margin-left:auto;">Loading…</span>
+          </div>
+
+          <!-- Summary -->
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">
+            <div class="card" style="padding:12px 14px;">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">POs</div>
+              <div id="rpt-po-pnl-sum-count" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
+            </div>
+            <div class="card" style="padding:12px 14px;">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Bought</div>
+              <div id="rpt-po-pnl-sum-bought" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
+            </div>
+            <div class="card" style="padding:12px 14px;">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Sold</div>
+              <div id="rpt-po-pnl-sum-sold" style="font-size:19px;font-weight:700;color:#16a34a;">—</div>
+            </div>
+            <div class="card" style="padding:12px 14px;">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Profit</div>
+              <div id="rpt-po-pnl-sum-profit" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
+            </div>
+            <div class="card" style="padding:12px 14px;">
+              <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Left (at cost)</div>
+              <div id="rpt-po-pnl-sum-left" style="font-size:19px;font-weight:700;color:#b45309;">—</div>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
+                  <th style="padding:6px 4px;width:18px;"></th>
+                  <th style="padding:6px 8px;">PO #</th>
+                  <th style="padding:6px 8px;">Vendor</th>
+                  <th style="padding:6px 8px;">Brands</th>
+                  <th style="padding:6px 8px;">Received</th>
+                  <th style="padding:6px 8px;text-align:right;">Qty Bought</th>
+                  <th style="padding:6px 8px;text-align:right;">Qty Sold</th>
+                  <th style="padding:6px 8px;text-align:right;">Qty Left</th>
+                  <th style="padding:6px 8px;text-align:right;">% Sold</th>
+                  <th style="padding:6px 8px;text-align:right;">Bought $</th>
+                  <th style="padding:6px 8px;text-align:right;">Sold $</th>
+                  <th style="padding:6px 8px;text-align:right;">Profit $</th>
+                  <th style="padding:6px 8px;text-align:right;">Left $</th>
+                </tr>
+              </thead>
+              <tbody id="rpt-po-pnl-tbody"></tbody>
+            </table>
+            <div id="rpt-po-pnl-empty" class="hidden" style="padding:24px;text-align:center;font-size:12px;color:#94a3b8;"></div>
+          </div>
+        </div><!-- /reports-tab-po-pnl -->
+      </div><!-- /view-reports -->
+
     </main>
   </div>
 
@@ -1520,128 +1635,6 @@
   </div>
 
   <!-- ==================== Tools side panel ==================== -->
-  <div id="reports-panel" class="side-panel side-panel-wide reports-panel">
-    <div class="side-panel-header tools-panel-header">
-      <div class="flex items-center gap-3">
-        <div class="tools-panel-header-icon">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        </div>
-        <div>
-          <div class="tools-panel-title">Reports</div>
-          <div class="tools-panel-subtitle">P&amp;L and other dashboards</div>
-        </div>
-      </div>
-      <button id="reports-close" class="icon-btn" title="Close">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-
-    <!-- Reports sub-tabs (PO P&L is the first of several planned dashboards) -->
-    <div class="lib-type-tabs reports-tab-bar" role="tablist">
-      <button class="lib-type-tab active" data-reports-tab="po-pnl" type="button">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        PO P&amp;L
-      </button>
-    </div>
-
-    <div id="reports-tab-po-pnl" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:14px;">
-
-      <div style="font-size:11px;color:#94a3b8;">
-        Every PO assigned to <b id="rpt-po-pnl-purchaser-label">Avi Schoemann</b> on the Inbound Shipments board — bought, sold, and
-        left, in units and dollars. A PO moves to <b>Archive</b> once it's 100% sold through.
-      </div>
-
-      <!-- Filters -->
-      <div class="card" style="padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;">
-        <div style="flex:1;min-width:150px;">
-          <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Vendor</label>
-          <select id="rpt-po-pnl-vendor" style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">
-            <option value="">All vendors</option>
-          </select>
-        </div>
-        <div style="flex:1;min-width:110px;">
-          <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">PO #</label>
-          <input id="rpt-po-pnl-po" type="text" placeholder="e.g. 51563"
-            style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-        </div>
-        <div style="flex:1;min-width:150px;">
-          <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Brand</label>
-          <select id="rpt-po-pnl-brand" style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;">
-            <option value="">All brands</option>
-          </select>
-        </div>
-        <div style="flex:1;min-width:150px;">
-          <label style="display:block;font-size:11px;font-weight:600;color:#6b7480;margin-bottom:4px;">Item (SKU or ASIN)</label>
-          <input id="rpt-po-pnl-item" type="text" placeholder="e.g. OFF018107 or B014TDI4GA"
-            style="width:100%;box-sizing:border-box;font-size:12px;padding:7px 8px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-        </div>
-        <button id="rpt-po-pnl-refresh" class="icon-btn" title="Refresh" style="width:32px;height:32px;flex:none;">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        </button>
-      </div>
-
-      <!-- Active / Archive -->
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        <span id="rpt-po-pnl-bucket-label-active" style="font-size:12px;font-weight:600;color:#1e293b;">Active</span>
-        <label class="toggle-pill">
-          <input type="checkbox" id="rpt-po-pnl-bucket-archive" />
-          <span class="slider"></span>
-        </label>
-        <span id="rpt-po-pnl-bucket-label-archive" style="font-size:12px;font-weight:600;color:#94a3b8;">Archive (100% sold)</span>
-        <span id="rpt-po-pnl-loading" class="hidden" style="font-size:11px;color:#94a3b8;margin-left:auto;">Loading…</span>
-      </div>
-
-      <!-- Summary -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">
-        <div class="card" style="padding:12px 14px;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">POs</div>
-          <div id="rpt-po-pnl-sum-count" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
-        </div>
-        <div class="card" style="padding:12px 14px;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Bought</div>
-          <div id="rpt-po-pnl-sum-bought" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
-        </div>
-        <div class="card" style="padding:12px 14px;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Sold</div>
-          <div id="rpt-po-pnl-sum-sold" style="font-size:19px;font-weight:700;color:#16a34a;">—</div>
-        </div>
-        <div class="card" style="padding:12px 14px;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Profit</div>
-          <div id="rpt-po-pnl-sum-profit" style="font-size:19px;font-weight:700;color:#1e293b;">—</div>
-        </div>
-        <div class="card" style="padding:12px 14px;">
-          <div style="font-size:11px;color:#94a3b8;margin-bottom:4px;">Left (at cost)</div>
-          <div id="rpt-po-pnl-sum-left" style="font-size:19px;font-weight:700;color:#b45309;">—</div>
-        </div>
-      </div>
-
-      <!-- Table -->
-      <div style="overflow-x:auto;">
-        <table style="width:100%;border-collapse:collapse;font-size:12px;">
-          <thead>
-            <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
-              <th style="padding:6px 4px;width:18px;"></th>
-              <th style="padding:6px 8px;">PO #</th>
-              <th style="padding:6px 8px;">Vendor</th>
-              <th style="padding:6px 8px;">Brands</th>
-              <th style="padding:6px 8px;">Received</th>
-              <th style="padding:6px 8px;text-align:right;">Qty Bought</th>
-              <th style="padding:6px 8px;text-align:right;">Qty Sold</th>
-              <th style="padding:6px 8px;text-align:right;">Qty Left</th>
-              <th style="padding:6px 8px;text-align:right;">% Sold</th>
-              <th style="padding:6px 8px;text-align:right;">Bought $</th>
-              <th style="padding:6px 8px;text-align:right;">Sold $</th>
-              <th style="padding:6px 8px;text-align:right;">Profit $</th>
-              <th style="padding:6px 8px;text-align:right;">Left $</th>
-            </tr>
-          </thead>
-          <tbody id="rpt-po-pnl-tbody"></tbody>
-        </table>
-        <div id="rpt-po-pnl-empty" class="hidden" style="padding:24px;text-align:center;font-size:12px;color:#94a3b8;"></div>
-      </div>
-    </div><!-- /reports-tab-po-pnl -->
-  </div><!-- /reports-panel -->
-
   <div id="tools-panel" class="side-panel side-panel-wide tools-panel">
     <div class="side-panel-header tools-panel-header">
       <div class="flex items-center gap-3">

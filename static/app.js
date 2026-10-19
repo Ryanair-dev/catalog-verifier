@@ -605,6 +605,7 @@
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
+      "reports":        $("#view-reports"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -635,6 +636,10 @@
     if (view === "create-po") initCreatePo();
     if (view === "vendor-offers") initVendorOffers();
     if (view === "walmart-catalog" && typeof _refreshWalmartStatus === "function") _refreshWalmartStatus();
+    if (view === "reports") {
+      if (typeof _loadReportsPoPnlFilters === "function") _loadReportsPoPnlFilters();
+      if (typeof _loadReportsPoPnl === "function") _loadReportsPoPnl();
+    }
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
@@ -8185,21 +8190,16 @@
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
 
   // ========================================================================
-  //  Reports panel — PO P&L is dashboard #1; more register their own
+  //  Reports view — PO P&L is dashboard #1; more register their own
   //  data-reports-tab button + #reports-tab-<id> pane as they're built.
+  //  A full page (switchView("reports", ...)), not a slide-in panel —
+  //  reversed from the original side-panel build per user request.
   // ========================================================================
-  $("#open-reports-btn")?.addEventListener("click", () => {
-    _openPanel("reports-panel");
-    _loadReportsPoPnlFilters();
-    _loadReportsPoPnl();
-  });
-  $("#reports-close")?.addEventListener("click", () => _closeActivePanel());
-
   function _switchReportsTab(tab) {
-    $$("#reports-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.reportsTab === tab));
+    $$("#view-reports .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.reportsTab === tab));
     $("#reports-tab-po-pnl")?.classList.toggle("hidden", tab !== "po-pnl");
   }
-  $$("#reports-panel .lib-type-tab").forEach(tabBtn => {
+  $$("#view-reports .lib-type-tab").forEach(tabBtn => {
     tabBtn.addEventListener("click", () => _switchReportsTab(tabBtn.dataset.reportsTab));
   });
 
