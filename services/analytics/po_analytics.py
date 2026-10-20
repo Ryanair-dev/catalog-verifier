@@ -371,7 +371,7 @@ def _fetch_dimensions(asins: list[str], on_progress=None, should_cancel=None) ->
     dims, never raises."""
     import requests
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from services.spapi.client import get_catalog_api
+    from services.spapi.client import lease_catalog_api
     from services.spapi.config import sp_api_configured
     from services.storage_fees import extract_dimensions
 
@@ -381,29 +381,33 @@ def _fetch_dimensions(asins: list[str], on_progress=None, should_cancel=None) ->
         if on_progress:
             on_progress(0, 0)
         return out
-    capi = get_catalog_api()
 
-    def one(asin: str):
-        try:
-            raw = capi.get_by_asin(asin, included_data="attributes")
-            dims = extract_dimensions(raw.get("attributes") or {})
-        except Exception:  # noqa: BLE001 -- 404/DOG, throttled, or any other failure
-            dims = {"length_in": None, "width_in": None, "height_in": None, "weight_lb": None}
-        return asin, dims
+    # Store-leased for the whole run (2026-10-20) -- see
+    # services.spapi.client.lease_catalog_api's docstring: if another batch
+    # job is already leasing "default" right now, this run gets pinned to
+    # "turba" instead so the two don't share one store's 2 req/sec budget.
+    with lease_catalog_api() as capi:
+        def one(asin: str):
+            try:
+                raw = capi.get_by_asin(asin, included_data="attributes")
+                dims = extract_dimensions(raw.get("attributes") or {})
+            except Exception:  # noqa: BLE001 -- 404/DOG, throttled, or any other failure
+                dims = {"length_in": None, "width_in": None, "height_in": None, "weight_lb": None}
+            return asin, dims
 
-    done = 0
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = [ex.submit(one, a) for a in uniq]
-        for f in as_completed(futs):
-            if should_cancel and should_cancel():
-                for fut in futs:
-                    fut.cancel()
-                raise ExportCancelled()
-            a, dims = f.result()
-            out[a] = dims
-            done += 1
-            if on_progress:
-                on_progress(done, len(uniq))
+        done = 0
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futs = [ex.submit(one, a) for a in uniq]
+            for f in as_completed(futs):
+                if should_cancel and should_cancel():
+                    for fut in futs:
+                        fut.cancel()
+                    raise ExportCancelled()
+                a, dims = f.result()
+                out[a] = dims
+                done += 1
+                if on_progress:
+                    on_progress(done, len(uniq))
     return out
 
 

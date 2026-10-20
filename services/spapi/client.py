@@ -29,7 +29,7 @@ from functools import lru_cache
 
 from .auth import LWATokenManager
 from .catalog import CatalogAPI, ENDPOINT_NA, MARKETPLACE_IDS
-from .config import load_sp_api_credentials
+from .config import known_stores, load_sp_api_credentials
 from .rate_limiter import new_limiters
 
 
@@ -97,6 +97,80 @@ class MultiStoreCatalogAPI:
 
     def get_by_asin(self, *args, **kwargs):
         return self._next_client().get_by_asin(*args, **kwargs)
+
+
+_lease_lock = threading.Lock()
+_lease_counts: dict[str, int] = {}
+
+
+class CatalogStoreLease:
+    """A held claim on one store's SP-API rate budget for the lifetime of one
+    batch job. Use as a context manager so the lease is always released, even
+    if the job raises:
+
+        with lease_catalog_api() as capi:
+            ...  # the whole batch job's getCatalogItem/searchCatalogItems calls
+    """
+
+    def __init__(self, store: str, api: CatalogAPI):
+        self.store = store
+        self.api = api
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        with _lease_lock:
+            _lease_counts[self.store] = max(0, _lease_counts.get(self.store, 0) - 1)
+
+    def __enter__(self) -> CatalogAPI:
+        return self.api
+
+    def __exit__(self, *exc_info) -> None:
+        self.release()
+
+
+def lease_catalog_api(marketplace: str = "US") -> CatalogStoreLease:
+    """
+    Hand out a CatalogAPI pinned to whichever CONFIGURED store currently has
+    the fewest other batch jobs leasing it, so two getCatalogItem-heavy
+    pipelines running at the same time (e.g. a Vendor Offers export
+    overlapping with a PO Analytics report or a Brand Analytics run) land on
+    two DIFFERENT seller accounts' rate-limit buckets instead of both
+    fighting over the single "default" store's tight 2 req/sec getCatalogItem
+    ceiling -- per user request (2026-10-20): "if there are like 2 get
+    catalog requests using at the same time, then we split it... one uses
+    PPP and the second uses turba."
+
+    A lone job still gets "default" (Priority Pharmacy) only -- Turba is
+    handed out solely because something else already holds the lease on
+    "default" at the moment this is called, never just to go faster for a
+    single job. This is a coarser, per-JOB assignment, distinct from
+    `get_multi_store_catalog_api`'s per-REQUEST round-robin (used by catalog
+    SEARCH to roughly double a single job's own throughput) -- here, one
+    job's whole run stays pinned to one store's credentials/budget for its
+    duration, so two concurrent jobs genuinely never share a bucket.
+
+    The caller MUST release the lease when the job ends. Use as a context
+    manager (`with lease_catalog_api() as capi:`) so this happens even on an
+    exception; `CatalogStoreLease.release()` is also safe to call directly
+    and is idempotent.
+    """
+    with _lease_lock:
+        candidates: list[str] = []
+        for store in known_stores():
+            try:
+                get_catalog_api(marketplace, store)  # cheap after first call (lru_cache); raises if unconfigured
+            except RuntimeError:
+                continue
+            candidates.append(store)
+        if not candidates:
+            # No store configured at all -- let the real "not configured" error surface.
+            get_catalog_api(marketplace, "default")
+        store = min(candidates, key=lambda s: (_lease_counts.get(s, 0), s != "default"))
+        _lease_counts[store] = _lease_counts.get(store, 0) + 1
+    return CatalogStoreLease(store, get_catalog_api(marketplace, store))
 
 
 def get_multi_store_catalog_api(

@@ -412,7 +412,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     already known DOG. 5 workers; failures skipped (that cell falls back / stays blank)."""
     import requests
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from services.spapi.client import get_catalog_api
+    from services.spapi.client import lease_catalog_api
     from services.spapi.config import load_sp_api_credentials, sp_api_configured
     from services.restrictions import classify, get_restrictions_api, eligibility_cache_get, eligibility_cache_put
     from services.storage_fees import calc_storage_fee, extract_dimensions, storage_cache_get, storage_cache_put
@@ -445,88 +445,95 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
 
     seller = load_sp_api_credentials().seller_id
     rapi = get_restrictions_api()
-    capi = get_catalog_api()
 
-    def one(asin: str):
-        e = s = s_peak = g = status = None
-        elig_from_cache = False
-        have = asin in cached
+    # Store-leased for the whole run (2026-10-20, per user request) -- if
+    # another batch job (PO Analytics, Brand Analytics, a second Vendor
+    # Offers export, ...) is ALSO leasing "default" right now, this run gets
+    # pinned to "turba" instead so the two never fight over one store's
+    # 2 req/sec getCatalogItem ceiling. See lease_catalog_api()'s own
+    # docstring for why this differs from the per-request round-robin used
+    # by catalog search.
+    with lease_catalog_api() as capi:
+        def one(asin: str):
+            e = s = s_peak = g = status = None
+            elig_from_cache = False
+            have = asin in cached
 
-        # Eligibility FIRST, not the catalog -- two reasons (per user question
-        # 2026-10-19, "don't we find dog asins when we do the eligibility
-        # check?"): (1) classify()'s own `dog` field (derived from Amazon's
-        # ASIN_NOT_FOUND reasonCode -- confirmed live, 2026-09-04) is a real,
-        # already-working DOG signal that this function used to ignore
-        # entirely, instead paying for a SEPARATE getCatalogItem call just to
-        # find the exact same thing via a 404; (2) getListingsRestrictions has
-        # a looser rate limit than getCatalogItem (5 req/sec vs 2 req/sec --
-        # the tighter one is what's actually been producing 429s), so
-        # resolving DOG here first means a dead ASIN can skip getCatalogItem
-        # entirely -- no dimensions are needed for a product that no longer
-        # exists in the catalog.
-        cached_status = elig_cached.get(asin)
-        if cached_status is not None:
-            e = cached_status
-            elig_from_cache = True
-        else:
-            try:
-                cls = classify(asin, rapi.get_restrictions(asin, seller))
-                e = "DOG" if cls.get("dog") else cls["status"]
-            except Exception:  # noqa: BLE001
-                pass
+            # Eligibility FIRST, not the catalog -- two reasons (per user question
+            # 2026-10-19, "don't we find dog asins when we do the eligibility
+            # check?"): (1) classify()'s own `dog` field (derived from Amazon's
+            # ASIN_NOT_FOUND reasonCode -- confirmed live, 2026-09-04) is a real,
+            # already-working DOG signal that this function used to ignore
+            # entirely, instead paying for a SEPARATE getCatalogItem call just to
+            # find the exact same thing via a 404; (2) getListingsRestrictions has
+            # a looser rate limit than getCatalogItem (5 req/sec vs 2 req/sec --
+            # the tighter one is what's actually been producing 429s), so
+            # resolving DOG here first means a dead ASIN can skip getCatalogItem
+            # entirely -- no dimensions are needed for a product that no longer
+            # exists in the catalog.
+            cached_status = elig_cached.get(asin)
+            if cached_status is not None:
+                e = cached_status
+                elig_from_cache = True
+            else:
+                try:
+                    cls = classify(asin, rapi.get_restrictions(asin, seller))
+                    e = "DOG" if cls.get("dog") else cls["status"]
+                except Exception:  # noqa: BLE001
+                    pass
 
-        if e != "DOG" and not have:   # only hit the catalog when genuinely needed: live + dims not cached
-            try:
-                raw = capi.get_by_asin(asin, included_data="attributes,summaries")
-                dims = extract_dimensions(raw.get("attributes") or {})
-                s, s_peak = calc_storage_fee(dims["length_cm"], dims["width_cm"],
-                                             dims["height_cm"], dims["weight_g"])
-                status = "ok" if s is not None else "no_dimensions"
-            except requests.HTTPError as ex:
-                if getattr(ex.response, "status_code", None) == 404:
-                    # Defense-in-depth fallback: eligibility said "not DOG" (or
-                    # wasn't checked), but the catalog itself 404s -- this is a
-                    # fresher, more authoritative signal and always overrides.
-                    e = "DOG"
-                    status = "dog"
-            except Exception:  # noqa: BLE001
-                status = "error"
+            if e != "DOG" and not have:   # only hit the catalog when genuinely needed: live + dims not cached
+                try:
+                    raw = capi.get_by_asin(asin, included_data="attributes,summaries")
+                    dims = extract_dimensions(raw.get("attributes") or {})
+                    s, s_peak = calc_storage_fee(dims["length_cm"], dims["width_cm"],
+                                                 dims["height_cm"], dims["weight_g"])
+                    status = "ok" if s is not None else "no_dimensions"
+                except requests.HTTPError as ex:
+                    if getattr(ex.response, "status_code", None) == 404:
+                        # Defense-in-depth fallback: eligibility said "not DOG" (or
+                        # wasn't checked), but the catalog itself 404s -- this is a
+                        # fresher, more authoritative signal and always overrides.
+                        e = "DOG"
+                        status = "dog"
+                except Exception:  # noqa: BLE001
+                    status = "error"
 
-        if check_generic and e != "DOG":
-            try:
-                gj = classify_generic(asin)
-                g = gj["status"]
-                if g == "DOG":
-                    e = "DOG"
-            except Exception:  # noqa: BLE001
-                pass
-        return asin, e, s, s_peak, have, elig_from_cache, g, status
+            if check_generic and e != "DOG":
+                try:
+                    gj = classify_generic(asin)
+                    g = gj["status"]
+                    if g == "DOG":
+                        e = "DOG"
+                except Exception:  # noqa: BLE001
+                    pass
+            return asin, e, s, s_peak, have, elig_from_cache, g, status
 
-    done = 0
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        futs = [ex.submit(one, a) for a in uniq]
-        for f in as_completed(futs):
-            if should_cancel and should_cancel():
-                for fut in futs:
-                    fut.cancel()
-                raise ExportCancelled()
-            a, e, s, s_peak, have, elig_from_cache, g, status = f.result()
-            if e is not None:
-                elig[a] = e
-                if not elig_from_cache:                        # newly-determined (or a fresher DOG) -> (re)cache it
-                    elig_to_cache[a] = e
-            if g is not None:
-                generic[a] = g
-            if not have:
-                if status in ("ok", "no_dimensions", "dog"):   # cache even a None fee (avoids refetch)
-                    to_cache.append({"asin": a, "status": status, "fee_offpeak": s, "fee_peak": s_peak})
-                if s is not None:
-                    storage[a] = s
-                if s_peak is not None:
-                    storage_peak[a] = s_peak
-            done += 1
-            if on_progress:
-                on_progress(done, len(uniq))
+        done = 0
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futs = [ex.submit(one, a) for a in uniq]
+            for f in as_completed(futs):
+                if should_cancel and should_cancel():
+                    for fut in futs:
+                        fut.cancel()
+                    raise ExportCancelled()
+                a, e, s, s_peak, have, elig_from_cache, g, status = f.result()
+                if e is not None:
+                    elig[a] = e
+                    if not elig_from_cache:                        # newly-determined (or a fresher DOG) -> (re)cache it
+                        elig_to_cache[a] = e
+                if g is not None:
+                    generic[a] = g
+                if not have:
+                    if status in ("ok", "no_dimensions", "dog"):   # cache even a None fee (avoids refetch)
+                        to_cache.append({"asin": a, "status": status, "fee_offpeak": s, "fee_peak": s_peak})
+                    if s is not None:
+                        storage[a] = s
+                    if s_peak is not None:
+                        storage_peak[a] = s_peak
+                done += 1
+                if on_progress:
+                    on_progress(done, len(uniq))
     storage_cache_put(to_cache)
     eligibility_cache_put(elig_to_cache)
     return elig, storage, generic, storage_peak

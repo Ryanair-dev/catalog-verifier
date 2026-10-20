@@ -28,7 +28,7 @@ import requests
 
 from services import database
 from services.restrictions import classify, get_restrictions_api
-from services.spapi.client import get_catalog_api
+from services.spapi.client import lease_catalog_api
 from services.spapi.config import load_sp_api_credentials, sp_api_configured
 from services.storage_fees import calc_storage_fee, extract_dimensions
 
@@ -141,7 +141,12 @@ def run_health_check(asins: list[str] | None = None, trigger: str = "manual") ->
     creds = load_sp_api_credentials()
     seller_id = creds.seller_id
     rapi = get_restrictions_api()
-    capi = get_catalog_api()
+    # Store-leased for the whole run (2026-10-20) -- see
+    # services.spapi.client.lease_catalog_api's docstring: if another batch
+    # job is already leasing "default" right now, this run gets pinned to
+    # "turba" instead so the two don't share one store's 2 req/sec budget.
+    lease = lease_catalog_api()
+    capi = lease.api
 
     results: list[dict] = []
     _running.set()
@@ -152,6 +157,7 @@ def run_health_check(asins: list[str] | None = None, trigger: str = "manual") ->
                 results.append(f.result())
     finally:
         _running.clear()
+        lease.release()
 
     finished = dt.datetime.now(_TZ)
     dog   = sum(1 for r in results if r["dog"] == 1)

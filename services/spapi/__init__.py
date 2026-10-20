@@ -18,7 +18,13 @@ from .auth import LWATokenManager
 from .catalog import CatalogAPI, MARKETPLACE_NA, ENDPOINT_NA, MARKETPLACE_IDS
 from .rate_limiter import LIMITERS, TokenBucketLimiter
 from .config import load_sp_api_credentials, sp_api_configured, SPAPICredentials
-from .client import get_catalog_api, get_multi_store_catalog_api, MultiStoreCatalogAPI
+from .client import (
+    get_catalog_api,
+    get_multi_store_catalog_api,
+    lease_catalog_api,
+    CatalogStoreLease,
+    MultiStoreCatalogAPI,
+)
 
 __all__ = [
     "LWATokenManager",
@@ -33,5 +39,7 @@ __all__ = [
     "SPAPICredentials",
     "get_catalog_api",
     "get_multi_store_catalog_api",
+    "lease_catalog_api",
+    "CatalogStoreLease",
     "MultiStoreCatalogAPI",
 ]

@@ -51,7 +51,7 @@ from services.analytics.product_categorizer import (
     HOME, GARDEN, TOOLS, SPORTS, CLOTHING, AUTOMOTIVE,
     ELECTRONICS, ARTS, TOYS, ENTERTAINMENT,
 )
-from services.spapi import get_catalog_api, sp_api_configured
+from services.spapi import lease_catalog_api, sp_api_configured
 
 log = logging.getLogger(__name__)
 
@@ -544,6 +544,7 @@ def _keepa_brand_pipeline(
     max_rank: int,
     vetting_mode: str,
     category_filter: str,
+    catalog,
     mark_complete: bool = True,
 ) -> None:
     """Discover ALL of a brand/manufacturer's ASINs from Keepa (past SP-API's recall
@@ -551,6 +552,10 @@ def _keepa_brand_pipeline(
     storage fee). Keeps the same category filtering + item storage as the SP-API path.
     Keepa token spend/balance are recorded on the run. Buy-box + eligibility are added
     by their own steps afterward.
+
+    `catalog` is a CatalogAPI already pinned to one store for this whole run (leased
+    once by `start_brand_run`, shared with `_brand_pipeline`'s own SP-API phases if
+    this was called from there) — see services.spapi.client.lease_catalog_api.
 
     `mark_complete=False` (used by `_brand_pipeline` when it's about to also run the
     SP-API keyword/brandNames supplement afterward) skips the final status="Complete"
@@ -568,12 +573,6 @@ def _keepa_brand_pipeline(
         ).fetchone()
     min_sold = int((row[0] if row and row[0] is not None else 0) or 0)
     max_sold = int((row[1] if row and row[1] is not None else 0) or 0)
-
-    try:
-        catalog = get_catalog_api()
-    except Exception as exc:  # noqa: BLE001
-        _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
-        return
 
     _cat_target = _CATEGORY_FILTER_MAP.get(category_filter.lower()) if category_filter else None
 
@@ -712,8 +711,9 @@ def _brand_pipeline(
     min_rank: int,
     max_rank: int,
     pages_per_brand: int,
-    vetting_mode: str = "cpg",
-    category_filter: str = "",
+    vetting_mode: str,
+    category_filter: str,
+    catalog,
 ) -> None:
     # When a Keepa key is configured, discover the FULL brand/manufacturer catalog via
     # Keepa (beats SP-API's ~6k recall ceiling) first. The SP-API keyword/brandNames
@@ -730,18 +730,13 @@ def _brand_pipeline(
         from services import keepa
         if keepa.is_configured():
             _keepa_brand_pipeline(run_id, search_terms, min_rank, max_rank,
-                                  vetting_mode, category_filter, mark_complete=False)
+                                  vetting_mode, category_filter, catalog, mark_complete=False)
     except Exception as exc:  # noqa: BLE001
         log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search only", run_id, exc)
 
     # 0 = unlimited (paginate until Amazon has no more results)
     unlimited = pages_per_brand == 0
     pages_per_brand = max(1, int(pages_per_brand or 3))
-    try:
-        catalog = get_catalog_api()
-    except Exception as exc:
-        _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
-        return
 
     # Search strategy — three phases:
     #
@@ -1169,11 +1164,26 @@ def start_brand_run(
     pages_per_brand = int(pages_per_brand or 10)
     if pages_per_brand < 0:
         pages_per_brand = 0  # normalise negatives to unlimited
-    t = threading.Thread(
-        target=_brand_pipeline,
-        args=(run_id, search_terms, min_rank, max_rank, pages_per_brand, vetting_mode, category_filter),
-        daemon=True,
-    )
+
+    def _run() -> None:
+        # Store-leased for the WHOLE run (2026-10-20, per user request), shared by
+        # both the Keepa-enrichment catalog calls and the SP-API search/getCatalogItem
+        # phases below -- if another batch job (a Vendor Offers export, a PO Analytics
+        # report, ...) is ALSO leasing "default" right now, this run gets pinned to
+        # "turba" instead so the two never fight over one store's rate budget. See
+        # services.spapi.client.lease_catalog_api's own docstring for the full rationale.
+        try:
+            lease = lease_catalog_api()
+        except Exception as exc:  # noqa: BLE001
+            _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
+            return
+        try:
+            _brand_pipeline(run_id, search_terms, min_rank, max_rank, pages_per_brand,
+                            vetting_mode, category_filter, lease.api)
+        finally:
+            lease.release()
+
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
 
 
