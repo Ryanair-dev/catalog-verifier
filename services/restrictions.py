@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import time
 from functools import lru_cache
+from typing import Callable
 
 import requests
 
 from services import database
+from services.cancellation import JobCancelled, cancellable_sleep
 from .spapi.auth import LWATokenManager
 from .spapi.config import load_sp_api_credentials
 from .spapi.rate_limiter import LIMITERS
@@ -138,11 +139,14 @@ class RestrictionsAPI:
             "Content-Type": "application/json",
         }
 
-    def _get(self, path: str, params: dict, max_retries: int = 5) -> requests.Response:
+    def _get(self, path: str, params: dict, max_retries: int = 5,
+             should_cancel: Callable[[], bool] | None = None) -> requests.Response:
         operation = "getListingsRestrictions"
         limiter = self.limiters.get(operation)
 
         for attempt in range(max_retries):
+            if should_cancel and should_cancel():
+                raise JobCancelled()
             if limiter:
                 limiter.acquire()
 
@@ -159,7 +163,7 @@ class RestrictionsAPI:
                 wait = min(30, 2 ** attempt)
                 log.warning("[net] %s on %s (attempt %d): %s. Backing off %ss.",
                             type(exc).__name__, operation, attempt + 1, str(exc)[:80], wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code == 200:
@@ -171,14 +175,14 @@ class RestrictionsAPI:
                     "[429] Throttled on %s (attempt %d). Backing off %ss.",
                     operation, attempt + 1, wait,
                 )
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code in (500, 502, 503, 504):
                 wait = min(30, 2 ** attempt)
                 log.warning("[%d] server error on %s (attempt %d). Backing off %ss.",
                             resp.status_code, operation, attempt + 1, wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code == 403:
@@ -203,12 +207,17 @@ class RestrictionsAPI:
         asin: str,
         seller_id: str,
         condition_type: str = "new_new",
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict:
         """
         Returns the raw restrictions JSON for one ASIN.
 
         An empty `restrictions` list means the seller can list freely.
         Non-empty means restricted; check `reasons` for details.
+
+        `should_cancel`, if given, is polled during any retry backoff so a
+        caller's cancel request isn't stuck behind a stuck retry — see
+        services.cancellation.JobCancelled.
         """
         params = {
             "asin":           asin,
@@ -216,7 +225,7 @@ class RestrictionsAPI:
             "sellerId":       seller_id,
             "marketplaceIds": self.marketplace_id,
         }
-        resp = self._get("/listings/2021-08-01/restrictions", params)
+        resp = self._get("/listings/2021-08-01/restrictions", params, should_cancel=should_cancel)
         return resp.json()
 
 

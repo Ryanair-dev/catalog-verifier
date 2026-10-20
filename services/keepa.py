@@ -20,10 +20,12 @@ import logging
 import os
 import re
 import time
+from typing import Callable
 
 import requests
 
 from services import database
+from services.cancellation import JobCancelled, cancellable_sleep
 
 log = logging.getLogger(__name__)
 
@@ -131,8 +133,18 @@ def _bb_window(stats: dict):
 _RESERVE_PCT = 0.05
 
 
-def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
+def _wait_tokens(sess: requests.Session, need: int = 20,
+                  should_cancel: Callable[[], bool] | None = None) -> None:
+    """`should_cancel`, if given, is checked before every poll and during the
+    refill wait (which can otherwise block for minutes across this loop's up
+    to 90 iterations) — see services.cancellation.JobCancelled. Added
+    2026-10-20 after a real user report that cancelling a Vendor Offers
+    export didn't actually stop it; this loop was one of two un-interruptible
+    waits found (the other being SP-API's own retry backoff, services/spapi/
+    catalog.py)."""
     for _ in range(90):
+        if should_cancel and should_cancel():
+            raise JobCancelled()
         try:
             j = sess.get(f"{_ENDPOINT}/token", timeout=10).json()
             left = int(j.get("tokensLeft", 0))
@@ -140,9 +152,11 @@ def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
             reserve = int(refill_rate * _RESERVE_PCT) if refill_rate else 0
             if left >= need + reserve:
                 return
-            time.sleep(max(2, int((j.get("refillIn") or 3000) / 1000)))
+            cancellable_sleep(max(2, int((j.get("refillIn") or 3000) / 1000)), should_cancel)
+        except JobCancelled:
+            raise
         except Exception:  # noqa: BLE001
-            time.sleep(5)
+            cancellable_sleep(5, should_cancel)
 
 
 # ASINs per /product call. We use `buybox=1` (Buy Box price + seller + share
@@ -153,7 +167,8 @@ def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
 _PRODUCT_BATCH = 100
 
 
-def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> dict:
+def _call_product(sess: requests.Session, asins: list[str], stats_days: int,
+                   should_cancel: Callable[[], bool] | None = None) -> dict:
     params = {"domain": _DOMAIN, "asin": ",".join(asins), "history": 0, "stats": stats_days,
               "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1, "rating": 1}
     # NOTE (2026-10-07): without `rating=1`, Keepa never populates the RATING
@@ -173,13 +188,15 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
     # of the 429s the user was seeing on Keepa's own dashboard.
     need = max(20, len(asins) * 6)
     for attempt in range(12):
-        _wait_tokens(sess, need)
+        if should_cancel and should_cancel():
+            raise JobCancelled()
+        _wait_tokens(sess, need, should_cancel=should_cancel)
         try:
             r = sess.get(f"{_ENDPOINT}/product", params=params, timeout=120)
             if r.status_code in (400, 401, 402, 403):
                 raise RuntimeError(f"Keepa fatal {r.status_code}: {r.text[:200]}")
             if r.status_code != 200:
-                time.sleep(min(30, 3 * 2 ** attempt))
+                cancellable_sleep(min(30, 3 * 2 ** attempt), should_cancel)
                 continue
             j = r.json()
             if j.get("error"):
@@ -192,13 +209,13 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
                     # _query() already uses for Product Finder token errors.
                     log.warning("[keepa] token exhaustion on /product (attempt %d): %s",
                                 attempt + 1, err[:150])
-                    time.sleep(min(60, 6 * (attempt + 1)))
+                    cancellable_sleep(min(60, 6 * (attempt + 1)), should_cancel)
                     continue
                 raise RuntimeError(f"Keepa error: {err}")
             return j
         except requests.RequestException as exc:      # incl. ChunkedEncodingError (broken read)
             log.warning("[keepa] /product read failed (attempt %d): %s", attempt + 1, str(exc)[:100])
-            time.sleep(min(30, 3 * 2 ** attempt))
+            cancellable_sleep(min(30, 3 * 2 ** attempt), should_cancel)
     raise RuntimeError("Keepa /product failed after retries (token exhaustion or repeated errors)")
 
 
@@ -352,7 +369,17 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
     Cached for 2 days (`_PRODUCT_CACHE_TTL_DAYS`, per user request 2026-10-19) —
     an ASIN already fetched recently skips the live call entirely (saves both
     time and Keepa tokens, the latter a real past failure mode for long exports
-    — see this module's own `_call_product` token-exhaustion handling)."""
+    — see this module's own `_call_product` token-exhaustion handling).
+
+    `should_cancel`, if given, is checked between batches AND raises
+    JobCancelled (propagating to the caller) rather than silently breaking the
+    loop, so a caller like services/vendor_offers_template_export.py's
+    build_template_xlsx (which runs this on its own thread alongside
+    enrich_asins) can tell a genuine cancellation apart from "ran out of
+    ASINs." It's also threaded into `_call_product`/`_wait_tokens` so a
+    cancel mid-retry-backoff or mid-token-wait doesn't have to wait out the
+    full sequence first — added 2026-10-20 after a real report that
+    cancelling a Vendor Offers export didn't actually stop it."""
     if not is_configured():
         return {}
     sess = _session()
@@ -372,11 +399,13 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
     fresh: dict = {}
     for i in range(0, len(to_fetch), _PRODUCT_BATCH):
         if should_cancel and should_cancel():
-            break
+            raise JobCancelled()
         batch = to_fetch[i:i + _PRODUCT_BATCH]
         try:
-            j30 = _call_product(sess, batch, 30)
-            j90 = _call_product(sess, batch, 90)
+            j30 = _call_product(sess, batch, 30, should_cancel=should_cancel)
+            j90 = _call_product(sess, batch, 90, should_cancel=should_cancel)
+        except JobCancelled:
+            raise  # a cancelled run, not a failed batch -- let it propagate
         except Exception as exc:  # noqa: BLE001
             log.warning("[keepa] batch %d–%d permanently failed, skipping "
                         "(%d ASINs will have no Keepa data): %s",

@@ -35,6 +35,7 @@ from openpyxl.utils import get_column_letter
 from services import database
 from services import keepa as keepa_api
 from services import vendor_offers as vo
+from services.cancellation import JobCancelled
 from services.spapi import reports as sp_reports
 
 log = logging.getLogger(__name__)
@@ -477,18 +478,23 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                 elig_from_cache = True
             else:
                 try:
-                    cls = classify(asin, rapi.get_restrictions(asin, seller))
+                    cls = classify(asin, rapi.get_restrictions(asin, seller, should_cancel=should_cancel))
                     e = "DOG" if cls.get("dog") else cls["status"]
+                except JobCancelled:
+                    raise  # let this propagate -- NOT a per-ASIN failure, the whole run is being stopped
                 except Exception:  # noqa: BLE001
                     pass
 
             if e != "DOG" and not have:   # only hit the catalog when genuinely needed: live + dims not cached
                 try:
-                    raw = capi.get_by_asin(asin, included_data="attributes,summaries")
+                    raw = capi.get_by_asin(asin, included_data="attributes,summaries",
+                                           should_cancel=should_cancel)
                     dims = extract_dimensions(raw.get("attributes") or {})
                     s, s_peak = calc_storage_fee(dims["length_cm"], dims["width_cm"],
                                                  dims["height_cm"], dims["weight_g"])
                     status = "ok" if s is not None else "no_dimensions"
+                except JobCancelled:
+                    raise  # ditto -- a cancelled run, not a failed ASIN
                 except requests.HTTPError as ex:
                     if getattr(ex.response, "status_code", None) == 404:
                         # Defense-in-depth fallback: eligibility said "not DOG" (or
@@ -517,7 +523,17 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
                     for fut in futs:
                         fut.cancel()
                     raise ExportCancelled()
-                a, e, s, s_peak, have, elig_from_cache, g, status = f.result()
+                try:
+                    a, e, s, s_peak, have, elig_from_cache, g, status = f.result()
+                except JobCancelled:
+                    # A worker noticed should_cancel() mid-retry-backoff (see
+                    # services.cancellation.JobCancelled) and bailed out early
+                    # instead of finishing its full ~2.5min retry sequence first --
+                    # this is what makes "Cancel" actually take effect promptly
+                    # during a 429 storm instead of being stuck behind it.
+                    for fut in futs:
+                        fut.cancel()
+                    raise ExportCancelled()
                 if e is not None:
                     elig[a] = e
                     if not elig_from_cache:                        # newly-determined (or a fresher DOG) -> (re)cache it
@@ -657,6 +673,13 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
                                                          should_cancel=should_cancel)
             else:
                 _kp(0, 0)
+        except JobCancelled:
+            # keepa.fetch_products raises the generic cancellation signal (it
+            # doesn't know about this module's own ExportCancelled) -- convert
+            # it here so the main thread's `raise thread_errors[0]` below
+            # surfaces the SAME exception type enrich_asins' own cancel path
+            # does, which routers/vendor_offers.py specifically catches.
+            thread_errors.append(ExportCancelled())
         except Exception as exc:  # noqa: BLE001
             thread_errors.append(exc)
 

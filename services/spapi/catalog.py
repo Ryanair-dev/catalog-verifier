@@ -17,14 +17,20 @@ Throttling, 429 backoff, and pagination logic are unchanged.
 from __future__ import annotations
 
 import logging
-import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 import requests
 
+from services.cancellation import JobCancelled, cancellable_sleep
 from .rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
+
+# Back-compat alias -- this exception used to be defined here under this
+# name before being generalised into services/cancellation.py so
+# services/keepa.py could share it too. Kept so existing `except
+# SPAPICancelled` call sites don't need to change.
+SPAPICancelled = JobCancelled
 
 # North America defaults — the only region asin-scraper ever used.
 ENDPOINT_NA       = "https://sellingpartnerapi-na.amazon.com"
@@ -79,10 +85,13 @@ class CatalogAPI:
         params: dict,
         operation: str,
         max_retries: int = 5,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> requests.Response:
         limiter = self.limiters.get(operation)
 
         for attempt in range(max_retries):
+            if should_cancel and should_cancel():
+                raise SPAPICancelled()
             if limiter:
                 limiter.acquire()
 
@@ -100,7 +109,7 @@ class CatalogAPI:
                 wait = min(30, 2 ** attempt)
                 log.warning("[net] %s on %s (attempt %d): %s. Backing off %ss",
                             type(exc).__name__, operation, attempt + 1, str(exc)[:80], wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code == 200:
@@ -112,14 +121,14 @@ class CatalogAPI:
                     "[429] Throttled on %s (attempt %d). Backing off %ss",
                     operation, attempt + 1, wait,
                 )
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
 
             elif resp.status_code in (500, 502, 503, 504):
                 # Transient Amazon-side error — retry with backoff, don't fail the ASIN.
                 wait = min(30, 2 ** attempt)
                 log.warning("[%d] server error on %s (attempt %d). Backing off %ss",
                             resp.status_code, operation, attempt + 1, wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
 
             elif resp.status_code == 403:
                 # Surface Amazon's actual reason — a 403 here is usually an
@@ -276,8 +285,14 @@ class CatalogAPI:
         self,
         asin: str,
         included_data: str = "summaries,identifiers,attributes,salesRanks,images",
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict:
-        """Fetch full details for a single known ASIN."""
+        """Fetch full details for a single known ASIN.
+
+        `should_cancel`, if given, is checked before every retry attempt AND
+        polled during any 429/5xx/network-error backoff sleep so a caller's
+        cancel request takes effect within ~0.5s instead of waiting out the
+        full (up to ~2.5 minute) retry sequence -- see SPAPICancelled."""
         params = {
             "marketplaceIds": self.marketplace_id,
             "includedData":   included_data,
@@ -286,5 +301,6 @@ class CatalogAPI:
             f"/catalog/2022-04-01/items/{asin}",
             params,
             "getCatalogItem",
+            should_cancel=should_cancel,
         )
         return resp.json()
