@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -226,6 +227,22 @@ from services.ai_recheck import _extract_json  # noqa: E402
 # Single-batch AI calls
 # --------------------------------------------------------------------------- #
 
+class PermanentAIError(Exception):
+    """Wraps an API error that retrying won't fix -- bad/expired credentials,
+    a malformed request, or (the case that prompted this, 2026-10-21) an
+    account-level usage-limit lockout ("You have reached your specified API
+    usage limits. You will regain access on 2026-11-01..."). Both Anthropic's
+    and OpenAI's SDK exceptions expose `.status_code` on their common
+    APIStatusError base, so this check works for either provider. Raised
+    instead of exhausting the normal retry loop so _pipeline's live failover
+    (Claude -> OpenAI) can kick in immediately instead of wasting ~6s of
+    doomed retries per batch for the rest of a multi-day outage."""
+
+
+def _is_permanent_ai_error(exc: Exception) -> bool:
+    return getattr(exc, "status_code", None) in (400, 401, 403)
+
+
 def _call_claude(client, source: dict, batch: list[dict]) -> list[dict]:
     msg     = _build_user_msg(source, batch)
     retries = 3
@@ -254,6 +271,10 @@ def _call_claude(client, source: dict, batch: list[dict]) -> list[dict]:
                 for j in range(len(batch))
             ]
         except Exception as exc:
+            if _is_permanent_ai_error(exc):
+                log.warning("[ai_check] claude batch failed permanently (%s) — "
+                            "won't recover from retrying", exc)
+                raise PermanentAIError(str(exc)) from exc
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -292,6 +313,10 @@ def _call_openai(client, source: dict, batch: list[dict]) -> list[dict]:
                 for j in range(len(batch))
             ]
         except Exception as exc:
+            if _is_permanent_ai_error(exc):
+                log.warning("[ai_check] openai batch failed permanently (%s) — "
+                            "won't recover from retrying", exc)
+                raise PermanentAIError(str(exc)) from exc
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -375,7 +400,51 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
             return
 
         use_claude = _is_anthropic(client)
-        _call_batch = _call_claude if use_claude else _call_openai
+
+        # Live Claude -> OpenAI failover for THIS run (added 2026-10-21, after
+        # a real account-level Anthropic usage-cap lockout: "You have reached
+        # your specified API usage limits. You will regain access on
+        # 2026-11-01..."). Before this, a non-retryable Claude error (bad
+        # credentials, or exactly this kind of lockout) made EVERY batch for
+        # the rest of the run waste 3 retries and come back "uncertain /
+        # review manually" -- for a multi-day outage like this one, that's
+        # every candidate in every run until the lockout clears. Scoped to
+        # this run only (not a global/sticky flag) so it self-heals the
+        # moment Claude starts working again, with no expiry timer needed.
+        _fallback_lock = threading.Lock()
+        _fallback = {"claude_dead": False, "openai_client": None, "openai_tried": False}
+
+        def _get_openai_fallback():
+            with _fallback_lock:
+                if not _fallback["openai_tried"]:
+                    _fallback["openai_tried"] = True
+                    key = os.getenv("OPENAI_API_KEY")
+                    if key:
+                        try:
+                            from openai import OpenAI
+                            _fallback["openai_client"] = OpenAI(api_key=key)
+                        except Exception:  # noqa: BLE001
+                            pass
+                return _fallback["openai_client"]
+
+        def _call_batch(client_, src: dict, batch: list[dict]) -> list[dict]:
+            if not use_claude:
+                return _call_openai(client_, src, batch)
+            if _fallback["claude_dead"]:
+                oa = _get_openai_fallback()
+                return _call_openai(oa, src, batch) if oa else _error_batch(batch)
+            try:
+                return _call_claude(client_, src, batch)
+            except PermanentAIError as exc:
+                oa = _get_openai_fallback()
+                with _fallback_lock:
+                    was_dead = _fallback["claude_dead"]
+                    _fallback["claude_dead"] = True
+                if not was_dead:
+                    log.warning("[ai_check] run %s: Claude unavailable (%s) — "
+                               "switching this run to OpenAI fallback%s",
+                               run_id, exc, "" if oa else " (not configured — results will be marked uncertain)")
+                return _call_openai(oa, src, batch) if oa else _error_batch(batch)
 
         # ---- load data -------------------------------------------------- #
         with database._connect() as conn:
