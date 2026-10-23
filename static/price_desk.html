@@ -524,7 +524,7 @@ select {
     <button class="chip plain" id="fNoAsin" type="button" aria-pressed="false">Needs ASIN</button>
   </div>
   <button class="chip act" id="btnImport" type="button">Import</button>
-  <button class="chip act" id="btnSyncDB" type="button" title="Pull the latest offers for Quality King, Cencora, Diamond, BILO and Victory straight from the database">Sync from Database</button>
+  <button class="chip act" id="btnSyncDB" type="button" title="Pull the latest offers for Quality King, Cencora, Diamond, BILO and Victory straight from their catalog emails">Sync from Email</button>
   <button class="chip act" id="btnExport" type="button">Export to Excel</button>
   <select id="sort" aria-label="Sort by">
     <option value="save">Sort: biggest saving</option>
@@ -594,8 +594,8 @@ select {
       <div class="m-row" style="margin:0">
         <button class="m-ghost" id="btnSyncDBModal" type="button">Sync now</button>
         <span class="m-help" style="margin:0" id="dbSyncStatus">Quality King, Cencora, Diamond, BILO
-          and Victory pull straight from the database (hourly, automatic) &mdash; upload below is only
-          for other vendors.</span>
+          and Victory pull straight from their catalog emails (every 30 min, automatic) &mdash; upload
+          below is only for other vendors.</span>
       </div>
       <div class="m-out" id="dbSyncOut" hidden></div>
     </div>
@@ -1487,22 +1487,22 @@ $("btnLookupExport").addEventListener("click", async () => {
   }
 });
 
-// ---- pull matches from the Pair Library (by UPC) ----------------------
+// ---- pull the 5 mailbox-synced vendors' latest catalog emails ----------
 async function _runDbSync(btn, out) {
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Syncing\u2026 (~1 min)";
-  if (out) { out.hidden = false; out.textContent = "Pulling the latest offers from the database\u2026"; }
+  if (out) { out.hidden = false; out.textContent = "Pulling the latest offers from each vendor's catalog email\u2026"; }
   try {
-    const res = await fetch("/api/vendor-offers/db-sync/run", { method: "POST" });
+    const res = await fetch("/api/vendor-offers/mailbox-sync/run", { method: "POST" });
     const j = await res.json();
     if (!res.ok) throw new Error(j.detail || ("HTTP " + res.status));
     const lines = Object.entries(j.results || {}).map(([v, r]) =>
-      `${v}: ${r.total} offers (${r.added} new)`);
+      r.status ? `${v}: ${r.status}` : `${v}: ${r.total} offers (${r.added} new)`);
     const errLines = Object.entries(j.errors || {}).map(([v, e]) => `${v}: FAILED \u2014 ${e}`);
     const summary = [...lines, ...errLines].join("\n") || "Done.";
     if (out) out.textContent = summary;
     toast(errLines.length ? `Synced with ${errLines.length} error(s) \u2014 see Import for details.`
-                           : "Synced from database. Refresh to see the new offers.", !!errLines.length);
+                           : "Synced from email. Refresh to see the new offers.", !!errLines.length);
     _refreshDbSyncStatus();
   } catch (err) {
     if (out) out.textContent = "Sync failed: " + err.message;
@@ -1515,15 +1515,15 @@ async function _refreshDbSyncStatus() {
   const el = $("dbSyncStatus");
   if (!el) return;
   try {
-    const j = await (await fetch("/api/vendor-offers/db-sync/status")).json();
+    const j = await (await fetch("/api/vendor-offers/mailbox-sync/status")).json();
     const last = j.last;
     if (last && last.finished_at) {
       const when = new Date(last.finished_at + "Z").toLocaleString();
       const errCount = Object.keys(last.errors || {}).length;
-      el.textContent = `Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour `
+      el.textContent = `Quality King, Cencora, Diamond, BILO and Victory sync automatically every 30 min `
         + `\u2014 last sync ${when}${errCount ? ` (${errCount} vendor(s) failed)` : ""}.`;
     } else {
-      el.textContent = "Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour "
+      el.textContent = "Quality King, Cencora, Diamond, BILO and Victory sync automatically every 30 min "
         + "\u2014 no sync has run yet, click Sync now.";
     }
   } catch (err) { /* best-effort */ }
