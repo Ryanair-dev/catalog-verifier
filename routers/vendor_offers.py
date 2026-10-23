@@ -7,6 +7,8 @@ POST /api/vendor-offers/sync-asins  — pull UPC→ASIN from the existing Pair L
 POST /api/vendor-offers/assign      — hand-assign one ASIN to a UPC
 POST /api/vendor-offers/unassign    — remove a wrong ASIN pairing (+ its Pair Library mirror)
 GET  /api/vendor-offers/status      — configured vendors + row counts
+GET  /api/vendor-offers/mailbox-sync/status — direct-from-email sync state (5 vendors, replaces db-sync)
+POST /api/vendor-offers/mailbox-sync/run    — sync now (one vendor or all 5)
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from services import database
 from services import graph_mail
 from services import vendor_offers as vo
 from services import vendor_offers_db_sync as vo_sync
+from services import vendor_offers_mailbox_sync as vo_mail_sync
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 from services.spapi import reports as sp_reports
@@ -317,6 +320,36 @@ async def db_sync_run(body: dict = Body(default=None)) -> dict:
         raise
     except Exception as exc:  # noqa: BLE001
         log.exception("[vendor_offers] db sync failed")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
+
+
+@router.get("/vendor-offers/mailbox-sync/status")
+async def mailbox_sync_status() -> dict:
+    """30-min-sync state for the 5 vendors whose catalog emails are now read
+    directly (replaces /db-sync for them, per user request 2026-10-23 -- see
+    services/vendor_offers_mailbox_sync.py's module docstring)."""
+    return await run_in_threadpool(vo_mail_sync.scheduler_status)
+
+
+@router.post("/vendor-offers/mailbox-sync/run")
+async def mailbox_sync_run(body: dict = Body(default=None)) -> dict:
+    """Manually sync now. Body optional: {vendor: "..."} for just one vendor,
+    else all 5."""
+    body = body or {}
+    vendor = (body.get("vendor") or "").strip() or None
+    try:
+        if vendor:
+            if vendor not in vo_mail_sync.VENDOR_KEYS:
+                raise HTTPException(status_code=400, detail=(
+                    f"No mailbox parser for {vendor!r}. Known: {vo_mail_sync.VENDOR_KEYS}"))
+            result = await run_in_threadpool(vo_mail_sync.sync_vendor_from_mailbox, vendor)
+            return {"ok": True, "vendor": vendor, "result": result}
+        result = await run_in_threadpool(vo_mail_sync.sync_all_from_mailbox)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[vendor_offers] mailbox sync failed")
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
 
 

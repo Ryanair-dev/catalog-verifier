@@ -107,14 +107,23 @@ async def _lifespan(app: FastAPI):
         health_check.start_scheduler()
     except Exception:
         pass
-    # Vendor Offer Analytics: hourly sync of the 5 DB-backed vendors straight
-    # from Azure (replaces manual file upload for them).
+    # Vendor Offer Analytics: 30-min sync of the 5 vendors straight from their
+    # own catalog emails (replaces the Azure DB sync below for them, per user
+    # request 2026-10-23 -- "FBI has awful data structure... take it directly
+    # from the offers and inbox ourselves" -- see services/
+    # vendor_offers_mailbox_sync.py's module docstring). The old DB-sync
+    # module/endpoints are left intact, just not scheduled, as a safety net.
     try:
-        from services import vendor_offers_db_sync as vo_sync
-        if azure_sql.is_configured():
-            vo_sync.start_scheduler()
+        from services import vendor_offers_mailbox_sync as vo_mail_sync
+        if vo_mail_sync.is_configured():
+            vo_mail_sync.start_scheduler()
     except Exception:
         pass
+    # vendor_offers_db_sync's hourly Azure scheduler is DELIBERATELY not
+    # started any more -- it reads the same FBI-populated tables the mailbox
+    # sync above now bypasses, and the two could otherwise fight over
+    # avail_qty for the same 5 vendors. Its manual endpoints
+    # (/db-sync/status, /db-sync/run) still work if ever needed as a fallback.
     # MPN Check: local mirror of fbidb products/manufacturers (hourly,
     # incremental after the first full pull) so a check never hits Azure live.
     try:
@@ -153,6 +162,11 @@ async def _lifespan(app: FastAPI):
     try:
         from services import vendor_offers_db_sync as vo_sync
         vo_sync.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import vendor_offers_mailbox_sync as vo_mail_sync
+        vo_mail_sync.stop_scheduler()
     except Exception:
         pass
     try:

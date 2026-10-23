@@ -451,11 +451,25 @@ def _upsert_offers(conn, vname: str, rows: list) -> dict:
     return {"added": after - before, "total": after, "submitted": len(rows)}
 
 
-def merge_batches(vname: str, batches: list, skipped: list | None = None) -> dict:
+def merge_batches(vname: str, batches: list, skipped: list | None = None,
+                   reset_avail: bool = False) -> dict:
     """Merge pre-parsed (stamp, rows) batches into vo_vendor_offers (§5B semantics)
     -- the shared core of ingest_vendor_file (file upload) and the DB sync path
     (services/vendor_offers_db_sync.py). Returns {submitted, added, total, skipped,
-    arrivals}."""
+    arrivals}.
+
+    `reset_avail=True` (used by services/vendor_offers_mailbox_sync.py's direct
+    email-ingestion path) zeroes EVERY existing offer's avail_qty for this vendor
+    BEFORE merging the new batches, so an item that silently vanished from the
+    vendor's new file reads 0 immediately instead of keeping a stale quantity
+    until the separate staleness job eventually nulls it out after N days --
+    appropriate when the new file is a trusted, complete snapshot of the
+    vendor's current catalog (per user request 2026-10-23: "if we inject a file
+    then the qty available should be annulled and the new qty should be added").
+    A row the new file DOES mention still gets its real avail_qty applied right
+    after, via the normal per-row upsert below -- this only affects rows the new
+    file is silent about. Not used by plain file-upload/DB-sync merges, which
+    may be partial/incremental and shouldn't nuke other vendors'/days' data."""
     skipped = list(skipped or [])
     cleaned = []
     for stamp, rows in batches:
@@ -465,6 +479,9 @@ def merge_batches(vname: str, batches: list, skipped: list | None = None) -> dic
 
     submitted = added = 0
     with database._LOCK, database._connect() as conn:
+        if reset_avail:
+            vid = _vendor_id(conn, vname)
+            conn.execute("UPDATE vo_vendor_offers SET avail_qty = 0 WHERE vendor_id = ?", (vid,))
         # seed products (union of every UPC seen) so offers are never dropped
         titles = {}
         for _, rows in cleaned:

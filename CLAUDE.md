@@ -122,7 +122,8 @@ catalog-verifier/
 │   ├── reports_po_pnl.py            Reports: PO P&L dashboard (queries the Azure PO→sale allocation view)
 │   ├── graph_mail.py                PO Analytics' Microsoft Graph sendMail wrapper
 │   ├── vendor_offers.py             Vendor Offers core ingest/pairing/ledger logic
-│   ├── vendor_offers_db_sync.py     Vendor Offers Azure DB sync (5 known vendors)
+│   ├── vendor_offers_db_sync.py     Vendor Offers Azure DB sync (5 known vendors) — superseded by mailbox_sync below, kept as a manual fallback
+│   ├── vendor_offers_mailbox_sync.py  Vendor Offers: direct-from-email sync for the same 5 vendors (bypasses FBI/Azure entirely)
 │   ├── vendor_offers_template_export.py  Vendor Offers formatted Excel export + enrichment
 │   ├── health_check.py              Pair Library weekly health-check job
 │   ├── generic_check.py             Toolbox Generic/DOG ASIN classification
