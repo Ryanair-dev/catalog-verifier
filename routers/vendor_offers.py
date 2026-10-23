@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 from services import database
 from services import graph_mail
+from services import teams_notify
 from services import vendor_offers as vo
 from services import vendor_offers_db_sync as vo_sync
 from services import vendor_offers_mailbox_sync as vo_mail_sync
@@ -214,6 +215,17 @@ def _launch_export(params: dict) -> tuple[str, str]:
                 except Exception as exc:  # noqa: BLE001
                     log.exception("[analytics-export] email send failed")
                     job["email_error"] = str(exc)[:300]
+            # Teams ping, per user request 2026-10-23 ("Teams notification on
+            # Offer/Vendor/Brand Analytics completion") -- best-effort, never
+            # undoes an already-successful export.
+            if teams_notify.is_configured():
+                try:
+                    scope = f"vendor: {focus}" if focus else "the whole desk"
+                    teams_notify.send_teams_message(
+                        f"✅ Vendor Offers export \"{filename}\" is complete ({scope})."
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("[analytics-export] Teams notification failed")
         except vo_tpl.ExportCancelled:
             job["status"], job["phase"] = "cancelled", "cancelled"
         except Exception as exc:  # noqa: BLE001

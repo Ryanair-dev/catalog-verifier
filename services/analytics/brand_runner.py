@@ -1148,6 +1148,27 @@ def _brand_pipeline(
         done=total_pages,
         total=total_pages,
     )
+    _notify_teams_complete(run_id, total_items)
+
+
+def _notify_teams_complete(run_id: int, total_items: int) -> None:
+    """Best-effort Teams ping when a Brand Analytics run finishes -- per user
+    request 2026-10-23 ("Teams notification on Offer/Vendor/Brand Analytics
+    completion"). Never lets a notification failure affect the run itself."""
+    from services import teams_notify
+    if not teams_notify.is_configured():
+        return
+    try:
+        with database._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM brand_analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        name = row[0] if row else f"run {run_id}"
+        teams_notify.send_teams_message(
+            f"✅ Brand Analytics run \"{name}\" is complete — {total_items} ASINs found."
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[brand_runner] Teams notification failed for run %s", run_id)
 
 
 def start_brand_run(

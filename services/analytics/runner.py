@@ -398,6 +398,31 @@ def _update_progress(
         )
 
 
+def _notify_teams_complete(run_id: int) -> None:
+    """Best-effort Teams ping when an Offer Analysis run finishes -- per user
+    request 2026-10-23 ("Teams notification on Offer/Vendor/Brand Analytics
+    completion"). Never lets a notification failure affect the run itself."""
+    from services import teams_notify
+    if not teams_notify.is_configured():
+        return
+    try:
+        with _with_conn() as conn:
+            row = conn.execute(
+                "SELECT name, verified_count, review_count, not_approved_count, "
+                "total_candidates_found FROM analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        if not row:
+            return
+        name, verified, review, not_approved, total = row
+        teams_notify.send_teams_message(
+            f"✅ Offer Analysis run \"{name}\" is complete — "
+            f"{total} candidates found ({verified} verified, {review} review, "
+            f"{not_approved} not approved)."
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[runner] Teams notification failed for run %s", run_id)
+
+
 def _upsert_candidate(
     run_id: int,
     row_idx: int,
@@ -1773,6 +1798,7 @@ def _run_pipeline(
         _recompute_run_counts(run_id)
         clear_control(run_id)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
+        _notify_teams_complete(run_id)
 
     except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles
         log.error("Analytics run %s aborted — SP-API 403: %s", run_id, exc)

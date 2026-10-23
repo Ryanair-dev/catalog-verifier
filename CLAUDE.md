@@ -121,6 +121,7 @@ catalog-verifier/
 │   ├── po_automation.py             PO Analytics' day-before-ETA automation orchestration
 │   ├── reports_po_pnl.py            Reports: PO P&L dashboard (queries the Azure PO→sale allocation view)
 │   ├── graph_mail.py                PO Analytics' Microsoft Graph sendMail wrapper
+│   ├── teams_notify.py              Shared Teams webhook notifier — Offer/Brand Analytics + Vendor Offers export completion pings
 │   ├── vendor_offers.py             Vendor Offers core ingest/pairing/ledger logic
 │   ├── vendor_offers_db_sync.py     Vendor Offers Azure DB sync (5 known vendors) — superseded by mailbox_sync below, kept as a manual fallback
 │   ├── vendor_offers_mailbox_sync.py  Vendor Offers: direct-from-email sync for the same 5 vendors (bypasses FBI/Azure entirely)
@@ -247,6 +248,7 @@ A from-scratch opinionated Azure SQL (T-SQL) target schema already exists as a d
 | `AZURE_CLIENT_SECRET` + related Azure AD app credentials | Optional | `services/azure_sql.py` — see `docs/infra/azure_sql.md`. **Never echo this value.** |
 | `SELLERCLOUD_USERNAME` / `SELLERCLOUD_PASSWORD` / `SELLERCLOUD_API_BASE` | Optional | `services/sellercloud/config.py` — Create SKUs (SellerCloud REST API) |
 | `WALMART_CLIENT_ID` / `WALMART_CLIENT_SECRET` | Optional | `services/walmart/config.py` — see `docs/features/walmart_catalog.md` |
+| `TEAMS_WEBHOOK_URL` | Optional | `services/teams_notify.py` — Offer/Brand Analytics + Vendor Offers export completion pings to a Teams group chat |
 | `FBI_API_KEY` | Optional | Ford Medical's internal FBI REST API (investigated, not used as the primary path — see `docs/features/vendor_offers.md`'s 2026-09-23 entry) |
 
 ---
