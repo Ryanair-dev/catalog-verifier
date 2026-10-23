@@ -1,0 +1,183 @@
+Loaded 470 labeled pairs from C:\Users\KateStolbun\catalog-verifier\data\labeled\eval_set.json
+  real matches=86  non-matches=384  mode=medical
+
+======================================================================
+MATCHER: weighted
+======================================================================
+
+[overall]  n=470  real matches=86
+  approved=41  review=72  rejected=357  review_rate=15.3%
+  precision=0.878  recall=0.419
+  false approvals=5  missed=15  real matches in review=35
+
+  FALSE APPROVALS - approved but not a match (5):
+       oxo_4 B005P0D188  conf=100.00  []
+             vendor: OXO GG V-BLADE MANDOLINE
+             amazon: Good Grips 1155700V2 Mandoline Slicer, Stainless Steel…
+      oxo_10 B01N06UEH4  conf=100.00  []
+             vendor: OXO GG STAINLESS STEEL SINKWARE CROCK
+             amazon: OXO Good Grips Stainless Steel Sink Organizer Caddy & …
+      oxo_13 B000HCBDF2  conf=100.00  []
+             vendor: OXO GG 11in/27.94CM POP-UP STEAMER
+             amazon: OXO Good Grips Steamer Basket - Stainless Steel, 8 Inc…
+    oak ridge products_7 B00K0TS7H4  conf= 96.30  []
+             vendor: Sharps Container 2 Gallon Red Base Translucent Slide L…
+             amazon: Sharps Container (1)
+    oak ridge products_11 B00X6L1WRK  conf= 92.40  []
+             vendor: Sharps Container 5 Quart Red Base Translucent Horizont…
+             amazon: Oakridge Products Sharps Container for Home Use and Pr…
+
+  MISSED MATCHES - rejected but actually a match (15):
+       oxo_0 B000079XWB  conf= 46.80  []
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4-Cup Angled Measuring Cup
+       oxo_0 B0CP6CTSLY  conf= 43.90  []
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4 Cup Glass Liquid Measuring Cup
+       oxo_0 B00GJSROHO  conf= 41.30  []
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4-Piece Mini Measuring Beaker Set
+    oak ridge products_1 B0C8BRN8K1  conf= 42.90  []
+             vendor: Sharps Container 1.5 Quart Red Base Translucent BD Sty…
+             amazon: Post Medical - 1.5 Quart Sharps Container - Case of 6,…
+    oak ridge products_6 B095PVNYQ8  conf= 44.20  ['variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+    oak ridge products_6 B095PRGQZ2  conf= 44.20  ['variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+    oak ridge products_6 B0713Y5TRZ  conf= 43.60  []
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Sharps Container, 2 Gal., Chimney Top, PK5
+    oak ridge products_8 B07B3XX4Z1  conf= 41.40  ['variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Rotary …
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+    oak ridge products_10 B00KQXAXBC  conf= 47.90  []
+             vendor: Sharps Container 5 Quart Red Base Translucent Mailbox …
+             amazon: Oakridge 5 Quart - Sharps Disposal Container with Mail…
+    oak ridge products_10 B0H8X2WBY2  conf= 45.80  []
+             vendor: Sharps Container 5 Quart Red Base Translucent Mailbox …
+             amazon: Oakridge 5 Quart - Sharps Disposal Container with Mail…
+
+======================================================================
+MATCHER: cascade
+======================================================================
+
+[overall]  n=470  real matches=86
+  approved=69  review=95  rejected=306  review_rate=20.2%
+  precision=0.594  recall=0.477
+  false approvals=28  missed=15  real matches in review=30
+
+  rules fired:
+     193  fallback_fuzzy
+     113  fallback_fuzzy+blocked_by_mismatch
+      59  1_brand+mpn
+      54  7_mpn_in_amz_text
+      46  5_fuzzy72
+       5  5_fuzzy72+blocked_by_mismatch
+
+  FALSE APPROVALS - approved but not a match (28):
+       oxo_0 B00005RKOE  conf= 90.00  ['rule:5_fuzzy72']
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 2 Cup Angled Measuring Cup
+       oxo_4 B005P0D188  conf=100.00  ['rule:1_brand+mpn']
+             vendor: OXO GG V-BLADE MANDOLINE
+             amazon: Good Grips 1155700V2 Mandoline Slicer, Stainless Steel…
+      oxo_10 B01N06UEH4  conf=100.00  ['rule:1_brand+mpn']
+             vendor: OXO GG STAINLESS STEEL SINKWARE CROCK
+             amazon: OXO Good Grips Stainless Steel Sink Organizer Caddy & …
+      oxo_13 B000HCBDF2  conf=100.00  ['rule:1_brand+mpn']
+             vendor: OXO GG 11in/27.94CM POP-UP STEAMER
+             amazon: OXO Good Grips Steamer Basket - Stainless Steel, 8 Inc…
+    oak ridge products_0 B01D9AS8FQ  conf=100.00  ['rule:1_brand+mpn']
+             vendor: Sharps Container 1 Quart Red Base Translucent Flip Lid…
+             amazon: Oakridge Products Sharps Container for Home Use and Pr…
+    oak ridge products_3 B09H3P5ZT3  conf= 90.00  ['rule:5_fuzzy72']
+             vendor: Sharps Container 1 Gallon Red Base Translucent Chimney…
+             amazon: Oakridge 1 Gallon Sharps Container -40 Pack | Chimney …
+    oak ridge products_7 B00K0TS7H4  conf=100.00  ['rule:1_brand+mpn']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Slide L…
+             amazon: Sharps Container (1)
+    oak ridge products_10 B00ZVVEP3G  conf= 90.00  ['rule:5_fuzzy72']
+             vendor: Sharps Container 5 Quart Red Base Translucent Mailbox …
+             amazon: COVIDIEN 5 Quart Sharps Container with Mailbox Style L…
+    oak ridge products_11 B00X6L1WRK  conf=100.00  ['rule:1_brand+mpn']
+             vendor: Sharps Container 5 Quart Red Base Translucent Horizont…
+             amazon: Oakridge Products Sharps Container for Home Use and Pr…
+    oak ridge products_18 B00AN2W9UE  conf= 90.00  ['rule:5_fuzzy72']
+             vendor: Sharps Container 5.4 Quart Clear Base Translucent Rota…
+             amazon: BD 5.4 Quart Translucent White Horizontal Entry Sharps…
+
+  MISSED MATCHES - rejected but actually a match (15):
+       oxo_0 B0CP6CTSLY  conf= 32.60  ['rule:fallback_fuzzy']
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4 Cup Glass Liquid Measuring Cup
+       oxo_0 B00GJSROHO  conf= 28.60  ['rule:fallback_fuzzy']
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4-Piece Mini Measuring Beaker Set
+       oxo_0 B0C7Q6Q6ZG  conf= 26.70  ['rule:fallback_fuzzy']
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4 Piece Stainless Steel Measuring Cups …
+    injinji_5 B00AK8E41S  conf= 27.80  ['rule:fallback_fuzzy']
+             vendor: Sport Original Weight Crew
+             amazon: Injinji 2.0 Men's Sport Crew Toesocks, Black, Small
+    injinji_6 B00AK8E48G  conf= 27.80  ['rule:fallback_fuzzy']
+             vendor: Sport Original Weight Crew
+             amazon: Injinji 2.0 Men's Sport Crew Toesocks, Black, Medium
+    injinji_7 B00AK8E43Q  conf= 27.80  ['rule:fallback_fuzzy']
+             vendor: Sport Original Weight Crew
+             amazon: Injinji 2.0 Men's Sport Crew Toesocks, Black, Large
+    injinji_8 B00AK8E42W  conf= 27.80  ['rule:fallback_fuzzy']
+             vendor: Sport Original Weight Crew
+             amazon: Injinji 2.0 Men's Sport Crew Toesocks, Black, X-Large
+    oak ridge products_1 B0C8BRN8K1  conf= 31.00  ['rule:fallback_fuzzy']
+             vendor: Sharps Container 1.5 Quart Red Base Translucent BD Sty…
+             amazon: Post Medical - 1.5 Quart Sharps Container - Case of 6,…
+    oak ridge products_6 B095PVNYQ8  conf= 33.00  ['rule:fallback_fuzzy', 'variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+    oak ridge products_6 B095PRGQZ2  conf= 33.00  ['rule:fallback_fuzzy', 'variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+
+======================================================================
+MATCHER: classifier
+======================================================================
+
+[overall]  n=470  real matches=86
+  approved=48  review=47  rejected=375  review_rate=10.0%
+  precision=0.958  recall=0.535
+  false approvals=2  missed=4  real matches in review=36
+
+  rules fired:
+     470  classifier
+
+  FALSE APPROVALS - approved but not a match (2):
+    oak ridge products_10 B00KJ6Q9B4  conf= 59.60  ['rule:classifier']
+             vendor: Sharps Container 5 Quart Red Base Translucent Mailbox …
+             amazon: Covidien 85131 SharpSafety in Room Sharps Container, M…
+    oak ridge products_10 B00ZVVEP3G  conf= 72.30  ['rule:classifier']
+             vendor: Sharps Container 5 Quart Red Base Translucent Mailbox …
+             amazon: COVIDIEN 5 Quart Sharps Container with Mailbox Style L…
+
+  MISSED MATCHES - rejected but actually a match (4):
+       oxo_0 B0CP6CTSLY  conf=  6.00  ['rule:classifier']
+             vendor: OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN
+             amazon: OXO Good Grips 4 Cup Glass Liquid Measuring Cup
+    oak ridge products_6 B0713Y5TRZ  conf=  3.20  ['rule:classifier']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Chimney…
+             amazon: Sharps Container, 2 Gal., Chimney Top, PK5
+    oak ridge products_8 B07B3XX4Z1  conf= 18.30  ['rule:classifier', 'variant_not_stated']
+             vendor: Sharps Container 2 Gallon Red Base Translucent Rotary …
+             amazon: Oakridge Products Large Sharps Container for Home Use …
+    micro scientific_11 B079X827F8  conf=  1.30  ['rule:classifier']
+             vendor: Opti-Cide® Max Disinfectant Cleaner, 1 Gallon, 4/cs (U…
+             amazon: Micro-Scientific Opti-Cide Max Disinfectant Cleaner & …
+
+======================================================================
+COMPARISON
+======================================================================
+  matcher        review  approved  precision  false_appr  missed  in_review
+  weighted       15.3%        41      0.878           5      15         35
+  cascade        20.2%        69      0.594          28      15         30
+  classifier     10.0%        48      0.958           2       4         36

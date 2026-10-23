@@ -107,6 +107,12 @@ def load_eval_set(path: Path, brand: str | None) -> list[Pair]:
 def run_matcher(name: str, pairs: list[Pair], mode: str, audit: bool = False) -> list:
     fn = get_matcher(name)
     results = [fn(p.offer, p.cand, mode) for p in pairs]
+
+    from services.analytics.matching_core.matching.flags import unified_attrs_enabled
+    if unified_attrs_enabled():          # same shared variant check the app uses
+        from services.analytics.matching_core.matching.variant_gate import apply_gate, gate_for_models
+        results = [apply_gate(r, gate_for_models(p.offer, p.cand)) for p, r in zip(pairs, results)]
+
     if not audit:
         return results
 
@@ -129,7 +135,6 @@ def run_matcher(name: str, pairs: list[Pair], mode: str, audit: bool = False) ->
     print(f"  audited {to_audit}, flagged {n_flagged}"
           + (f", {tokens} tokens (~${tokens / 1e6 * 3:.3f})" if tokens else ""))
     return out
-
 
 # --------------------------------------------------------------------------- #
 # metrics

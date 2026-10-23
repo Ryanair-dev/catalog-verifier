@@ -1,8 +1,17 @@
 """Attribute extraction + comparison for the rule cascade.
+
+NEW (2026-10-22): the scorers can use the UNIFIED attribute reader (attr_extract.py, the same boxes the
+variant gate uses) instead of the old title-only regexes below.  adapter.py computes the unified
+comparison for a pair and hands it in through `unified_attributes(...)`; while that is active,
+`compare_attributes()` returns it.  Switch: MATCH_SCORER_ATTRS=1 (default OFF, because it changes
+scores: run scripts/eval_matchers.py with it on and off before switching it on for real runs).
+Without the switch everything below works exactly as before.
 """
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
 
 from services.analytics.matching_core.matching.flags import EXTENDED_COUNTS
@@ -29,6 +38,25 @@ class Cmp(str, Enum):
     MATCH = "match"
     MISMATCH = "mismatch"
     UNKNOWN = "unknown"
+
+
+# The unified comparison for the pair being scored right now (set by adapter.py), or None.
+_UNIFIED: ContextVar[dict | None] = ContextVar("unified_attribute_compare", default=None)
+
+
+@contextmanager
+def unified_attributes(result: dict | None):
+    """While active, compare_attributes() returns `result` ({"volume", "color", "size", "count"} -> Cmp)."""
+    token = _UNIFIED.set(result)
+    try:
+        yield
+    finally:
+        _UNIFIED.reset(token)
+
+
+def unified_active() -> bool:
+    """True while a unified comparison is being used (for the explanation text)."""
+    return _UNIFIED.get() is not None
 
 
 def _texts(offer: Offer, cand: Candidate) -> tuple[str, str]:
@@ -184,6 +212,9 @@ ATTRIBUTE_COMPARERS = {
 
 
 def compare_attributes(offer: Offer, cand: Candidate) -> dict[str, Cmp]:
+    unified = _UNIFIED.get()
+    if unified is not None:
+        return {name: unified.get(name, Cmp.UNKNOWN) for name in ATTRIBUTE_COMPARERS}
     return {name: fn(offer, cand) for name, fn in ATTRIBUTE_COMPARERS.items()}
 
 
@@ -192,3 +223,6 @@ def summarize(results: dict[str, Cmp]) -> tuple[int, int, int]:
     m = sum(1 for v in results.values() if v is Cmp.MATCH)
     x = sum(1 for v in results.values() if v is Cmp.MISMATCH)
     return m, x, m + x
+
+
+FILE_VERSION = "2026-10-22 v2 (unified attributes behind MATCH_SCORER_ATTRS)"

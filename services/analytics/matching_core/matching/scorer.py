@@ -18,6 +18,7 @@ from services.analytics.matching_core.matching.normalize import (
     upc_matches,
 )
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
+from services.analytics.matching_core.matching.attribute_compare import Cmp, compare_attributes
 
 VERIFIED_MIN = 90.0
 REVIEW_MIN = 55.0
@@ -44,22 +45,6 @@ def _barcode(value: str | None) -> str | None:
     s = re.sub(r"[\s\-]", "", str(value or ""))
     s = re.sub(r"\.0+$", "", s)
     return s if _BARCODE_RE.match(s) else None
-
-
-def _strengths(offer: Offer, cand: Candidate, upc_hit: bool) -> dict[str, float]:
-    """0..1 strength of every signal that exists on BOTH sides. A missing value is left
-    out (not penalised); a value that is present but different counts as 0."""
-    s: dict[str, float] = {}
-    if _barcode(offer.upc) and _barcode(cand.upc):
-        s["upc"] = 1.0 if upc_hit else 0.0
-    if offer.mpn and cand.mpn:
-        s["mpn"] = 1.0 if base_mpn(offer.mpn) == base_mpn(cand.mpn) else 0.0
-    if offer.brand and cand.brand:
-        s["brand"] = _brand_score(offer, cand) / BRAND_MAX
-    src, amz = offer.title or offer.raw_text or "", cand.title or ""
-    if src and amz:
-        s["title"] = title_similarity(src, amz) / 100.0
-    return s
 
 def _brand_score(offer: Offer, cand: Candidate) -> float:
     if not offer.brand or not cand.brand:
@@ -155,6 +140,11 @@ def score(offer: Offer, cand: Candidate) -> MatchResult:
         confidence = min(confidence, NO_ID_CAP)
  
     is_mismatch, reasons = _hard_mismatch(offer, cand)
+    attrs = compare_attributes(offer, cand)
+    for name in ("color", "count"):       # checks cascade has and weighted did not
+        if attrs[name] is Cmp.MISMATCH:
+            reasons.append(f"{name}_mismatch")
+            is_mismatch = True
     if is_mismatch:
         confidence = min(confidence, MISMATCH_CAP)
  

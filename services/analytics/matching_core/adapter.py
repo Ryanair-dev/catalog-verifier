@@ -1,4 +1,15 @@
-"""Adapt Catalog Verifier's normalized records to the matcher scoring core."""
+"""Adapt Catalog Verifier's normalized records to the matcher scoring core.
+
+2026-10-22 changes (FILE_VERSION at the bottom):
+  - NOT STATED rule: a listing's count of 1 and its gender "unisex" carry no information, so they no longer
+    send a pair to Review on their own ("the vendor row does not state gender, count ... count 1").
+  - MATCH_SCORER_ATTRS=1 (default OFF): the scorers' own attribute checks (color / size / volume / count) use
+    the unified attribute reader, the same boxes the variant gate uses, instead of the old title-only regexes.
+    It changes scores, so compare scripts/eval_matchers.py with it on and off before using it for real runs.
+  - The cascade's factor list says "(scorer's own title check)" while that switch is off, so "Color: unknown"
+    is no longer read as "the attributes are unknown".
+  - Explanations name the source "AI-expanded title" and show the vendor STYLE number when there is one.
+"""
 from __future__ import annotations
 
 import logging
@@ -10,6 +21,8 @@ from services.analytics.matching_core.matching.cascade import score as score_cas
 from services.analytics.matching_core.matching.attribute_compare import (
     Cmp,
     compare_attributes,
+    unified_active,
+    unified_attributes,
 )
 from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
@@ -21,6 +34,25 @@ from services.analytics.matching_core.matching.normalize import (
     upc_matches,
 )
 from services.analytics.matching_core.matching.scorer import score as score_weighted
+from services.analytics.matching_core.matching.flags import unified_attrs_enabled
+from services.analytics.matching_core.matching.variant_gate import (
+    apply_gate,
+    describe_gate,
+    gate_for_pair,
+)
+
+import os as _ur_os
+import re as _ur_re
+
+from services.analytics.matching_core.matching.attr_extract import _tokens as _ur_tokens
+from services.analytics.matching_core.matching.attr_extract import extract_amazon as _ur_extract_amazon
+from services.analytics.matching_core.matching.attr_extract import extract_vendor as _ur_extract_vendor
+from services.analytics.matching_core.matching.lexicon import colors_relation as _ur_colors_relation
+from services.analytics.matching_core.matching.lexicon import gender_tokens as _ur_gender_tokens
+from services.analytics.matching_core.matching.lexicon import get_lexicon as _ur_get_lexicon
+from services.analytics.matching_core.matching.lexicon import variant_boxes_for as _ur_variant_boxes_for
+from services.analytics.matching_core.matching.normalize import brands_match as _ur_brands_match
+from services.analytics.matching_core.matching.variation import compare_boxes as _ur_compare_boxes
 
 _log = logging.getLogger(__name__)
 _logged_scorers: set[str] = set()
@@ -160,6 +192,44 @@ def score_export_pair(
     )
 
 
+def scorer_attrs_enabled() -> bool:
+    """MATCH_SCORER_ATTRS=1: the scorers use the unified attribute reader. Default OFF."""
+    return _ur_os.getenv("MATCH_SCORER_ATTRS", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _unified_scorer_compare(
+    source: dict[str, Any], normalized: dict[str, Any], extracted: dict[str, Any] | None,
+) -> dict[str, Cmp] | None:
+    """The unified attribute comparison in the scorers' own shape: {"volume", "color", "size", "count"} -> Cmp.
+    A color name the word library cannot place, a partial size (S vs XS/S) and a difference resting on an
+    AI-expanded-title value are UNKNOWN here (never a scorer mismatch).  None when the switch is off."""
+    if not scorer_attrs_enabled():
+        return None
+    try:
+        vf = _ur_extract_vendor(source, extracted)["fields"]
+        af = _ur_extract_amazon(normalized)["fields"]
+        boxes = _ur_compare_boxes(vf, af)
+
+        def cmp_of(box: str, state: str | None) -> Cmp:
+            if state == "match":
+                return Cmp.MATCH
+            if state != "mismatch":
+                return Cmp.UNKNOWN
+            names = ("count",) if box == "units" else (box,)
+            if any((vf.get(n) or {}).get("soft") or (af.get(n) or {}).get("soft") for n in names):
+                return Cmp.UNKNOWN
+            if box == "color" and _ur_colors_relation(vf["color"]["value"], af["color"]["value"]) != "different":
+                return Cmp.UNKNOWN
+            return Cmp.MISMATCH
+
+        return {"volume": cmp_of("volume_ml", boxes.get("volume_ml")),
+                "color": cmp_of("color", boxes.get("color")),
+                "size": cmp_of("size", boxes.get("size")),
+                "count": cmp_of("units", boxes.get("units"))}
+    except Exception:  # noqa: BLE001 - fall back to the scorers' own checks
+        return None
+
+
 def score_pair(
     source: dict[str, Any],
     normalized: dict[str, Any],
@@ -173,8 +243,29 @@ def score_pair(
     offer, candidate = build_pair(
         source, normalized, extracted=extracted, sources=sources,
     )
-    result = score_models(offer, candidate, method=method, mode=mode)
-    scores = result_to_scores(result, method, offer, candidate)
+    with unified_attributes(_unified_scorer_compare(source, normalized, extracted)):
+        result = score_models(offer, candidate, method=method, mode=mode)
+        # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
+        barcode_ok = bool(
+            offer.upc and candidate.upc
+            and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+        )
+        gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
+                if unified_attrs_enabled() else None)
+        if gate:
+            result = apply_gate(result, gate)
+        scores = result_to_scores(result, method, offer, candidate)
+    if gate:
+        scores["variant_check"] = {
+            "hard": gate["hard"], "soft": gate["soft"], "boxes": gate["boxes"],
+            "open": gate.get("open", []),
+            "lexicon": gate.get("lexicon"),          # version of the word lists that produced this verdict
+            "categories": gate.get("categories"),    # product categories used by the variant rules
+        }
+        note = describe_gate(gate)
+        explanation = scores.get("explanation")
+        if note and isinstance(explanation, dict):
+            explanation["summary"] = f"{explanation.get('summary') or ''} {note}".strip()
     verdict = result.verdict.value
     return scores, "not_approved" if verdict == "rejected" else verdict
 
@@ -219,7 +310,7 @@ def build_pair(
         found_via=",".join(sources or []),
     )
     return offer, candidate
- 
+
 
 
 def score_models(offer: Offer, candidate: Candidate, *, method: str, mode: str = "cpg") -> MatchResult:
@@ -304,8 +395,9 @@ def result_to_scores(
         }
         attributes = compare_attributes(offer, candidate)
         attr_labels = {"volume": "Volume", "color": "Color", "size": "Apparel size", "count": "Bundle count"}
+        own_check = "" if unified_active() else " (scorer's own title check)"
         attr_factors = [
-            f"{attr_labels[name]}: {value.value}"
+            f"{attr_labels[name]}{own_check}: {value.value}"
             for name, value in attributes.items()
         ]
         summary = f"{rule_labels.get(rule, rule)} produced {confidence:.1f}."
@@ -357,3 +449,172 @@ def result_to_scores(
         reason == "volume_mismatch" for reason in reasons
     )
     return scores
+
+_UR_STATED = ("color", "size", "finish", "type", "flavor", "scent", "gender", "count")
+_UR_BY_CATEGORY = {"color", "size", "flavor", "scent"}
+_UR_CONTRADICT = ("color", "size", "finish", "type", "flavor", "scent", "gender", "shade_code", "material",
+                  "volume_ml", "weight_g", "units", "model")
+_UR_NOTE = ("color", "finish", "size", "type", "flavor", "scent", "gender", "count", "model", "style")
+_UR_SOURCE = {"vendor_column": "vendor file", "ai": "AI", "title": "title", "amazon_field": "Amazon field",
+              "ai_title": "AI-expanded title"}
+_UR_KIND_BOX = {"apparel size": "size", "color": "color", "colour": "color", "gender": "gender", "scent": "scent",
+                "shade": "shade_code"}
+_UR_COLUMN_HINT = {"color": r"colou?r", "size": r"size", "flavor": r"flavou?r", "scent": r"scent|fragrance",
+                   "gender": r"gender|department|target", "finish": r"finish"}
+_UR_NOISE = {"small", "medium", "large", "extra", "x", "xs", "xl", "xxl", "xxxl", "xxs", "oz", "ounce", "ounces", "fl",
+             "ml", "l", "liter", "liters", "lb", "lbs", "pound", "pounds", "kg", "g", "gram", "grams", "gal", "gallon",
+             "count", "ct", "pack", "packs", "pk", "pcs", "pc", "piece", "pieces", "pair", "pairs", "each", "ea", "roll",
+             "rolls", "tube", "tubes", "case", "box", "bundle", "size", "in", "inch", "inches"}
+_UR_DROP_CACHE: dict = {}
+
+
+def _ur_on(name):
+    return _ur_os.getenv(name, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _ur_drop_words():
+    lex = _ur_get_lexicon()
+    key = getattr(lex, "version", "")
+    if key not in _UR_DROP_CACHE:
+        words = set(lex.colors) | set(getattr(lex, "tones", ())) | set(_ur_gender_tokens(in_field=True))
+        words |= set(lex.sizes) | set(getattr(lex, "line_filler", ())) | _UR_NOISE
+        for table in (getattr(lex, "finishes", {}), getattr(lex, "types", {})):
+            for phrase in table:
+                words |= set(phrase.split())
+        _UR_DROP_CACHE[key] = frozenset(words)
+    return _UR_DROP_CACHE[key]
+
+
+def _ur_related(vendor_title, vendor_brand, listing_title):
+    """At least half of the vendor title's own words (brand, colors, sizes, units, numbers removed) are in the listing."""
+    drop, brand_words = _ur_drop_words(), set(_ur_tokens(vendor_brand))
+    core = {t for t in _ur_tokens(vendor_title)
+            if len(t) >= 2 and t not in drop and t not in brand_words and not _ur_re.search(r"\d", t)}
+    if not core:
+        return False
+    listing = set(_ur_tokens(listing_title))
+
+    def present(t):
+        return t in listing or any(len(t) >= 4 and len(x) >= 4 and (x.startswith(t) or t.startswith(x)) for x in listing)
+
+    return sum(1 for t in core if present(t)) / len(core) >= 0.5
+
+
+def _ur_scorer_kinds(scores):
+    """The kinds of mismatch the scorer itself reported: ['apparel size', 'color'] ..."""
+    expl = scores.get("explanation")
+    text = str(expl.get("summary") if isinstance(expl, dict) else expl or "")
+    kinds = [k.strip().lower() for m in _ur_re.finditer(r"mismatch cap applied \(([^)]*)\)", text, _ur_re.I)
+             for k in m.group(1).split(",") if k.strip()]
+    for r in scores.get("reasons") or []:
+        r = str(r).lower()
+        if "mismatch" in r or "conflict" in r:
+            kinds.append(r.replace("_mismatch", "").replace("_conflict", "").replace("_", " ").strip())
+    return kinds
+
+
+def _ur_column_states(raw, box):
+    """True when the vendor file has a column for this attribute with a value in it (even if the reader missed it)."""
+    hint = _UR_COLUMN_HINT.get(box)
+    if not hint:
+        return False
+    for key, value in (raw or {}).items():
+        text = str(value if value is not None else "").strip().lower()
+        if _ur_re.search(hint, str(key), _ur_re.I) and text not in ("", "nan", "none", "n/a", "na", "-"):
+            return True
+    return False
+
+
+def _ur_listing_states(fields, box):
+    """Does the listing really state this attribute?  A count of 1 and the gender 'unisex' say nothing."""
+    entry = fields.get(box)
+    if not entry:
+        return False
+    value = entry.get("value")
+    if box == "count":
+        try:
+            return float(value) > 1
+        except (TypeError, ValueError):
+            return False
+    if box == "gender":
+        return str(value or "").strip().lower() not in ("unisex", "")
+    return True
+
+
+def _ur_shown(entry):
+    return f"{entry['value']} ({_UR_SOURCE.get(entry.get('source'), entry.get('source') or '?')})"
+
+
+def _ur_apply(scores, verdict, source, normalized, extracted, barcode_ok):
+    vendor, listing = _ur_extract_vendor(source, extracted), _ur_extract_amazon(normalized)
+    vf, af = vendor["fields"], listing["fields"]
+    show = lambda f: ", ".join(f"{b.replace('_', ' ')} {_ur_shown(f[b])}" for b in _UR_NOTE if b in f) or "nothing stated"
+    columns = ", ".join(str(k) for k in (source.get("raw") or {}))[:150]
+    sentence = (f"Attributes - vendor row: {show(vf)}; listing: {show(af)}. Vendor file columns: {columns or 'none'}."
+                if _ur_on("MATCH_ATTR_NOTES") else "")
+    if _ur_on("MATCH_UNSTATED_REVIEW") and verdict in ("verified", "not_approved"):
+        allowed = _ur_variant_boxes_for(listing["identity"].get("category") or vendor["identity"].get("category"))
+        unstated = [b for b in _UR_STATED if _ur_listing_states(af, b) and b not in vf
+                    and (b not in _UR_BY_CATEGORY or allowed is None or b in allowed)]
+        boxes = _ur_compare_boxes(vf, af) if unstated else {}
+        explicit = any(boxes.get(b) == "mismatch" for b in _UR_CONTRADICT) or boxes.get("model") == "match"
+        # the vendor file has a column for it with a value: the vendor row DOES state it (the reader just missed it)
+        in_file = any(_ur_column_states(source.get("raw"), b) for b in unstated)
+        move = None
+        if unstated and not explicit and not in_file:
+            if verdict == "verified" and not barcode_ok:
+                move = "demote"
+            elif verdict == "not_approved":
+                kinds = _ur_scorer_kinds(scores)
+                # the scorer's own mismatch is overridden only if it is about something the vendor row does not state
+                overridable = all(k in _UR_KIND_BOX and _UR_KIND_BOX[k] not in vf for k in kinds)
+                vb = str(source.get("brand") or (extracted or {}).get("brand") or "")
+                lb = str(normalized.get("brand") or normalized.get("manufacturer") or "")
+                if (not overridable or (vb and lb and not _ur_brands_match(vb, lb))
+                        or not _ur_related(source.get("title"), vb, normalized.get("title"))):
+                    move = None
+                else:
+                    move = "rescue"
+        if move:
+            conf = float(scores.get("confidence_score") or 0)
+            scores["confidence_score"] = min(conf, 89.0) if move == "demote" else max(conf, 55.0)
+            if "verdict" in scores:
+                scores["verdict"] = "review"
+            if isinstance(scores.get("reasons"), list):
+                scores["reasons"].append("variant_not_stated")
+            verdict = "review"
+            names = ", ".join(b.replace("_", " ") for b in unstated)
+            sentence = (f"{sentence} Needs review: the vendor row does not state {names}, the listing does "
+                        f"({', '.join(b.replace('_', ' ') + ' ' + _ur_shown(af[b]) for b in unstated)}), "
+                        f"and nothing stated on both sides differs.").strip()
+    expl = scores.get("explanation")
+    if sentence and isinstance(expl, dict):
+        expl["summary"] = f"{expl.get('summary') or ''} {sentence}".strip()
+    return scores, verdict
+
+
+def _score_pair_with_unstated_rule(
+    source: dict[str, Any],
+    normalized: dict[str, Any],
+    *,
+    method: str = "weighted",
+    mode: str = "cpg",
+    extracted: dict[str, Any] | None = None,
+    sources: list[str] | None = None,
+) -> tuple[dict[str, Any], str]:
+    scores, verdict = _score_pair_scorer_only(
+        source, normalized, method=method, mode=mode, extracted=extracted, sources=sources)
+    try:
+        offer, candidate = build_pair(source, normalized, extracted=extracted, sources=sources)
+        barcode_ok = bool(offer.upc and candidate.upc
+                          and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc)))
+        scores, verdict = _ur_apply(scores, verdict, source, normalized, extracted, barcode_ok)
+    except Exception:  # a problem here must never break scoring
+        pass
+    return scores, verdict
+
+
+_score_pair_scorer_only = score_pair
+score_pair = _score_pair_with_unstated_rule
+
+FILE_VERSION = "2026-10-22 adapter v3 (count 1 / unisex = not stated, MATCH_SCORER_ATTRS)"

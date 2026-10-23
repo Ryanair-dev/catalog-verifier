@@ -36,12 +36,24 @@ _SYSTEM = (
     "(e.g. 'Classic Original Scent', 'Ultra Platinum'); null if none\n"
     "  size         — size/volume/weight string (e.g. '3.4 oz', '56 fl oz'); "
     "null if absent\n"
-    "  pack_info    — pack count if listed (e.g. 'pack of 3'); null if single\n\n"
+    "  pack_info    — pack count if listed (e.g. 'pack of 3'); null if single\n"
+    "  color        — the color or shade, only if the title states one "
+    "(e.g. 'black', 'navy'); null if not stated\n"
+    "  flavor       — the flavor, only if the title states one "
+    "(e.g. 'vanilla', 'strawberry'); null if not stated\n"
+    "  scent        — the scent or fragrance, only if the title states one "
+    "(e.g. 'lavender', 'spring meadow'); null if not stated\n"
+    "  material     — the material, only if the title states one "
+    "(e.g. 'cotton', 'stainless steel'); null if not stated\n"
+    "  unit_count   — the number of units inside ONE package, as a number "
+    "(e.g. 36 for '36 count'); null if not stated\n\n"
+    "Rules: use ONLY what the title says. Never guess, and never infer a value from "
+    "the brand or the product type. Use null whenever the title does not state it.\n\n"
     "Respond ONLY with a raw JSON array — no markdown, no code blocks — "
     "one object per title in the SAME ORDER:\n"
-    '[{"brand":"...","product_type":"...","model":null,"size":"...","pack_info":null}]'
+    '[{"brand":"...","product_type":"...","model":null,"size":"...","pack_info":null,'
+    '"color":null,"flavor":null,"scent":null,"material":null,"unit_count":null}]'
 )
-
 
 # --------------------------------------------------------------------------- #
 # JSON extraction helper
@@ -86,7 +98,7 @@ def _extract_batch_claude(client, titles: list[str]) -> list[dict]:
         try:
             resp = client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
+                max_tokens=3000,
                 system=_SYSTEM,
                 messages=[{"role": "user", "content": numbered}],
                 temperature=0,
@@ -150,6 +162,11 @@ def _normalise(raw: dict) -> dict:
         "model":        _s(raw.get("model")),
         "size":         _s(raw.get("size")),
         "pack_info":    _s(raw.get("pack_info")),
+        "color":        _s(raw.get("color")),
+        "flavor":       _s(raw.get("flavor")),
+        "scent":        _s(raw.get("scent")),
+        "material":     _s(raw.get("material")),
+        "unit_count":   _s(raw.get("unit_count")),
     }
 
 

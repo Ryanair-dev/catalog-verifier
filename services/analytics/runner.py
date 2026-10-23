@@ -256,6 +256,17 @@ def normalize_amazon_item(raw: dict) -> dict:
         v = _first(attrs.get(key))
         return str(v).strip() if v is not None else ""
 
+    def _attr_type(key: str) -> str:
+        """The 'type' label some attributes carry, e.g. unit_count -> 'Count'."""
+        entries = attrs.get(key) or []
+        first = entries[0] if entries else None
+        if isinstance(first, dict):
+            t = first.get("type")
+            if isinstance(t, dict):
+                return str(t.get("value") or "").strip()
+            return str(t or "").strip()
+        return ""
+
     # Pull bullet points + description from attributes (structure varies).
     bullets: list[str] = []
     for bp in (attrs.get("bullet_point") or []):
@@ -291,6 +302,19 @@ def normalize_amazon_item(raw: dict) -> dict:
         "sales_rank": best_rank,
         "sales_rank_category": best_rank_category,
         "sales_ranks": all_ranks,
+        # ---- NEW keys (for the shared attribute reader; nothing else reads them yet) ----
+        "unit_count": _attr_str("unit_count"),
+        "unit_count_type": _attr_type("unit_count"),
+        "style": _attr_str("style") or str(summary.get("styleName") or "").strip(),
+        "item_form": _attr_str("item_form"),
+        "flavor": _attr_str("flavor"),
+        "scent": _attr_str("scent"),
+        "model_name": _attr_str("model_name"),
+        "summary_color": str(summary.get("colorName") or "").strip(),
+        "summary_size": str(summary.get("sizeName") or "").strip(),
+        "upcs": upcs,
+        "eans": eans,
+        "gtins": gtins,
         # Preserve the original for later UI drill-down.
         "_raw": raw,
     }
@@ -388,6 +412,22 @@ def _update_progress(
             params,
         )
 
+def _shadow_attrs(source: dict, normalized: dict, extracted: dict | None) -> dict | None:
+    """Shadow mode: read the shared attribute boxes for both sides and keep them with the
+    candidate. Nothing uses them yet, and a failure here must never break a run."""
+    try:
+        from services.analytics.matching_core.matching.attr_extract import (
+            extract_amazon,
+            extract_vendor,
+        )
+        return {
+            "vendor": extract_vendor(source, extracted),
+            "amazon": extract_amazon(normalized),
+        }
+    except Exception:  # noqa: BLE001
+        log.exception("Attribute reader failed (shadow mode, ignored)")
+        return None
+
 
 def _upsert_candidate(
     run_id: int,
@@ -462,11 +502,14 @@ def _upsert_candidate(
             )
         return "bsr_filtered"
 
+    attrs = _shadow_attrs(source, normalized, extracted)      # NEW (shadow mode)
+
     data_json = json.dumps({
         "asin": asin,
         "scores": scores,
         "amazon": normalized,
         "verdict": verdict,
+        "attrs": attrs,                                       # NEW
     }, default=str)
 
     with database._LOCK, _with_conn() as conn:
@@ -499,17 +542,22 @@ def _upsert_candidate(
             previous_method = previous_scores.get("scoring_method")
             same_scorer = previous_method == scoring_method
             new_conf = max(conf, previous_confidence) if same_scorer else conf
-            if same_scorer and previous_confidence > conf:
+            kept_previous = same_scorer and previous_confidence > conf
+            if kept_previous:
                 scores = previous_scores
                 verdict = scores.get("scorer_verdict") or verdict
                 scores.pop("category_mismatch", None)
                 scores.pop("media_format_mismatch", None)
                 normalized = previous_data.get("amazon") or normalized
+            # NEW: keep the attrs that belong to the kept data; otherwise use the fresh ones
+            attrs_final = (previous_data.get("attrs") if kept_previous and previous_data.get("attrs")
+                           else attrs)
             data_json = json.dumps({
                 "asin": asin,
                 "scores": scores,
                 "amazon": normalized,
                 "verdict": verdict,
+                "attrs": attrs_final,                         # NEW
             }, default=str)
             conn.execute(
                 "UPDATE analytics_candidates SET sources=?, confidence=?, "
@@ -1264,14 +1312,24 @@ def _rescore_pipeline(
     """
     Re-score every candidate in `run_id` using `title_col` from each row's
     raw dict as the source title for the confidence scorer.
-
+ 
     Also updates analytics_catalog_rows.data_json so the Vendor Title column
     in the UI reflects the newly chosen title after rescoring.
-
+ 
     max_rank / min_rank: enforce rank window — candidates outside the range
     are forced to not_approved regardless of confidence.
     """
     try:
+        # CHANGED: the AI title reader (abbreviations + attributes) for rows where the rules are not enough.
+        # Runs BEFORE the rows are loaded below, so this rescore already scores with what it found.
+        try:
+            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, enrich_run
+            if _attr_ai_on():
+                _update_progress(run_id, phase="Reading vendor titles with AI where the rules are not enough")
+                log.info("Run %s attribute AI (rescore): %s", run_id, enrich_run(run_id))
+        except Exception:
+            log.exception("Attribute AI router failed for run %s (rescore continues without it)", run_id)
+ 
         with database._connect() as conn:
             conn.row_factory = sqlite3.Row
             run_row = conn.execute(
@@ -1279,9 +1337,9 @@ def _rescore_pipeline(
             ).fetchone()
             rescore_mode = (run_row["vetting_mode"] if run_row else None) or "cpg"
             rescore_method = (run_row["scoring_method"] if run_row else None) or "weighted"
-
+ 
             cat_rows = conn.execute(
-                "SELECT row_idx, data_json FROM analytics_catalog_rows "
+                "SELECT row_idx, data_json, query_agent_json FROM analytics_catalog_rows "
                 "WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
@@ -1290,7 +1348,7 @@ def _rescore_pipeline(
                 "FROM analytics_candidates WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
-
+ 
         # Load previously extracted brand fields (stored during the original run).
         extracted_brands_rescore = _load_extracted_brands(run_id)
         # Load pair-manager sets once for the whole rescore.
@@ -1299,6 +1357,7 @@ def _rescore_pipeline(
         catalog_map: dict[int, dict] = {}
         title_by_row: dict[int, str] = {}
         brand_by_row: dict[int, str] = {}
+        agent_title_by_row: dict[int, str] = {}      # NEW: expanded title from the query agent
         for r in cat_rows:
             try:
                 d = json.loads(r["data_json"] or "{}")
@@ -1306,6 +1365,15 @@ def _rescore_pipeline(
                 d = {}
             ri = int(r["row_idx"])
             catalog_map[ri] = d
+            # NEW: the query agent's expanded title, kept apart from the vendor title
+            try:
+                _agent_title = str(
+                    (json.loads(r["query_agent_json"] or "null") or {}).get("comparison_title") or ""
+                ).strip()
+            except (ValueError, TypeError, AttributeError):
+                _agent_title = ""
+            if _agent_title:
+                agent_title_by_row[ri] = _agent_title
             raw = d.get("raw", {})
             if title_col and title_col in raw:
                 title_by_row[ri] = str(raw.get(title_col) or "").strip()
@@ -1318,15 +1386,15 @@ def _rescore_pipeline(
                 brand_by_row[ri] = str(raw.get(brand_col) or "").strip()
             else:
                 brand_by_row[ri] = d.get("brand", "")
-
+ 
         total = len(cand_rows)
         _update_progress(run_id, done=0, total=total)
-
+ 
         cand_batch:   list[tuple] = []
         delete_batch: list[tuple] = []  # (run_id, row_idx, asin) — BSR-excluded rows
         cat_batch:    list[tuple] = []  # (new_data_json, run_id, row_idx)
         flushed_cat_rows: set[int] = set()
-
+ 
         def _flush(final_done: int) -> None:
             if delete_batch:
                 with database._LOCK, _with_conn() as conn:
@@ -1354,16 +1422,16 @@ def _rescore_pipeline(
                     )
                 cat_batch.clear()
             _update_progress(run_id, done=final_done, total=total)
-
+ 
         for i, c in enumerate(cand_rows):
             if _check_control(run_id):
                 _flush(i)
                 _update_progress(run_id, status="Stopped",
                                  phase="Stopped by user", done=i, total=total)
                 return
-
+ 
             row_idx = int(c["row_idx"])
-
+ 
             # A manual or AI decision on this exact candidate (Approve/Discard,
             # Apply AI Decisions, Pair Manager, etc.) must survive a
             # rescore untouched -- confirmed live (2026-09-29, "Pedifix Sales
@@ -1378,21 +1446,23 @@ def _rescore_pipeline(
             # ASIN Exclusivity was an automatic legacy rule, not a user
             # decision; let the selected scorer replace those old verdicts.
             review_status = (c["review_status"] or "").strip()
-            if review_status and review_status != "ASIN Exclusivity":
+            # CHANGED: "ASIN claimed" / "Variant settled" come from family_pass.py (automatic, not a person),
+            # so those candidates are rescored too; the family pass below decides them again.
+            if review_status and review_status not in ("ASIN Exclusivity", "ASIN claimed", "Variant settled"):
                 continue
-
+ 
             cat = catalog_map.get(row_idx, {})
             new_title = title_by_row.get(row_idx, cat.get("title", ""))
-
+ 
             try:
                 cand_data = json.loads(c["data_json"] or "{}")
             except (ValueError, TypeError):
                 cand_data = {}
-
+ 
             amazon_data = cand_data.get("amazon", {})
             if not amazon_data:
                 continue
-
+ 
             row_brand = brand_by_row.get(row_idx, cat.get("brand", ""))
             source = {
                 "upc":          cat.get("upc", ""),
@@ -1400,14 +1470,21 @@ def _rescore_pipeline(
                 "itemid":       cat.get("itemid", ""),
                 "brand":        row_brand,
                 "manufacturer": row_brand,
+                "raw":          cat.get("raw") or {},   # NEW: the vendor file's own columns (COLOR, SIZE ...)
+                "ai_unabbrev":  cat.get("ai_unabbrev"), # CHANGED: the unabbreviation agent's expanded title, if any
+                "run_id": run_id,
             }
-
+ 
             try:
                 sources_list = json.loads(c["sources"] or "[]")
             except (ValueError, TypeError):
                 sources_list = []
-
-            source["title"] = normalize_text(new_title)
+ 
+            # NEW: score the same title the first pass scored: the agent's expanded title for rows
+            # it handled, unless the user picked a title column. It is never written back over
+            # the vendor title that is shown in the table.
+            scoring_title = new_title if title_col else (agent_title_by_row.get(row_idx) or new_title)
+            source["title"] = normalize_text(scoring_title)
             ext = {
                 **(extracted_brands_rescore.get(row_idx) or {}),
             }
@@ -1424,7 +1501,7 @@ def _rescore_pipeline(
             )
             scores["scorer_verdict"] = verdict
             conf = scores["confidence_score"]
-
+ 
             # Re-extract sales_rank from the stored _raw SP-API payload when
             # the normalized dict is missing it (runs created before rank
             # extraction was added).  This backfills both the data_json and
@@ -1437,7 +1514,7 @@ def _rescore_pipeline(
                     if cand_sales_rank is not None:
                         amazon_data["sales_rank"] = cand_sales_rank
                         cand_data["amazon"] = amazon_data
-
+ 
             # Apply rank window: items outside [min_rank, max_rank] are deleted.
             # min_rank also excludes null-ranked items (same logic as _upsert_candidate).
             _rscore_rank = int(cand_sales_rank) if cand_sales_rank is not None else None
@@ -1448,7 +1525,7 @@ def _rescore_pipeline(
             if _rscore_bsr_excluded:
                 delete_batch.append((run_id, row_idx, str(c["asin"])))
                 continue  # skip adding to cand_batch
-
+ 
             audit = cand_data.get("verification_audit") or {}
             if audit.get("flagged") and verdict != "not_approved":
                 verdict = "review"
@@ -1458,11 +1535,12 @@ def _rescore_pipeline(
                 reasons = scores.setdefault("reasons", [])
                 if reason not in reasons:
                     reasons.append(reason)
-
+ 
             scores["verdict"] = verdict
             cand_data["scores"] = scores
             cand_data["verdict"] = verdict
-
+            cand_data.pop("family_pass", None)       # CHANGED: fresh score; the family pass below decides again
+ 
             # Refresh amz_pack from the recomputed effective_pack (so the "Case of
             # 12" fix reaches existing runs on rescore), else the SP-API attribute.
             _eff = scores.get("effective_pack")
@@ -1476,13 +1554,13 @@ def _rescore_pipeline(
                     new_amz_pack = _ri if _ri and _ri > 1 else None
                 except (TypeError, ValueError):
                     new_amz_pack = None
-
+ 
             cand_batch.append((
                 float(conf), verdict, new_amz_pack, json.dumps(cand_data, default=str),
                 cand_sales_rank,   # write back to the sales_rank DB column
                 run_id, row_idx, str(c["asin"]),
             ))
-
+ 
             # Update the catalog row's title (and brand when overridden) once per unique row_idx.
             if row_idx not in flushed_cat_rows:
                 updated_cat = dict(cat)
@@ -1494,12 +1572,19 @@ def _rescore_pipeline(
                     run_id, row_idx,
                 ))
                 flushed_cat_rows.add(row_idx)
-
+ 
             if len(cand_batch) >= _RESCORE_BATCH:
                 _flush(i + 1)
-
+ 
         _flush(total)
-
+ 
+        # CHANGED: the family pass (dedup + settle proven other variants) on the fresh scores
+        try:
+            from services.analytics.family_pass import run_family_pass
+            run_family_pass(run_id)
+        except Exception:
+            log.exception("Family pass failed for run %d", run_id)
+ 
         # Recompute aggregate counts and restore "Complete" status.
         with database._LOCK, database._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -1529,7 +1614,7 @@ def _rescore_pipeline(
     except Exception:
         log.exception("Re-score pipeline failed for run %d", run_id)
         _update_progress(run_id, status="Error", phase="Re-score failed")
-
+ 
 
 # --------------------------------------------------------------------------- #
 # Main entrypoint
@@ -1607,13 +1692,13 @@ def resume_run(run_id: int) -> bool:
         if not run or run["status"] not in ("Paused", "Stopped"):
             return False
         run_d = dict(run)
-
+ 
         cat_rows = conn.execute(
             "SELECT row_idx, data_json FROM analytics_catalog_rows "
             "WHERE run_id=? ORDER BY row_idx",
             (run_id,),
         ).fetchall()
-
+ 
     # Rebuild SourceRow list from persisted data_json.
     from services.analytics.parser import SourceRow
     source_rows: list[SourceRow] = []
@@ -1629,24 +1714,25 @@ def resume_run(run_id: int) -> bool:
             title=d.get("title") or "",
             search_title=d.get("search_title") or "",
             brand=d.get("brand") or "",
+            raw=d.get("raw") or {},          # CHANGED: keep the vendor file's own columns (COLOR, SIZE ...)
         )
         source_rows.append(sr)
-
+ 
     try:
         search_methods = json.loads(run_d.get("search_methods") or "[]")
     except (ValueError, TypeError):
         search_methods = []
-
+ 
     max_rank = int(run_d.get("max_rank") or 0)
     min_rank = int(run_d.get("min_rank") or 0)
     run_mode = run_d.get("vetting_mode") or "cpg"
     scoring_method = run_d.get("scoring_method") or "weighted"
     use_query_agent = bool(run_d.get("use_query_agent"))
     use_llm_verifier = bool(run_d.get("use_llm_verifier"))
-
+ 
     clear_control(run_id)
     _update_progress(run_id, status="Searching", phase="Resuming…")
-
+ 
     thread = threading.Thread(
         target=_run_pipeline,
         args=(run_id,
@@ -1662,7 +1748,7 @@ def resume_run(run_id: int) -> bool:
     )
     thread.start()
     return True
-
+ 
 
 def _vet_and_store(
     run_id: int,
@@ -1678,7 +1764,7 @@ def _vet_and_store(
     """
     Score and persist every (row × ASIN) pair for ``rows_to_vet`` using the
     candidates accumulated so far in ``candidates_by_row``.
-
+ 
     Called after EACH search tier (not once at the very end) so candidates show
     up in the UI progressively and survive a pause/stop — they're written as
     soon as their tier completes instead of being held in memory for the whole
@@ -1690,9 +1776,14 @@ def _vet_and_store(
     if not total:
         return
     _update_progress(run_id, phase=phase_label, done=0, total=total)
+    ai_titles = _load_ai_unabbrev(run_id)          # CHANGED: AI-expanded titles saved by the router step
     done = 0
     for r in rows_to_vet:
         source_dict = r.as_source_dict()
+        source_dict.setdefault("raw", getattr(r, "raw", None) or {})
+        source_dict["run_id"] = run_id
+        if r.row_idx in ai_titles:                 # CHANGED: read as the soft source "ai_title"
+            source_dict["ai_unabbrev"] = ai_titles[r.row_idx]
         ext = extracted_brands.get(r.row_idx)
         by_asin: dict[str, tuple[dict, list[str]]] = {}
         for item, source_label in candidates_by_row.get(r.row_idx, []):
@@ -1704,7 +1795,7 @@ def _vet_and_store(
                                  list(dict.fromkeys(by_asin[asin][1] + [source_label])))
             else:
                 by_asin[asin] = (item, [source_label])
-
+ 
         for asin, (item, srcs) in by_asin.items():
             _upsert_candidate(
                 run_id, r.row_idx, item, source_dict, srcs,
@@ -1715,7 +1806,29 @@ def _vet_and_store(
         if done % 25 == 0 or done == total:
             _update_progress(run_id, done=done)
     _recompute_run_counts(run_id)
+ 
 
+def _load_ai_unabbrev(run_id: int) -> dict[int, dict]:
+    """NEW: {row_idx: data_json["ai_unabbrev"]} for the vendor rows the AI router expanded (attr_ai.enrich_run)."""
+    out: dict[int, dict] = {}
+    try:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT row_idx, json_extract(data_json, '$.ai_unabbrev') AS ai FROM analytics_catalog_rows "
+                "WHERE run_id=? AND json_extract(data_json, '$.ai_unabbrev') IS NOT NULL",
+                (run_id,),
+            ).fetchall()
+        for r in rows:
+            try:
+                value = json.loads(r["ai"] or "null")
+            except (TypeError, ValueError):
+                value = None
+            if isinstance(value, dict):
+                out[int(r["row_idx"])] = value
+    except Exception:  # noqa: BLE001 - without it the rows are simply scored without the AI-expanded title
+        log.exception("Could not load AI-expanded titles for run %s", run_id)
+    return out
 
 def _run_pipeline(
     run_id: int,
@@ -1740,7 +1853,7 @@ def _run_pipeline(
                 phase="SP-API credentials not configured. Add them to .env and restart.",
             )
             return
-
+ 
         # On resume, skip rows that already have at least one candidate.
         if is_resume:
             with database._connect() as conn:
@@ -1752,14 +1865,14 @@ def _run_pipeline(
                 }
             source_rows = [r for r in source_rows if r.row_idx not in done_idxs]
             log.info("Resume run %s: %d rows remaining", run_id, len(source_rows))
-
+ 
         api = get_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)
-
+ 
         candidates_by_row: dict[int, list[tuple[dict, str]]] = {}
-
+ 
         # ------------------------------------------------------------------ #
         # Helper: check for pause/stop after each major step
         # ------------------------------------------------------------------ #
@@ -1775,22 +1888,36 @@ def _run_pipeline(
                 _recompute_run_counts(run_id)
                 return True
             return False
-
+ 
         _update_progress(run_id, phase="Normalizing vendor titles")
         original_source_rows = source_rows
         source_rows, extracted_brands = _normalize_source_rows(
             source_rows,
         )
         _save_extracted_brands(run_id, extracted_brands)
-
+ 
+        # CHANGED: AI router for attribute extraction (MATCH_AI_TITLE_ATTRS=1): expands only the vendor titles
+        # with abbreviations no rule explains (learned pairs are free, answers are cached). Before any scoring,
+        # so every tier below scores with the expanded titles.
+        try:
+            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, enrich_run
+            if _attr_ai_on():
+                _update_progress(run_id, phase="Reading vendor titles with AI where the rules are not enough")
+                _ai = enrich_run(run_id)
+                log.info("Run %s attribute AI: %s", run_id, _ai)
+        except Exception:
+            log.exception("Attribute AI router failed for run %s (run continues without it)", run_id)
+        if _handle_control():
+            return
+ 
         # --- Brand extraction (GPT-4o-mini, only when ai_clean_titles enabled) ---
         # Extracts brand / product_type / model / size / pack_info from vendor
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
         ai_fields_extracted = False
-        if ai_clean_titles and os.getenv("OPENAI_API_KEY"):
+        if ai_clean_titles and (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
             _update_progress(run_id, phase="Extracting product fields with AI…")
-
+ 
             def _extraction_progress(done: int, total_ext: int) -> None:
                 _update_progress(
                     run_id,
@@ -1798,7 +1925,7 @@ def _run_pipeline(
                     done=done,
                     total=total_ext,
                 )
-
+ 
             ai_extracted = extract_brands(
                 original_source_rows, run_id, progress_cb=_extraction_progress,
             )
@@ -1811,7 +1938,7 @@ def _run_pipeline(
             _save_extracted_brands(run_id, extracted_brands)
             if _handle_control():
                 return
-
+ 
         # --- AI title cleaning (before Tier 3, if enabled) ------------------
         cleaned_titles: dict[int, str] = {}
         if ai_clean_titles and "Title" in search_methods and not ai_fields_extracted:
@@ -1820,7 +1947,7 @@ def _run_pipeline(
             cleaned_titles = clean_titles_parallel(source_rows, run_id)
             if _handle_control():
                 return
-
+ 
         # Build a version of source_rows with cleaned titles for Tier 3.
         def _rows_for_title_search() -> list[SourceRow]:
             if not cleaned_titles:
@@ -1837,14 +1964,14 @@ def _run_pipeline(
                 else:
                     out.append(r)
             return out
-
+ 
         # Per-stage timing, logged at the end so /estimate can learn from real runs.
         timings: dict[str, tuple[float, int]] = {}
         _n_upc = len({r.upc.strip() for r in source_rows if r.upc})
         _n_ids = len({r.itemid.strip() for r in source_rows if r.itemid})
         _n_terms = len({t for t in (_clean_search_query(r.search_term)
                                     for r in source_rows if r.search_term) if t})
-
+ 
         # --- Tier 1: UPC -----------------------------------------------------
         if "UPC" in search_methods:
             _t0 = time.monotonic()
@@ -1870,7 +1997,7 @@ def _run_pipeline(
             timings["upc"] = (time.monotonic() - _t0, _n_upc)
             if _handle_control():
                 return
-
+ 
         # --- Tier 2: Item ID -------------------------------------------------
         if "ItemID" in search_methods:
             _t0 = time.monotonic()
@@ -1887,7 +2014,7 @@ def _run_pipeline(
             timings["itemid"] = (time.monotonic() - _t0, _n_ids)
             if _handle_control():
                 return
-
+ 
         # --- Tier 3: Title ---------------------------------------------------
         if "Title" in search_methods:
             _t0 = time.monotonic()
@@ -1910,7 +2037,7 @@ def _run_pipeline(
             timings["title"] = (time.monotonic() - _t0, _n_terms)
             if _handle_control():
                 return
-
+ 
         if use_query_agent:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="LLM query fallback")
@@ -1931,22 +2058,36 @@ def _run_pipeline(
                 if _handle_control():
                     return
             timings["agent"] = (time.monotonic() - _t0, len(agent_rows))
-
+ 
         if use_llm_verifier:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Auditing approved matches with LLM")
             _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
             timings["verifier"] = (time.monotonic() - _t0, _n_audited or 0)
-
+ 
         # Each tier vetted the rows it touched (with the full set of candidates
         # accumulated so far), so every row that produced a candidate has been
         # scored with all its sources by the last tier that touched it.
+        # CHANGED: the family pass (dedup + settle proven other variants) once the whole run is scored
+        try:
+            _update_progress(run_id, phase="Family check (duplicates and variants)")
+            from services.analytics.family_pass import run_family_pass
+            run_family_pass(run_id)
+        except Exception:
+            log.exception("Family pass failed for run %d", run_id)
+        # CHANGED: unknown color names of this run -> suggestions for the word library (never a verdict change)
+        try:
+            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, suggest_color_names
+            if _attr_ai_on():
+                suggest_color_names(run_id)
+        except Exception:
+            log.exception("Color-name suggestions failed for run %s", run_id)
         _recompute_run_counts(run_id)
         clear_control(run_id)
         if not is_resume:
             _log_run_timing(run_id, pages_per_title, timings)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
-
+ 
     except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles
         log.error("Analytics run %s aborted — SP-API 403: %s", run_id, exc)
         _update_progress(
@@ -1959,3 +2100,5 @@ def _run_pipeline(
             run_id, status="Error",
             phase=f"{type(exc).__name__}: {exc}"[:200],
         )
+ 
+ 

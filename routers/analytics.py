@@ -54,6 +54,7 @@ from services.analytics.eligibility_check import (
 )
 from services.spapi import sp_api_configured, get_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
+from services.analytics.vendor_families import FAMILY_EXPORT_BLANK, FAMILY_EXPORT_COLUMNS, export_family_columns
 
 import logging
  
@@ -1696,7 +1697,7 @@ def export_analytics_run(
         if not run:
             raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
         run_d = dict(run)
-
+ 
         # Use json_extract so we never load the full data_json blob into Python
         # for large runs (74k candidates × 3 KB = ~220 MB → OOM crash).
         # Extract only the fields needed by the workbook, including scorer details.
@@ -1713,7 +1714,7 @@ def export_analytics_run(
             """,
             (run_id,),
         ).fetchall()
-
+ 
         # Apply the run's permanent rank exclusion so BSR-filtered items are also
         # absent from the export (same logic as get_run_detail).
         _exp_run_max = int(run_d.get("max_rank") or 0)
@@ -1723,7 +1724,7 @@ def export_analytics_run(
             _exp_rank_clause += f" AND (sales_rank IS NULL OR sales_rank <= {_exp_run_max})"
         if _exp_run_min > 0:
             _exp_rank_clause += f" AND sales_rank IS NOT NULL AND sales_rank >= {_exp_run_min}"
-
+ 
         cand_rows = conn.execute(
             f"""
             SELECT row_idx, asin, confidence, verdict, sales_rank, amz_pack,
@@ -1743,7 +1744,7 @@ def export_analytics_run(
             """,
             (run_id,),
         ).fetchall()
-
+ 
     # Parse passthrough column list from the run metadata.
     pt_cols: list[str] = []
     try:
@@ -1754,7 +1755,7 @@ def export_analytics_run(
                 pt_cols = [str(c) for c in parsed if c]
     except (ValueError, TypeError):
         pass
-
+ 
     src_by_idx: dict[int, dict] = {}
     for r in cat_rows:
         d = dict(r)
@@ -1764,9 +1765,9 @@ def export_analytics_run(
         except (ValueError, TypeError):
             d["_raw"] = {}
         src_by_idx[r["row_idx"]] = d
-
+ 
     found_idxs = {c["row_idx"] for c in cand_rows}
-
+ 
     def _rank_passes(sales_rank) -> bool:
         if sales_rank is None:
             return not skip_null_rank
@@ -1776,14 +1777,15 @@ def export_analytics_run(
         if max_rank > 0 and r > max_rank:
             return False
         return True
-
+ 
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
         "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
         "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
-    ] + pt_cols  # passthrough columns appended after fixed columns
-
+    ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
+    family_cols = export_family_columns(run_id)   # CHANGED: {(row_idx, asin): [family ... relation detail]}
+ 
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
     for c in cand_rows:
         if not _rank_passes(c["sales_rank"]):
@@ -1826,11 +1828,11 @@ def export_analytics_run(
             c["eligibility_status"] or "",           # blank until the eligibility check is run
             c["storage_fee"] if c["storage_fee"] is not None else "",
             c["storage_fee_peak"] if c["storage_fee_peak"] is not None else "",
-        ] + pt_values)
+        ] + family_cols.get((c["row_idx"], c["asin"]), FAMILY_EXPORT_BLANK) + pt_values)  # CHANGED
         buckets.get((c["verdict"] or "").lower(), buckets["not_approved"]).append(row)
-
+ 
     wb = Workbook(write_only=True)
-
+ 
     for sheet_name, verdict_key in [
         ("Approved", "verified"),
         ("Review", "review"),
@@ -1840,7 +1842,7 @@ def export_analytics_run(
         ws.append(_hdr_row(ws, cand_hdr))
         for row in buckets[verdict_key]:
             ws.append(safe_spreadsheet_row(row))
-
+ 
     # Not Found sheet — unaffected by rank filter
     ws_nf = wb.create_sheet("Not Found")
     ws_nf.append(_hdr_row(ws_nf, [
@@ -1859,11 +1861,11 @@ def export_analytics_run(
             src.get("title") or "",
             src.get("brand") or "",
         ] + pt_values))
-
+ 
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-
+ 
     # Strip non-ASCII characters so Content-Disposition filename is always valid.
     # Non-ASCII chars (e.g. Cyrillic) in unencoded filenames confuse browsers and
     # can cause the response to be saved as "export.txt" instead of the xlsx file.
@@ -1878,6 +1880,7 @@ def export_analytics_run(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}_analytics.xlsx"'},
     )
+ 
 
 
 # --------------------------------------------------------------------------- #

@@ -14,6 +14,13 @@
 (() => {
   "use strict";
 
+    // Families panel (static/families.js): loaded once, adds "Group by family" + "Export families" on a run page.
+  if (!document.querySelector('script[src="/static/families.js"]')) {
+    const _famScript = document.createElement("script");
+    _famScript.src = "/static/families.js";
+    document.head.appendChild(_famScript);
+  }
+
   // ---------- Query helpers -----------------------------------------------
   const $  = (s, root = document) => root.querySelector(s);
   const $$ = (s, root = document) => root.querySelectorAll(s);
@@ -3857,6 +3864,7 @@
 
   async function openAnalyticsRunDetail(runId) {
     state.analyticsRun.id = runId;
+    window.dispatchEvent(new CustomEvent("analytics-run-opened", { detail: { runId } }));
     state.analyticsRun._firstRender = true;   // triggers entrance animations on first render only
     // Reset per-run view state so the previous run's tab/search/sort
     // don't bleed into the next one.
@@ -4406,25 +4414,29 @@
     const isVerdictTab = tab !== "All";
     const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
     const isLoading = state.analyticsRun.tabLoading === tab;
-
+ 
     const _searchActive   = !!(state.analyticsRun.search || "").trim();
     // Use server-fetched tabPageData for verdict tabs and search results.
     const _useServerPage  = isVerdictTab || _searchActive;
     if (!_useServerPage && !j) return;
     if (_useServerPage && !tabPageEntry && !isLoading) return;
-
+ 
     // When using a server page (verdict/AI filter/search) candidates come from
     // tabPageData; otherwise from the main "All" snapshot.
     const cand = _useServerPage
       ? (tabPageEntry?.candidates || [])
       : (Array.isArray(j?.candidates) ? j.candidates : []);
-
+ 
     const srcByIdx = {};
     ((j?.catalog_rows) || state.analyticsRun._catalogRows || []).forEach(r => { srcByIdx[r.row_idx] = r; });
-
+ 
+    // CHANGED: families.js "show only this family" (a Set of row numbers as shown, or null)
+    const famRows = window.__familyFilterRows || null;
+ 
     // ---- filter by search (verdict already filtered server-side for verdict tabs) --
     const q = (state.analyticsRun.search || "").toLowerCase().trim();
     const matches = (c) => {
+      if (famRows && !famRows.has(String(c.row_idx + 1))) return false;   // CHANGED: other families hidden
       // "All" tab: also filter by verdict if not truly all
       if (!isVerdictTab && tab !== "All") {
         const wanted = _TAB_TO_VERDICT[tab];
@@ -4440,7 +4452,7 @@
       return hay.includes(q);
     };
     let rows = cand.filter(matches);
-
+ 
     // ---- filter by BSR range (client-side display filter) -------------
     const _rankMin = state.analyticsRun.rankMin || 0;
     const _rankMax = state.analyticsRun.rankMax || 0;
@@ -4454,7 +4466,7 @@
         return true;
       });
     }
-
+ 
     // ---- sort ---------------------------------------------------------
     const sortKey = state.analyticsRun.sortKey;
     const dir = state.analyticsRun.sortDir === "desc" ? -1 : 1;
@@ -4469,7 +4481,7 @@
       if (as === bs) return (a.row_idx - b.row_idx);
       return (as < bs ? -1 : 1) * dir;
     });
-
+ 
     // ---- header carets ------------------------------------------------
     $$("#analytics-run-thead-row th.sortable").forEach(th => {
       th.classList.remove("asc", "desc");
@@ -4477,12 +4489,12 @@
         th.classList.add(state.analyticsRun.sortDir);
       }
     });
-
+ 
     // ---- tab active state --------------------------------------------
     $$(".run-tab").forEach(t => {
       t.classList.toggle("active", t.dataset.runTab === tab);
     });
-
+ 
     // ---- bulk-action button label ------------------------------------
     const bulkBtn = $("#analytics-run-bulk");
     if (bulkBtn) {
@@ -4495,7 +4507,7 @@
       bulkBtn.style.opacity = bulkBtn.disabled ? "0.45" : "1";
       bulkBtn.style.pointerEvents = bulkBtn.disabled ? "none" : "auto";
     }
-
+ 
     // ---- pagination ---------------------------------------------------
     // For verdict tabs the server sends exactly one page; use DB counts for
     // the total so page buttons cover the full dataset.
@@ -4517,13 +4529,13 @@
       if (state.analyticsRun.page > totalPages) state.analyticsRun.page = totalPages;
       pageRows   = rows.slice((page - 1) * pageSize, page * pageSize);
     }
-
+ 
     // ---- render rows --------------------------------------------------
     const body  = $("#analytics-run-candidates-body");
     const empty = $("#analytics-run-candidates-empty");
     const count = $("#analytics-run-candidates-count");
     if (count) count.textContent = totalRows;
-
+ 
     if (totalRows === 0) {
       body.innerHTML = "";
       empty.classList.remove("hidden");
@@ -4538,7 +4550,7 @@
       return;
     }
     empty.classList.add("hidden");
-
+ 
         const actionButtons = (c) => {
       const key = `${c.row_idx}|${c.asin}`;
       const v = (c.verdict || "").toLowerCase();
@@ -4555,7 +4567,7 @@
         ${reportBtn}
       </div>`;
     };
-
+ 
     const _asinConflicts = state.analyticsRun._asinConflicts || {};
     body.innerHTML = pageRows.map(c => {
       const src = srcByIdx[c.row_idx] || {};
@@ -4592,7 +4604,7 @@
            </details>`
         : escapeHtml(reason);
       const scorerDetails = _scoringDetailsHtml(c.data?.scores || {}, v);
-
+ 
       // ASIN conflict badge: same ASIN matched to more than one catalog row
       const conflictRows = _asinConflicts[c.asin];
       const conflictTooltip = conflictRows
@@ -4601,7 +4613,7 @@
       const conflictBadge = conflictRows
         ? `<span class="has-tooltip" data-tooltip="${escapeHtml(conflictTooltip)}" style="display:inline-block;margin-left:4px;padding:1px 6px;font-size:0.68rem;font-weight:700;border-radius:4px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:help;">⚠ Conflict</span>`
         : "";
-
+ 
       return `
         <tr>
           <td class="text-xs">${escapeHtml(String(c.row_idx + 1))}</td>
@@ -4632,7 +4644,7 @@
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
-
+ 
     body.querySelectorAll("[data-run-action]").forEach(btn => {
       btn.addEventListener("click", handleAnalyticsRunAction);
     });
@@ -4642,10 +4654,10 @@
         if (preview) preview.hidden = details.open;
       });
     });
-
+ 
     _renderPagination(page, totalPages, totalRows);
   }
-
+ 
   // ---- verdict-transition POST + local state update ------------------
   async function applyAnalyticsVerdict(row_idx, asin, verdict, review_status) {
     const id = state.analyticsRun.id;

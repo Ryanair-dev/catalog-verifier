@@ -1,4 +1,14 @@
-"""LLM query fallback for vendor titles after Catalog Verifier retrieval fails."""
+"""LLM query fallback for vendor titles after Catalog Verifier retrieval fails.
+
+2026-10-22: the same LLM step that unabbreviates the vendor title for the search ("build_query") now also returns
+  - "expansions": the abbreviations it decoded, as pairs ({"from": "SN", "to": "Satin Nickel"})
+  - "attributes": the variant attributes the title states, each with "evidence" = the words of the title (or the
+    vendor part number) that state it ({"finish": {"value": "satin nickel", "evidence": "SN"}})
+in the SAME call.  attr_ai.py checks them and puts them into the attribute dictionary.
+read_title(offer) is that same step WITHOUT the search: used for rows where the rules could not read the title but
+the search found candidates anyway (attr_ai.py decides when).  The prompt in query_prompts.py is not changed; the
+attribute instruction is appended to it here (ATTRIBUTES_ADDON).
+"""
 from __future__ import annotations
 
 import json
@@ -25,6 +35,31 @@ MAX_ITERATIONS = 2
 MAX_CANDIDATES = 20
 INCLUDED_DATA = "summaries,identifiers,attributes,salesRanks"
 MAX_QUERY_WORDS = 15
+BUILD_MAX_TOKENS = 1000          # was 400: the answer now also holds expansions + attributes
+
+ATTRIBUTES_ADDON = """\
+ALSO, in the same JSON object, add two more keys:
+
+"expansions": every abbreviation or code of the title you decoded, as pairs; "from" = the token exactly as written
+  in the title.  Examples: BLK -> Black, SS -> Stainless Steel, SN -> Satin Nickel, VB -> Venetian Bronze,
+  GG -> Good Grips, PRIV -> Privacy, PASS -> Passage, LG -> Large, CT -> Count.
+  Leave brand names, model numbers and ordinary words out.
+
+"attributes": the VARIANT attributes the title states, each with "evidence" = the exact words of the title (or of
+  the vendor part number) that state it, copied as written - an abbreviation or code is fine as evidence:
+    color, finish (door hardware / faucet finish), size (clothing S/M/L/XS/S ...), type (function: privacy,
+    passage, entry, keyed, dummy, deadbolt, handleset ...), flavor, scent, gender (men/women/kids/unisex),
+    material, count (units in ONE package, a number), volume (with unit, "8 fl oz"), weight (with unit, "16 oz").
+  Leave out what the title does not state. Never guess from the brand or the product type alone.
+  A model or series number may tell an attribute only when you know that brand's numbering for sure
+  (Kwikset 97200-xxx = passage, 97300-xxx = privacy, 97402-xxx = entry); then the evidence is that number.
+
+Example of the two extra keys:
+  "expansions": [{"from": "SN", "to": "Satin Nickel"}, {"from": "PRIV", "to": "Privacy"}],
+  "attributes": {"finish": {"value": "satin nickel", "evidence": "SN"}, "type": {"value": "privacy", "evidence": "PRIV"}}
+"""
+BUILD_SYSTEM = BUILD_QUERY_SYSTEM.rstrip() + "\n\n" + ATTRIBUTES_ADDON
+READ_PROMPT_VERSION = f"{PROMPT_VERSION}+attrs1"
 
 
 def _parse_json(text: str) -> dict[str, Any]:
@@ -54,6 +89,24 @@ def _offer_text(offer: Offer) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _new_stats() -> dict[str, Any]:
+    return {
+        "used_agent": True,
+        "model": MODEL,
+        "prompt_version": READ_PROMPT_VERSION,
+        "queries_tried": [],
+        "llm_calls": 0,
+        "api_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "seconds_llm": 0.0,
+        "seconds_search": 0.0,
+        "llm_steps": [],
+        "search_steps": [],
+        "trace": [],
+    }
+
+
 class QueryAgent:
     def __init__(self, client: Any, api: Any, max_iterations: int = MAX_ITERATIONS):
         self.client = client
@@ -61,12 +114,12 @@ class QueryAgent:
         self.max_iterations = max_iterations
 
     def _call(
-        self, system: str, user: str, stats: dict[str, Any], action: str,
+        self, system: str, user: str, stats: dict[str, Any], action: str, max_tokens: int = 400,
     ) -> dict[str, Any]:
         started = time.monotonic()
         response = self.client.messages.create(
             model=MODEL,
-            max_tokens=400,
+            max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -91,9 +144,12 @@ class QueryAgent:
 
     def _build_query(self, offer: Offer, stats: dict[str, Any]) -> tuple[str, str]:
         text = _offer_text(offer)
-        output = self._call(BUILD_QUERY_SYSTEM, text, stats, "build_query")
+        output = self._call(BUILD_SYSTEM, text, stats, "build_query", max_tokens=BUILD_MAX_TOKENS)
         query = str(output.get("search_query") or "").strip()
         comparison_title = str(output.get("comparison_title") or "").strip()
+        # NEW: what the same step read from the title (checked later by attr_ai.py, never trusted as is)
+        stats["expansions"] = output.get("expansions") if isinstance(output.get("expansions"), list) else []
+        stats["attributes"] = output.get("attributes") if isinstance(output.get("attributes"), dict) else {}
         if not _valid_query(query):
             query = (offer.title or offer.raw_text or "").strip()
             log.warning("Query agent returned no usable search query; using raw title")
@@ -113,6 +169,31 @@ class QueryAgent:
                 "reasoning": output.get("reasoning", ""),
             })
         return query, comparison_title
+
+    def read_title(self, offer: Offer) -> dict[str, Any]:
+        """NEW: the unabbreviation step alone (the same prompt as for the search, no search).
+        Returns {"comparison_title", "search_query", "expansions", "attributes", "llm_calls", "tokens_in",
+        "tokens_out", "seconds_llm", "model", "prompt_version", "error"?}."""
+        stats = _new_stats()
+        try:
+            query, comparison_title = self._build_query(offer, stats)
+        except Exception as exc:
+            stats["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            log.warning("Title reading failed for offer %s: %s", offer.offer_id, stats["error"])
+            query, comparison_title = "", ""
+        return {
+            "comparison_title": comparison_title,
+            "search_query": query,
+            "expansions": stats.get("expansions") or [],
+            "attributes": stats.get("attributes") or {},
+            "llm_calls": stats["llm_calls"],
+            "tokens_in": stats["tokens_in"],
+            "tokens_out": stats["tokens_out"],
+            "seconds_llm": round(stats["seconds_llm"], 3),
+            "model": MODEL,
+            "prompt_version": READ_PROMPT_VERSION,
+            **({"error": stats["error"]} if stats.get("error") else {}),
+        }
 
     def _search(self, query: str, stats: dict[str, Any]) -> list[dict[str, Any]]:
         if not query:
@@ -181,21 +262,7 @@ class QueryAgent:
         return output
 
     def run(self, offer: Offer) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        stats: dict[str, Any] = {
-            "used_agent": True,
-            "model": MODEL,
-            "prompt_version": PROMPT_VERSION,
-            "queries_tried": [],
-            "llm_calls": 0,
-            "api_calls": 0,
-            "tokens_in": 0,
-            "tokens_out": 0,
-            "seconds_llm": 0.0,
-            "seconds_search": 0.0,
-            "llm_steps": [],
-            "search_steps": [],
-            "trace": [],
-        }
+        stats = _new_stats()
         started = time.monotonic()
         candidates: list[dict[str, Any]] = []
         query = ""
@@ -275,3 +342,8 @@ def create_query_agent(api: Any) -> QueryAgent:
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY is required to use the query agent")
     return QueryAgent(Anthropic(api_key=key, max_retries=3, timeout=30.0), api)
+
+
+def create_title_reader() -> QueryAgent:
+    """NEW: the agent for read_title() only (no Amazon search, so no catalog API is needed)."""
+    return create_query_agent(api=None)
