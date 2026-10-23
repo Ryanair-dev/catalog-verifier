@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from services.analytics.matching_core.matching.patterns import (
-    ALNUM_WORD_RE,
     GARMENT_NORM,
     GARMENT_SIZE_RE,
     SIZE_RE,
@@ -77,20 +76,6 @@ def apparel_size_mismatch(offer: Offer, cand: Candidate) -> bool:
         return False
     return s.isdisjoint(a)
 
-
-def variant_mismatch(offer: Offer, cand: Candidate, vocab: set[str]) -> bool:
-    """Generic variant-word disagreement. Given a vocabulary of meaningful
-    descriptor words (colours, scents…), fire when each side names a word from
-    that vocab the other lacks — i.e. neither set is a subset of the other.
-
-    Vocab is passed in, not hardcoded, so the caller controls which descriptors
-    matter for a given run (colours for apparel, scents for CPG, etc.)."""
-    src, amz = _both_titles(offer, cand)
-    s_words = set(ALNUM_WORD_RE.findall(src.lower())) & vocab
-    a_words = set(ALNUM_WORD_RE.findall(amz.lower())) & vocab
-    if not s_words or not a_words:
-        return False
-    return bool(s_words - a_words) and bool(a_words - s_words)
 
 from services.analytics.matching_core.matching.patterns import (
     CM_RE, INCH_RE, MM_RE, MIXED_FRAC_RE, SIMPLE_FRAC_RE, UNICODE_FRACS,

@@ -64,7 +64,6 @@ GARMENT_NORM = {
     "xxxl": "XXXL", "3xl": "XXXL", "xxxlarge": "XXXL", "3xlarge": "XXXL",
 }
 
-ALNUM_WORD_RE = re.compile(r"[a-z]+")
 
 # --- fractions ---
 UNICODE_FRACS = {

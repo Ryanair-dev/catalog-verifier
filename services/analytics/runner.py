@@ -412,23 +412,6 @@ def _update_progress(
             params,
         )
 
-def _shadow_attrs(source: dict, normalized: dict, extracted: dict | None) -> dict | None:
-    """Shadow mode: read the shared attribute boxes for both sides and keep them with the
-    candidate. Nothing uses them yet, and a failure here must never break a run."""
-    try:
-        from services.analytics.matching_core.matching.attr_extract import (
-            extract_amazon,
-            extract_vendor,
-        )
-        return {
-            "vendor": extract_vendor(source, extracted),
-            "amazon": extract_amazon(normalized),
-        }
-    except Exception:  # noqa: BLE001
-        log.exception("Attribute reader failed (shadow mode, ignored)")
-        return None
-
-
 def _upsert_candidate(
     run_id: int,
     row_idx: int,
@@ -502,14 +485,11 @@ def _upsert_candidate(
             )
         return "bsr_filtered"
 
-    attrs = _shadow_attrs(source, normalized, extracted)      # NEW (shadow mode)
-
     data_json = json.dumps({
         "asin": asin,
         "scores": scores,
         "amazon": normalized,
         "verdict": verdict,
-        "attrs": attrs,                                       # NEW
     }, default=str)
 
     with database._LOCK, _with_conn() as conn:
@@ -549,15 +529,11 @@ def _upsert_candidate(
                 scores.pop("category_mismatch", None)
                 scores.pop("media_format_mismatch", None)
                 normalized = previous_data.get("amazon") or normalized
-            # NEW: keep the attrs that belong to the kept data; otherwise use the fresh ones
-            attrs_final = (previous_data.get("attrs") if kept_previous and previous_data.get("attrs")
-                           else attrs)
             data_json = json.dumps({
                 "asin": asin,
                 "scores": scores,
                 "amazon": normalized,
                 "verdict": verdict,
-                "attrs": attrs_final,                         # NEW
             }, default=str)
             conn.execute(
                 "UPDATE analytics_candidates SET sources=?, confidence=?, "
@@ -638,55 +614,6 @@ def _save_query_agent_result(run_id: int, row_idx: int, result: dict[str, Any]) 
             "WHERE run_id=? AND row_idx=?",
             (json.dumps(result, ensure_ascii=False), run_id, row_idx),
         )
-
-
-def _run_query_agent_fallback(
-    run_id: int,
-    source_rows: list[SourceRow],
-    candidates_by_row: dict[int, list[tuple[dict, str]]],
-    extracted_brands: dict[int, dict],
-    marketplace: str,
-) -> tuple[dict[int, str], set[int]]:
-    """Use the matcher query agent only when regular retrieval found no candidates."""
-    from services.analytics.matching_core.agents.query_agent import create_query_agent
-    from services.analytics.matching_core.models import Offer
-
-    fallback_rows = [row for row in source_rows if not candidates_by_row.get(row.row_idx)]
-    if not fallback_rows:
-        return {}, set()
-    agent = create_query_agent(get_catalog_api(marketplace))
-    comparison_titles: dict[int, str] = {}
-    processed_rows: set[int] = set()
-    for row in fallback_rows:
-        offer = Offer(
-            offer_id=str(row.row_idx),
-            title=row.title or None,
-            raw_text=row.title or None,
-            brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
-            upc=row.upc or None,
-            mpn=row.itemid or None,
-        )
-        try:
-            candidates, trace = agent.run(offer)
-        except Exception as exc:
-            trace = {
-                "used_agent": True,
-                "error": f"{type(exc).__name__}: {exc}"[:500],
-                "candidates_found": 0,
-            }
-            log.exception("Query agent failed for run %s row %s", run_id, row.row_idx)
-            _save_query_agent_result(run_id, row.row_idx, trace)
-            processed_rows.add(row.row_idx)
-            continue
-
-        processed_rows.add(row.row_idx)
-        trace["scoring_title"] = trace.get("comparison_title") or row.title
-        if trace.get("comparison_title"):
-            comparison_titles[row.row_idx] = trace["comparison_title"]
-        _save_query_agent_result(run_id, row.row_idx, trace)
-        for candidate in candidates:
-            candidates_by_row.setdefault(row.row_idx, []).append((candidate, "Agent"))
-    return comparison_titles, processed_rows
 
 
 def _audit_run_approvals(
@@ -2101,4 +2028,59 @@ def _run_pipeline(
             phase=f"{type(exc).__name__}: {exc}"[:200],
         )
  
+ 
+def _run_query_agent_fallback(
+    run_id: int,
+    source_rows: list[SourceRow],
+    candidates_by_row: dict[int, list[tuple[dict, str]]],
+    extracted_brands: dict[int, dict],
+    marketplace: str,
+) -> tuple[dict[int, str], set[int]]:
+    """Use the matcher query agent only when regular retrieval found no candidates."""
+    from services.analytics.matching_core.agents.query_agent import create_query_agent
+    from services.analytics.matching_core.models import Offer
+ 
+    fallback_rows = [row for row in source_rows if not candidates_by_row.get(row.row_idx)]
+    if not fallback_rows:
+        return {}, set()
+    agent = create_query_agent(get_catalog_api(marketplace))
+    comparison_titles: dict[int, str] = {}
+    processed_rows: set[int] = set()
+    for row in fallback_rows:
+        offer = Offer(
+            offer_id=str(row.row_idx),
+            title=row.title or None,
+            raw_text=row.title or None,
+            brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
+            upc=row.upc or None,
+            mpn=row.itemid or None,
+        )
+        try:
+            candidates, trace = agent.run(offer)
+        except Exception as exc:
+            trace = {
+                "used_agent": True,
+                "error": f"{type(exc).__name__}: {exc}"[:500],
+                "candidates_found": 0,
+            }
+            log.exception("Query agent failed for run %s row %s", run_id, row.row_idx)
+            _save_query_agent_result(run_id, row.row_idx, trace)
+            processed_rows.add(row.row_idx)
+            continue
+ 
+        processed_rows.add(row.row_idx)
+        trace["scoring_title"] = trace.get("comparison_title") or row.title
+        if trace.get("comparison_title"):
+            comparison_titles[row.row_idx] = trace["comparison_title"]
+        _save_query_agent_result(run_id, row.row_idx, trace)
+        # CHANGED: the agent's unabbreviation step also read the title's attributes: keep them on the row
+        # (checked against the title), so the attribute reader can use them without a second call
+        try:
+            from services.analytics.matching_core.agents.attr_ai import record_from_agent_trace
+            record_from_agent_trace(run_id, row.row_idx, "", row.itemid or "", trace)
+        except Exception:
+            log.exception("Could not keep the agent's attributes for run %s row %s", run_id, row.row_idx)
+        for candidate in candidates:
+            candidates_by_row.setdefault(row.row_idx, []).append((candidate, "Agent"))
+    return comparison_titles, processed_rows
  

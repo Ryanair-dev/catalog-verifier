@@ -1,66 +1,28 @@
 """
-Variation detection (works on vendor rows AND on Amazon candidates).
+Variation detection on the attribute boxes from attr_extract (vendor rows and Amazon candidates).
 
-Two jobs, both built on the boxes from attr_extract:
-
-1. FAMILIES.  Look-alike items are grouped into a family: same brand, and the same title once the
-   variant words (colors, flavors, scents, clothing sizes, counts, units) are taken out.
-       "Injinji Sport Lightweight Hidden (Small, Black)"  and  "... (Medium, Black)"  -> one family
-       "Boost Glucose Control Chocolate 8 fl oz"  and  "... Vanilla 8 fl oz"          -> one family
-   Inside a family, the boxes that take 2+ different values are its VARIATIONS (size, color, flavor).
-   (services/analytics/vendor_families.py builds the run-level families the UI and dedup use.)
-
-2. COMPARING one vendor row with one candidate, box by box:
-       match / mismatch / unknown (one side does not say) / open (the candidate's family varies by
-       that box, and the vendor row does not pick one, so it is not a conflict) /
-       partial (sizes only: S vs XS/S, M vs M/L - one combined size shares a part with the other).
-
-Nothing here changes a verdict. It only reads and reports, until the scorers are switched to use it.
+varying_boxes(rows): which boxes take 2+ different values inside a family (vendor_families.py uses it).
+compare_boxes(vendor, amazon): box by box
+    match / mismatch / unknown (one side does not say) / open (the candidate's family varies by
+    that box, and the vendor row does not pick one, so it is not a conflict) /
+    partial (sizes only: S vs XS/S, M vs M/L - one combined size shares a part with the other).
+The variant gate (variant_gate.py) turns these results into Reject / Review.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
-from services.analytics.matching_core.matching.attr_extract import (
-    _agree,
-    _norm,
-    _tokens,
-    _words,
-    size_relation,
-)
+from services.analytics.matching_core.matching.attr_extract import _agree, size_relation
 
 VARIATION_BOXES = ("color", "flavor", "scent", "size", "gender", "shade_code", "tone", "volume_ml",
                    "weight_g", "count", "pack", "bundle", "material", "finish", "type", "model")
 COUNT_BOXES = ("count", "pack", "bundle")
 
-_SIZE_WORDS = {"small", "medium", "large", "xs", "xl", "xxl", "xxxl", "xxs", "extra", "x",
-               "s", "m", "l"}
-_UNIT_WORDS = {"oz", "ounce", "ounces", "fl", "ml", "l", "liter", "liters", "litre", "lb", "lbs",
-               "pound", "pounds", "kg", "g", "gram", "grams", "gal", "gallon", "count", "ct",
-               "pack", "packs", "pk", "pcs", "pc", "piece", "pieces", "each", "ea", "of", "set",
-               "box", "case", "bundle", "size", "in", "inch", "inches", "volt"}
 
 
 # --------------------------------------------------------------------------- #
 # 1. Families
 # --------------------------------------------------------------------------- #
-
-def base_title(title: Any) -> str:
-    """The title with every variant word taken out. Look-alike items share this."""
-    drop = (_words("color_words") | _words("flavor_words") | _words("scent_words")
-            | _SIZE_WORDS | _UNIT_WORDS)
-    keep = [t for t in _tokens(title)
-            if t not in drop and not t.isdigit() and not re.fullmatch(r"\d+[a-z]{1,3}", t)]
-    return " ".join(keep)
-
-
-def family_key(title: Any, brand: Any = "") -> str | None:
-    base = base_title(title)
-    if not base:
-        return None
-    return f"{_norm(brand)}|{base}"
-
 
 def _same_value(box: str, a: Any, b: Any) -> bool:
     return _agree(box, a, b)
@@ -80,45 +42,9 @@ def varying_boxes(members: list[dict]) -> dict[str, list[Any]]:
     return out
 
 
-def group_families(items: list[dict]) -> list[dict]:
-    """items: [{"id": ..., "title": ..., "brand": ..., "fields": {...boxes...}}]
-    Returns families: {"key", "ids", "varying"}. Items with no usable title form no family."""
-    groups: dict[str, list[dict]] = {}
-    loose: list[dict] = []
-    for it in items:
-        key = family_key(it.get("title"), it.get("brand"))
-        if key is None:
-            loose.append(it)
-        else:
-            groups.setdefault(key, []).append(it)
-    families = [{"key": k, "ids": [m["id"] for m in v], "varying": varying_boxes(v)}
-                for k, v in groups.items()]
-    families += [{"key": None, "ids": [m["id"]], "varying": {}} for m in loose]
-    return families
-
-
 # --------------------------------------------------------------------------- #
 # 2. Comparing a vendor row with a candidate
 # --------------------------------------------------------------------------- #
-
-def total_units(fields: dict[str, dict]) -> float | None:
-    """How many units the item holds in all: count x pack. ("2 Each (Pack of 12)" = 24,
-    "2 Count (Pack of 1)" = 2, "4 Pack" = 4, "Pack of 6" = 6.)  None when no number is known."""
-    def val(name: str) -> float | None:
-        box = fields.get(name)
-        try:
-            return float(box["value"]) if box else None
-        except (TypeError, ValueError):
-            return None
-    count, pack, bundle = val("count"), val("pack"), val("bundle")
-    if count and pack:
-        return count * pack
-    return count or pack or bundle
-
-
-def _box_conflicted(fields: dict[str, dict], names: tuple[str, ...]) -> bool:
-    return any((fields.get(n) or {}).get("conflict") for n in names)
-
 
 def _count_value(fields: dict[str, dict]) -> float | None:
     """The count PRINTED on the package ('80 Count', '2 Each', '6 Rolls'), only when it is above 1."""
@@ -146,7 +72,7 @@ def _same_physical_size(vendor: dict[str, dict], amazon: dict[str, dict]) -> boo
 def compare_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
                   open_boxes: frozenset[str] | set[str] = frozenset()) -> dict[str, str]:
     """Box by box:  match | mismatch | unknown | open | partial (sizes only).
-    open_boxes = boxes that vary inside the candidate's family (from group_families).
+    open_boxes = boxes that vary inside the candidate's family.
 
     'units' follows the old scorer's rule: only the count PRINTED on the package decides
     ("80 Count" vs "110 Count" = a different product).  A pack or bundle multiplier ("Pack of 12",
@@ -182,20 +108,6 @@ def compare_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
     elif vc or ac:
         out["units"] = "unknown"
     return out
-
-
-def describe_candidates(vendor_fields: dict[str, dict], candidates: list[dict]) -> list[dict]:
-    """For ONE vendor row and its candidates [{"id","title","brand","fields"}]:
-    group the candidates into families and report, per family, the varying boxes, which of them
-    the vendor row leaves open, and how each candidate compares box by box."""
-    result = []
-    by_id = {c["id"]: c for c in candidates}
-    for fam in group_families(candidates):
-        varying = set(fam["varying"])
-        open_boxes = {b for b in varying if b not in vendor_fields}
-        fits = {i: compare_boxes(vendor_fields, by_id[i]["fields"], open_boxes) for i in fam["ids"]}
-        result.append({**fam, "open": sorted(open_boxes), "compare": fits})
-    return result
 
 
 FILE_VERSION = "2026-10-22 v8 (size partial)"

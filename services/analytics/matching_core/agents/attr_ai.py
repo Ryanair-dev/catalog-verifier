@@ -296,19 +296,6 @@ def _set_status(run_id: Any, status: str, message: str = "", **numbers: Any) -> 
         pass
 
 
-def run_status(run_id: Any) -> dict | None:
-    """The last recorded status of the AI step for a run, or None when it never ran."""
-    try:
-        conn = _db()
-        try:
-            row = conn.execute("SELECT * FROM attr_ai_runs WHERE run_id = ?", (run_id,)).fetchone()
-        finally:
-            conn.close()
-        return dict(row) if row else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _json(text: Any) -> dict:
     try:
         value = json.loads(text or "{}")

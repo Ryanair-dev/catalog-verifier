@@ -3,11 +3,8 @@
 2026-10-22 changes (FILE_VERSION at the bottom):
   - NOT STATED rule: a listing's count of 1 and its gender "unisex" carry no information, so they no longer
     send a pair to Review on their own ("the vendor row does not state gender, count ... count 1").
-  - MATCH_SCORER_ATTRS=1 (default OFF): the scorers' own attribute checks (color / size / volume / count) use
-    the unified attribute reader, the same boxes the variant gate uses, instead of the old title-only regexes.
-    It changes scores, so compare scripts/eval_matchers.py with it on and off before using it for real runs.
-  - The cascade's factor list says "(scorer's own title check)" while that switch is off, so "Color: unknown"
-    is no longer read as "the attributes are unknown".
+  - The cascade's factor list says "(scorer's own title check)", so "Color: unknown" is not read as "the
+    attributes are unknown" (the variant gate reads them properly).
   - Explanations name the source "AI-expanded title" and show the vendor STYLE number when there is one.
 """
 from __future__ import annotations
@@ -18,12 +15,7 @@ from typing import Any
 
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
 from services.analytics.matching_core.matching.cascade import score as score_cascade
-from services.analytics.matching_core.matching.attribute_compare import (
-    Cmp,
-    compare_attributes,
-    unified_active,
-    unified_attributes,
-)
+from services.analytics.matching_core.matching.attribute_compare import compare_attributes
 from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
     score as score_classifier,
@@ -47,7 +39,6 @@ import re as _ur_re
 from services.analytics.matching_core.matching.attr_extract import _tokens as _ur_tokens
 from services.analytics.matching_core.matching.attr_extract import extract_amazon as _ur_extract_amazon
 from services.analytics.matching_core.matching.attr_extract import extract_vendor as _ur_extract_vendor
-from services.analytics.matching_core.matching.lexicon import colors_relation as _ur_colors_relation
 from services.analytics.matching_core.matching.lexicon import gender_tokens as _ur_gender_tokens
 from services.analytics.matching_core.matching.lexicon import get_lexicon as _ur_get_lexicon
 from services.analytics.matching_core.matching.lexicon import variant_boxes_for as _ur_variant_boxes_for
@@ -192,44 +183,6 @@ def score_export_pair(
     )
 
 
-def scorer_attrs_enabled() -> bool:
-    """MATCH_SCORER_ATTRS=1: the scorers use the unified attribute reader. Default OFF."""
-    return _ur_os.getenv("MATCH_SCORER_ATTRS", "0").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _unified_scorer_compare(
-    source: dict[str, Any], normalized: dict[str, Any], extracted: dict[str, Any] | None,
-) -> dict[str, Cmp] | None:
-    """The unified attribute comparison in the scorers' own shape: {"volume", "color", "size", "count"} -> Cmp.
-    A color name the word library cannot place, a partial size (S vs XS/S) and a difference resting on an
-    AI-expanded-title value are UNKNOWN here (never a scorer mismatch).  None when the switch is off."""
-    if not scorer_attrs_enabled():
-        return None
-    try:
-        vf = _ur_extract_vendor(source, extracted)["fields"]
-        af = _ur_extract_amazon(normalized)["fields"]
-        boxes = _ur_compare_boxes(vf, af)
-
-        def cmp_of(box: str, state: str | None) -> Cmp:
-            if state == "match":
-                return Cmp.MATCH
-            if state != "mismatch":
-                return Cmp.UNKNOWN
-            names = ("count",) if box == "units" else (box,)
-            if any((vf.get(n) or {}).get("soft") or (af.get(n) or {}).get("soft") for n in names):
-                return Cmp.UNKNOWN
-            if box == "color" and _ur_colors_relation(vf["color"]["value"], af["color"]["value"]) != "different":
-                return Cmp.UNKNOWN
-            return Cmp.MISMATCH
-
-        return {"volume": cmp_of("volume_ml", boxes.get("volume_ml")),
-                "color": cmp_of("color", boxes.get("color")),
-                "size": cmp_of("size", boxes.get("size")),
-                "count": cmp_of("units", boxes.get("units"))}
-    except Exception:  # noqa: BLE001 - fall back to the scorers' own checks
-        return None
-
-
 def score_pair(
     source: dict[str, Any],
     normalized: dict[str, Any],
@@ -243,18 +196,17 @@ def score_pair(
     offer, candidate = build_pair(
         source, normalized, extracted=extracted, sources=sources,
     )
-    with unified_attributes(_unified_scorer_compare(source, normalized, extracted)):
-        result = score_models(offer, candidate, method=method, mode=mode)
-        # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
-        barcode_ok = bool(
-            offer.upc and candidate.upc
-            and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
-        )
-        gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
-                if unified_attrs_enabled() else None)
-        if gate:
-            result = apply_gate(result, gate)
-        scores = result_to_scores(result, method, offer, candidate)
+    result = score_models(offer, candidate, method=method, mode=mode)
+    # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
+    barcode_ok = bool(
+        offer.upc and candidate.upc
+        and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+    )
+    gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
+            if unified_attrs_enabled() else None)
+    if gate:
+        result = apply_gate(result, gate)
+    scores = result_to_scores(result, method, offer, candidate)
     if gate:
         scores["variant_check"] = {
             "hard": gate["hard"], "soft": gate["soft"], "boxes": gate["boxes"],
@@ -395,7 +347,7 @@ def result_to_scores(
         }
         attributes = compare_attributes(offer, candidate)
         attr_labels = {"volume": "Volume", "color": "Color", "size": "Apparel size", "count": "Bundle count"}
-        own_check = "" if unified_active() else " (scorer's own title check)"
+        own_check = " (scorer's own title check)"
         attr_factors = [
             f"{attr_labels[name]}{own_check}: {value.value}"
             for name, value in attributes.items()
@@ -617,4 +569,4 @@ def _score_pair_with_unstated_rule(
 _score_pair_scorer_only = score_pair
 score_pair = _score_pair_with_unstated_rule
 
-FILE_VERSION = "2026-10-22 adapter v3 (count 1 / unisex = not stated, MATCH_SCORER_ATTRS)"
+FILE_VERSION = "2026-10-23 adapter v3.1 (count 1 / unisex = not stated; unused MATCH_SCORER_ATTRS removed)"

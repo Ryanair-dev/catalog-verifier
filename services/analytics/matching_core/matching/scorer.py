@@ -24,10 +24,7 @@ VERIFIED_MIN = 90.0
 REVIEW_MIN = 55.0
 MISMATCH_CAP = 29.0  
 
-UPC_SCORE = 100.0
-MPN_EXACT_SCORE = 90.0
 BRAND_MAX = 10.0
-TITLE_MAX = 50.0
 
 BRAND_DISAGREE_BELOW = 70
 
@@ -63,22 +60,6 @@ def _brand_disagrees(offer: Offer, cand: Candidate) -> bool:
     if brands_match(offer.brand, cand.brand):
         return False
     return fuzz.ratio(offer.brand.lower(), cand.brand.lower()) < BRAND_DISAGREE_BELOW
-
-
-def _title_score(offer: Offer, cand: Candidate) -> float:
-    src = offer.title or offer.raw_text or ""
-    amz = cand.title or ""
-    if not src or not amz:
-        return 0.0
-    return (title_similarity(src, amz) / 100.0) * TITLE_MAX
-
-
-def _mpn_score(offer: Offer, cand: Candidate) -> float:
-    if not offer.mpn or not cand.mpn:
-        return 0.0
-    if base_mpn(offer.mpn) == base_mpn(cand.mpn):
-        return MPN_EXACT_SCORE
-    return 0.0
 
 
 def _hard_mismatch(offer: Offer, cand: Candidate) -> tuple[bool, list[str]]:
