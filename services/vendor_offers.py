@@ -767,15 +767,20 @@ def assign_bulk(text: str, dry: bool = False) -> dict:
 # --------------------------------------------------------------------------
 # Staleness maintenance -- an offer's avail_qty is only as trustworthy as its
 # last_seen date; once an offer hasn't been refreshed (by either a file
-# upload or the hourly DB sync) in a while, its quantity is stale, not just
-# its price -- so it's cleared to NULL (treated as "unknown", not "0",
-# consistent with how only_available/(win.get("avail") or 0) already treat
-# a missing value elsewhere in this module) rather than displayed as if
-# still current. Per user 2026-09-25: "if the sku hasnt been updated for 6
-# days, then lets clear the available qty."
+# upload, the DB sync, or the mailbox sync) in a while, its quantity is
+# stale, not just its price -- so it's cleared to NULL (treated as "unknown",
+# not "0", consistent with how only_available/(win.get("avail") or 0)
+# already treat a missing value elsewhere in this module) rather than
+# displayed as if still current. Originally 6 days (user 2026-09-25: "if the
+# sku hasnt been updated for 6 days, then lets clear the available qty"),
+# tightened to 1 day (user 2026-10-23: "have all available quantities empty
+# and add only available quantity from the recent todays and yesterdays
+# files") -- days=1 keeps last_seen==today OR yesterday (the cutoff is
+# exclusive: `last_seen < today-1` is cleared, so yesterday itself survives)
+# and clears everything older.
 # --------------------------------------------------------------------------
 
-STALE_AVAIL_QTY_DAYS = 6
+STALE_AVAIL_QTY_DAYS = 1
 
 
 def clear_stale_available_qty(days: int = STALE_AVAIL_QTY_DAYS) -> dict:

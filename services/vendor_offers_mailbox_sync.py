@@ -577,7 +577,12 @@ def sync_vendor_from_mailbox(vname: str) -> dict:
 def sync_all_from_mailbox() -> dict:
     """Best-effort sync of every mapped vendor. One vendor's failure doesn't
     block the rest. One mailbox scan shared across all 5 (not re-fetched per
-    vendor)."""
+    vendor). Also clears avail_qty on any offer (any vendor, any source --
+    file upload, DB sync, or this mailbox sync) that's gone stale
+    (vo.STALE_AVAIL_QTY_DAYS) -- this used to piggyback on
+    vendor_offers_db_sync's hourly scheduler, which is no longer started now
+    that this sync replaces it for these 5 vendors; moved here so that
+    system-wide maintenance isn't silently dropped."""
     vo.init_schema()
     token = _access_token()
     posts = fetch_latest_vendor_posts(token)
@@ -590,8 +595,14 @@ def sync_all_from_mailbox() -> dict:
             log.exception("[vendor_offers_mailbox_sync] %s failed", v)
             errors[v] = str(exc)[:300]
 
+    try:
+        stale = vo.clear_stale_available_qty()
+    except Exception:  # noqa: BLE001
+        log.exception("[vendor_offers_mailbox_sync] stale avail_qty cleanup failed")
+        stale = {"cleared": 0, "cutoff": None}
+
     finished = dt.datetime.utcnow().isoformat()
-    summary = {"finished_at": finished, "results": results, "errors": errors}
+    summary = {"finished_at": finished, "results": results, "errors": errors, "stale_avail_qty": stale}
     try:
         database.set_setting("vendor_offers_mailbox_sync_last", json.dumps(summary))
     except Exception:  # noqa: BLE001

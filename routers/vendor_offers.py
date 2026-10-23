@@ -9,6 +9,7 @@ POST /api/vendor-offers/unassign    — remove a wrong ASIN pairing (+ its Pair 
 GET  /api/vendor-offers/status      — configured vendors + row counts
 GET  /api/vendor-offers/mailbox-sync/status — direct-from-email sync state (5 vendors, replaces db-sync)
 POST /api/vendor-offers/mailbox-sync/run    — sync now (one vendor or all 5)
+POST /api/vendor-offers/clear-stale-avail   — null out avail_qty older than N days (any vendor/source)
 """
 from __future__ import annotations
 
@@ -351,6 +352,25 @@ async def mailbox_sync_run(body: dict = Body(default=None)) -> dict:
     except Exception as exc:  # noqa: BLE001
         log.exception("[vendor_offers] mailbox sync failed")
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
+
+
+@router.post("/vendor-offers/clear-stale-avail")
+async def clear_stale_avail(body: dict = Body(default=None)) -> dict:
+    """Null out avail_qty for every offer (any vendor, any source) whose
+    last_seen is older than `days` (default vo.STALE_AVAIL_QTY_DAYS -- see
+    that constant's own comment for the current threshold/rationale).
+    Body optional: {days: N}."""
+    body = body or {}
+    days = body.get("days")
+    try:
+        if days is not None:
+            result = await run_in_threadpool(vo.clear_stale_available_qty, int(days))
+        else:
+            result = await run_in_threadpool(vo.clear_stale_available_qty)
+        return {"ok": True, **result}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[vendor_offers] clear-stale-avail failed")
+        raise HTTPException(status_code=500, detail=f"Failed: {str(exc)[:200]}")
 
 
 @router.post("/vendor-offers/upload")
