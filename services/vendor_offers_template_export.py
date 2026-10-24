@@ -34,7 +34,6 @@ from openpyxl.utils import get_column_letter
 
 from services import database
 from services import keepa as keepa_api
-from services import vendor_offers as vo
 from services.cancellation import JobCancelled
 from services.spapi import reports as sp_reports
 

@@ -16,7 +16,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, generic_check, health_check, library, mpn_check, pairs, po_analytics, reports, scans, seller_analytics, settings, storage_fees, vendor_offers, verify, walmart
+from routers import analytics, barcode, brand_analytics, eligibility, export, generic_check, health_check, library, mpn_check, pairs, scans, seller_analytics, settings, storage_fees, verify
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -107,50 +107,12 @@ async def _lifespan(app: FastAPI):
         health_check.start_scheduler()
     except Exception:
         pass
-    # Vendor Offer Analytics: 30-min sync of the 5 vendors straight from their
-    # own catalog emails (replaces the Azure DB sync below for them, per user
-    # request 2026-10-23 -- "FBI has awful data structure... take it directly
-    # from the offers and inbox ourselves" -- see services/
-    # vendor_offers_mailbox_sync.py's module docstring). The old DB-sync
-    # module/endpoints are left intact, just not scheduled, as a safety net.
-    try:
-        from services import vendor_offers_mailbox_sync as vo_mail_sync
-        if vo_mail_sync.is_configured():
-            vo_mail_sync.start_scheduler()
-    except Exception:
-        pass
-    # vendor_offers_db_sync's hourly Azure scheduler is DELIBERATELY not
-    # started any more -- it reads the same FBI-populated tables the mailbox
-    # sync above now bypasses, and the two could otherwise fight over
-    # avail_qty for the same 5 vendors. Its manual endpoints
-    # (/db-sync/status, /db-sync/run) still work if ever needed as a fallback.
     # MPN Check: local mirror of fbidb products/manufacturers (hourly,
     # incremental after the first full pull) so a check never hits Azure live.
     try:
         from services import mpn_check_sync
         if azure_sql.is_configured():
             mpn_check_sync.start_scheduler()
-    except Exception:
-        pass
-    # Local SellerCloud catalog snapshot (Create SKUs / PO Analytics' Main
-    # SKU -> FBA/FBM children lookup): refresh from SC data.xlsx whenever it's
-    # >24h stale. Found live 2026-10-07 sitting 56 days stale with nobody
-    # noticing (ANH950685's real FBA child was invisible to PO Analytics as a
-    # result) even though the source file itself had been refreshed that same
-    # morning — this closes that gap with a periodic background check instead
-    # of relying on someone remembering to run `--snapshot` by hand.
-    try:
-        from services.sellercloud import catalog_index as sc_catalog_index
-        sc_catalog_index.start_scheduler()
-    except Exception:
-        pass
-    # PO Analytics day-before-ETA automation: hourly check against Azure's own
-    # Monday.com mirror (zero Monday API calls — services/monday_eta.py).
-    # Dormant until a real recipient list is configured on the Settings page
-    # (see services/po_automation.py — check_and_trigger() no-ops otherwise).
-    try:
-        from services import po_automation
-        po_automation.start_scheduler()
     except Exception:
         pass
     yield
@@ -160,23 +122,8 @@ async def _lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        from services import vendor_offers_db_sync as vo_sync
-        vo_sync.stop_scheduler()
-    except Exception:
-        pass
-    try:
-        from services import vendor_offers_mailbox_sync as vo_mail_sync
-        vo_mail_sync.stop_scheduler()
-    except Exception:
-        pass
-    try:
         from services import mpn_check_sync
         mpn_check_sync.stop_scheduler()
-    except Exception:
-        pass
-    try:
-        from services import po_automation
-        po_automation.stop_scheduler()
     except Exception:
         pass
 
@@ -235,15 +182,10 @@ app.include_router(analytics.router,       prefix="/api", tags=["analytics"])
 app.include_router(brand_analytics.router, prefix="/api", tags=["brand-analytics"])
 app.include_router(eligibility.router,    prefix="/api", tags=["eligibility"])
 app.include_router(generic_check.router,  prefix="/api", tags=["generic-check"])
-app.include_router(vendor_offers.router,  prefix="/api", tags=["vendor-offers"])
 app.include_router(storage_fees.router,   prefix="/api", tags=["storage-fees"])
-app.include_router(create_po.router,      prefix="/api", tags=["create-po"])
 app.include_router(health_check.router,   prefix="/api", tags=["health-check"])
 app.include_router(mpn_check.router,      prefix="/api", tags=["mpn-check"])
-app.include_router(walmart.router,        prefix="/api", tags=["walmart"])
-app.include_router(po_analytics.router,   prefix="/api", tags=["po-analytics"])
 app.include_router(seller_analytics.router, prefix="/api", tags=["seller-analytics"])
-app.include_router(reports.router,          prefix="/api", tags=["reports"])
 
 
 @app.get("/api/health")

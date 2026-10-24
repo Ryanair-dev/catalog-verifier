@@ -22,10 +22,6 @@ import logging
 import os
 import threading
 import time
-from collections import Counter, defaultdict
-
-from services.brand_map import fordmed_email
-from services.sellercloud.catalog_index import CatalogIndex, build_from_rows
 
 log = logging.getLogger(__name__)
 
@@ -227,66 +223,3 @@ def scheduler_status() -> dict:
     }
 
 
-def catalog_index(company: str = "Ford Medical") -> CatalogIndex:
-    return build_from_rows(_rows_for_company(fetch_rows(), company), built_at=time.time())
-
-
-def brand_map(company: str = "Ford Medical") -> dict[str, dict]:
-    """brand_lower -> {brand, manufacturer, purchaser, sourcer} (most-common
-    non-blank value per brand), restricted to `company`'s SKUs."""
-    agg: dict = defaultdict(lambda: {"brand": "", "mfr": Counter(), "pur": Counter(), "src": Counter()})
-    for r in _rows_for_company(fetch_rows(), company):
-        b = r["BrandName"]
-        if not b:
-            continue
-        e = agg[b.strip().lower()]
-        if not e["brand"]:
-            e["brand"] = b
-        if r["ManufacturerName"]:
-            e["mfr"][r["ManufacturerName"]] += 1
-        # "Other" is a real SellerCloud placeholder (unassigned), not a person --
-        # exclude it from the vote like "0" so it can never outvote an actual
-        # purchaser/sourcer name just because more legacy rows were left unassigned.
-        if r["_purchaser"] and r["_purchaser"] != "0" and r["_purchaser"].strip().lower() != "other":
-            e["pur"][r["_purchaser"]] += 1
-        if r["_sourcer"] and r["_sourcer"] != "0" and r["_sourcer"].strip().lower() != "other":
-            e["src"][r["_sourcer"]] += 1
-
-    def top(c: Counter) -> str:
-        return c.most_common(1)[0][0] if c else ""
-
-    return {k: {"brand": e["brand"], "manufacturer": top(e["mfr"]),
-                "purchaser": fordmed_email(top(e["pur"])),
-                "sourcer": fordmed_email(top(e["src"]))}
-            for k, e in agg.items()}
-
-
-def catalog_source(company: str = "Ford Medical") -> tuple[CatalogIndex, dict]:
-    """(CatalogIndex, brand_map) from the live view, restricted to `company`'s SKUs
-    — both derive from one cached pull. Raises on any connection/query failure so
-    callers can fall back."""
-    fetch_rows()   # prime the cache (one pull; all companies, filtered per call)
-    return catalog_index(company), brand_map(company)
-
-
-def find_split_pos(po_id: int) -> list[int]:
-    """PO IDs that were split off FROM `po_id` -- i.e. every row in the live
-    `sellercloud.Purchase` mirror whose `SplittedFromPOId` equals it. Confirmed
-    live (2026-10-08, user-identified table): a cancelled "main" PO's real
-    replacement/split PO records this parent link in `SplittedFromPOId` -- it's
-    NOT exposed anywhere in the SellerCloud REST API's PO payload (checked:
-    `RelatedItems`/`RelatedFbaId`/`RelatedPOFBAPlanningId` are all empty/zero
-    even on a confirmed real split pair), so this direct SQL table is the only
-    way to discover it. A small, uncached, on-demand query (not the big
-    sku_data_extended_view pull) -- never raises; callers should catch and
-    degrade (e.g. treat as "no splits found") on any connection problem, same
-    as `catalog_source`."""
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT ID FROM sellercloud.Purchase WHERE SplittedFromPOId = %s", (int(po_id),)
-        )
-        return [int(r[0]) for r in cur.fetchall()]
-    finally:
-        conn.close()

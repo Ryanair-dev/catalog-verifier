@@ -13,7 +13,6 @@
 
   <link rel="stylesheet" href="/static/styles.css?v=19" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
 <body class="min-h-screen">
 
@@ -54,34 +53,15 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 12l3-3 4 4 6-6"/></svg>
         Offer Analysis
       </div>
-      <div class="nav-item" data-view="vendor-offers">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17"/><circle cx="9" cy="20" r="1"/><circle cx="18" cy="20" r="1"/></svg>
-        Vendor Offers
-      </div>
       <div class="nav-item" data-view="brand-analytics">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
         Brand Analytics
-      </div>
-      <div class="section-label">Marketplaces</div>
-      <div class="nav-item" data-view="walmart-catalog">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
-        Walmart Catalog
-      </div>
-
-      <div class="section-label">Reports</div>
-      <div class="nav-item" data-view="reports">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        Reports
       </div>
 
       <div class="section-label">Toolbox</div>
       <div class="nav-item" id="open-tools-btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         Toolbox
-      </div>
-      <div class="nav-item" data-view="create-po">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
-        Create SKUs
       </div>
 
       <!-- Divider before utility items -->
@@ -108,74 +88,6 @@
 
     <!-- ==================== Main ==================== -->
     <main class="flex-1 overflow-hidden" style="position:relative;">
-
-      <!-- ===== View: Create PO (rendered by /static/create_po.js) ===== -->
-      <div id="view-create-po" class="hidden"></div>
-
-      <!-- ===== View: Vendor Offers (Price Desk) — embedded self-contained page ===== -->
-      <div id="view-vendor-offers" class="hidden" style="height:100%;">
-        <iframe id="vendor-offers-frame" title="Vendor Offers — Price Desk"
-                style="width:100%;height:100%;min-height:80vh;border:0;display:block;"></iframe>
-      </div>
-
-      <!-- ===== View: Walmart Catalog — features added incrementally as the Walmart API is wired up ===== -->
-      <div id="view-walmart-catalog" class="hidden">
-        <header class="view-header">
-          <div>
-            <h1 class="view-title">Walmart Catalog</h1>
-            <p class="view-subtitle">Walmart Marketplace item search + a first-cut Offer Analysis, the Walmart equivalent of Amazon's Offer Analysis.</p>
-          </div>
-        </header>
-
-        <div style="max-width:920px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:16px;">
-          <div id="wm-status" style="font-size:12px;color:#94a3b8;"></div>
-
-          <div>
-            <div class="abbr-section-title" style="margin-bottom:4px;">Offer Analysis</div>
-            <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-              Paste one item per line: <code>UPC or Title, Vendor Cost</code> (optionally <code>, Category</code>) &mdash; same as the
-              Amazon Offer Analysis, a UPC searches by barcode and anything else searches Walmart by keyword/title (title matches
-              below a fuzzy-similarity floor are reported as no match, not guessed &mdash; Walmart's keyword search doesn't
-              reliably rank the right product first). We pull the live Walmart price, then estimate Net Profit / ROI using a
-              static referral-fee-by-category table &mdash;
-              Walmart has no live per-item fee API, so this mirrors how Amazon's referral fee is already approximated in this app.
-              Paste from Excel (tab-separated) or type comma-separated by hand.
-            </div>
-            <textarea id="wm-oa-input" rows="6"
-              placeholder="012345678905, 4.50&#10;036000291452, 2.10, Health&#10;Tide Pods Original 42 ct, 8.20, Home&#10;… one per line: UPC or Title, Vendor Cost[, Category]"
-              style="width:100%;box-sizing:border-box;resize:vertical;font-family:monospace;font-size:12px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;line-height:1.5;"></textarea>
-
-            <div style="display:flex;gap:8px;margin-top:10px;">
-              <button id="wm-oa-run" class="btn btn-primary" style="flex:1;justify-content:center;">Run Offer Analysis</button>
-              <button id="wm-oa-export" class="btn btn-secondary text-xs hidden" style="white-space:nowrap;">Download CSV</button>
-            </div>
-
-            <div id="wm-oa-progress" class="hidden" style="font-size:11px;color:#94a3b8;margin-top:8px;"></div>
-
-            <div id="wm-oa-table-wrap" class="hidden" style="margin-top:12px;overflow-x:auto;">
-              <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                <thead>
-                  <tr style="text-align:left;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
-                    <th style="padding:4px 6px;">UPC / Title</th>
-                    <th style="padding:4px 6px;">Walmart ID</th>
-                    <th style="padding:4px 6px;">Title</th>
-                    <th style="padding:4px 6px;">Match</th>
-                    <th style="padding:4px 6px;">Walmart Price</th>
-                    <th style="padding:4px 6px;">Vendor Cost</th>
-                    <th style="padding:4px 6px;">Referral Fee</th>
-                    <th style="padding:4px 6px;">Net Profit</th>
-                    <th style="padding:4px 6px;">ROI</th>
-                    <th style="padding:4px 6px;">Note</th>
-                  </tr>
-                </thead>
-                <tbody id="wm-oa-table-body"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- view-po-analytics removed — PO Analytics is now a Toolbox sub-tab (#tools-tab-po) -->
 
       <!-- ===== View: CPG Verification (default) ===== -->
       <div id="view-cpg">
@@ -1247,140 +1159,6 @@
 
       <!-- view-seller-analytics removed — Seller Analytics is now a Toolbox sub-tab (#tools-tab-seller) -->
 
-      <!-- ===== View: Reports — PO P&L is dashboard #1; more register their own -->
-      <!-- data-reports-tab button + #reports-tab-<id> pane as they're built. -->
-      <div id="view-reports" class="hidden">
-        <header class="view-header">
-          <div>
-            <h1 class="view-title">Reports</h1>
-            <p class="view-subtitle">P&amp;L and other dashboards.</p>
-          </div>
-        </header>
-
-        <div class="lib-type-tabs reports-tab-bar" role="tablist" style="padding-left:24px;padding-right:24px;">
-          <button class="lib-type-tab active" data-reports-tab="po-pnl" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-            PO P&amp;L
-          </button>
-        </div>
-
-        <div id="reports-tab-po-pnl" style="padding:18px 24px 32px;display:flex;flex-direction:column;gap:16px;">
-
-          <div class="rpt-scope-chip" style="align-self:flex-start;">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            Every PO assigned to <b id="rpt-po-pnl-purchaser-label">Avi Schoemann</b> — bought, sold, and left, in units and dollars.
-          </div>
-
-          <!-- Filters -->
-          <div class="card rpt-filter-bar">
-            <div class="rpt-field">
-              <label>Vendor</label>
-              <svg class="rpt-field-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l1.5-5h15L21 9"/><path d="M4 9h16v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M9 20v-6h6v6"/></svg>
-              <select id="rpt-po-pnl-vendor">
-                <option value="">All vendors</option>
-              </select>
-            </div>
-            <div class="rpt-field" style="min-width:110px;">
-              <label>PO #</label>
-              <svg class="rpt-field-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-              <input id="rpt-po-pnl-po" type="text" placeholder="e.g. 51563" />
-            </div>
-            <div class="rpt-field">
-              <label>Brand</label>
-              <svg class="rpt-field-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg>
-              <select id="rpt-po-pnl-brand">
-                <option value="">All brands</option>
-              </select>
-            </div>
-            <div class="rpt-field">
-              <label>Item (SKU or ASIN)</label>
-              <svg class="rpt-field-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input id="rpt-po-pnl-item" type="text" placeholder="e.g. OFF018107 or B014TDI4GA" />
-            </div>
-            <button id="rpt-po-pnl-refresh" class="icon-btn rpt-refresh-btn" title="Refresh">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            </button>
-          </div>
-
-          <!-- Active / Archive -->
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <div class="rpt-seg">
-              <button type="button" id="rpt-po-pnl-bucket-btn-active" class="active" data-bucket="active">
-                <span class="rpt-seg-dot"></span>Active
-              </button>
-              <button type="button" id="rpt-po-pnl-bucket-btn-archive" data-bucket="archive">
-                <span class="rpt-seg-dot"></span>Archive <span style="opacity:.65;font-weight:500;">(100% sold)</span>
-              </button>
-            </div>
-            <input type="checkbox" id="rpt-po-pnl-bucket-archive" class="hidden" />
-            <span id="rpt-po-pnl-loading" class="rpt-loading hidden">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/></svg>
-              Loading…
-            </span>
-          </div>
-
-          <!-- Summary -->
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">
-            <div class="stat-card">
-              <div class="rpt-stat-icon rpt-i-count"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
-              <div class="stat-label">POs</div>
-              <div class="stat-value" id="rpt-po-pnl-sum-count">—</div>
-            </div>
-            <div class="stat-card">
-              <div class="rpt-stat-icon rpt-i-bought"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg></div>
-              <div class="stat-label">Bought</div>
-              <div class="stat-value" id="rpt-po-pnl-sum-bought">—</div>
-            </div>
-            <div class="stat-card">
-              <div class="rpt-stat-icon rpt-i-sold"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div>
-              <div class="stat-label">Sold</div>
-              <div class="stat-value" id="rpt-po-pnl-sum-sold" style="color:var(--teal-600,#0f8a8d);">—</div>
-            </div>
-            <div class="stat-card">
-              <div class="rpt-stat-icon rpt-i-profit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
-              <div class="stat-label">Profit</div>
-              <div class="stat-value" id="rpt-po-pnl-sum-profit">—</div>
-            </div>
-            <div class="stat-card">
-              <div class="rpt-stat-icon rpt-i-left"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg></div>
-              <div class="stat-label">Left (at cost)</div>
-              <div class="stat-value" id="rpt-po-pnl-sum-left" style="color:#b45309;">—</div>
-            </div>
-          </div>
-
-          <!-- Table -->
-          <div class="rpt-table-card">
-            <div class="rpt-table-scroll">
-              <table class="rpt-table">
-                <thead>
-                  <tr>
-                    <th style="width:28px;"></th>
-                    <th>PO #</th>
-                    <th>Vendor</th>
-                    <th>Brands</th>
-                    <th>Received</th>
-                    <th style="text-align:right;">Qty Bought</th>
-                    <th style="text-align:right;">Qty Sold</th>
-                    <th style="text-align:right;">Qty Left</th>
-                    <th style="text-align:right;">% Sold</th>
-                    <th style="text-align:right;">Bought $</th>
-                    <th style="text-align:right;">Sold $</th>
-                    <th style="text-align:right;">Profit $</th>
-                    <th style="text-align:right;">Left $</th>
-                  </tr>
-                </thead>
-                <tbody id="rpt-po-pnl-tbody"></tbody>
-              </table>
-            </div>
-            <div id="rpt-po-pnl-empty" class="hidden empty-state">
-              <div class="icon-wrap">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-              </div>
-              <div id="rpt-po-pnl-empty-text"></div>
-            </div>
-          </div>
-        </div><!-- /reports-tab-po-pnl -->
-      </div><!-- /view-reports -->
 
     </main>
   </div>
@@ -1676,10 +1454,6 @@
       <button class="lib-type-tab active" data-tools-tab="asin" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.5 9 8 11 4.5-2 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/></svg>
         ASIN Check
-      </button>
-      <button class="lib-type-tab" data-tools-tab="po" type="button">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
-        PO Analytics
       </button>
       <button class="lib-type-tab" data-tools-tab="brand" type="button">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L3 13V3h10l7.59 7.59a2 2 0 0 1 0 2.82z"/><circle cx="7.5" cy="7.5" r="1.3"/></svg>
@@ -2096,64 +1870,6 @@
 
     </div><!-- /tools-tab-quicksearch -->
 
-    <div id="tools-tab-po" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
-
-      <!-- ===== Status — watched/sent counts + a manual refresh. Pinned to the -->
-      <!-- top per user request. Default/tool-wide recipients were removed -->
-      <!-- (2026-10-15) — every Add-PO submission now requires its own. -->
-      <div id="poa-automation-card"></div>
-
-      <!-- ===== Analyze a PO (on-demand): runs right now, independent of the -->
-      <!-- day-before-ETA automation below. -->
-      <div class="card" style="padding:16px;">
-        <div class="abbr-section-title" style="margin-bottom:4px;">Analyze a PO</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-          Runs immediately — separate from the automated day-before-ETA emails.
-        </div>
-        <input id="poa-input" type="text" placeholder="49932 or 49932, 49933"
-          style="width:100%;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;margin-bottom:10px;" />
-        <div style="display:flex;gap:8px;align-items:center;">
-          <button id="poa-run" class="btn btn-primary" style="flex:1;justify-content:center;">Run analysis</button>
-          <button id="poa-download" class="btn btn-secondary hidden" style="flex:1;justify-content:center;">Download report</button>
-        </div>
-        <div id="poa-progress" class="hidden" style="margin-top:10px;font-size:12px;color:#6b7480;"></div>
-        <div id="poa-error" class="hidden" style="margin-top:10px;font-size:12px;color:#dc2626;"></div>
-        <div id="poa-skipped" class="hidden" style="margin-top:10px;font-size:12px;color:#b45309;"></div>
-      </div>
-
-      <!-- ===== Add PO: adds to the automation's watchlist; a recipient is -->
-      <!-- required (no tool-wide fallback). -->
-      <div class="card" style="padding:16px;">
-        <div class="abbr-section-title" style="margin-bottom:4px;">Add PO</div>
-        <div style="font-size:11px;color:#94a3b8;margin-bottom:10px;">
-          PO number(s), comma-separated. A recipient is required.
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
-          <input id="poa-watch-input" type="text" placeholder="49932, 49933"
-            style="flex:1;box-sizing:border-box;font-size:13px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
-          <button id="poa-watch-recip-btn" type="button" class="btn btn-secondary" style="flex:1;justify-content:space-between;white-space:nowrap;">
-            <span id="poa-watch-recip-label">Choose recipient</span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-          </button>
-        </div>
-        <button id="poa-watch-add" class="btn btn-primary" style="width:100%;justify-content:center;">Add</button>
-      </div>
-
-      <!-- ===== Awaiting Analysis — PO # + vendor; hover a row for the full -->
-      <!-- detail (description of goods, amount, recipients). -->
-      <div class="card" style="padding:16px;">
-        <div class="abbr-section-title" style="margin-bottom:10px;">Awaiting Analysis</div>
-        <div id="poa-awaiting-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-      </div>
-
-      <!-- ===== Archive — POs already analyzed; download the report that was -->
-      <!-- generated and emailed. -->
-      <div class="card" style="padding:16px;">
-        <div class="abbr-section-title" style="margin-bottom:10px;">Archive</div>
-        <div id="poa-archive-list" style="display:flex;flex-direction:column;gap:6px;"></div>
-      </div>
-
-    </div><!-- /tools-tab-po -->
 
     <div id="tools-tab-seller" class="hidden" style="flex:1;overflow-y:auto;padding:18px 20px;display:flex;flex-direction:column;gap:16px;">
 
@@ -3149,6 +2865,5 @@
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
   <script src="/static/app.js?v=70"></script>
-  <script src="/static/create_po.js?v=27"></script>
 </body>
 </html>
