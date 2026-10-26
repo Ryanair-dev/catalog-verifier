@@ -16,6 +16,8 @@ A buy-side cross-vendor price comparison tool ("Price Desk") — ingests multipl
 
 ## Changelog
 
+**2026-10-26** — The Teams webhook payload-format caveat flagged below is resolved and `TEAMS_WEBHOOK_URL` is now live — see `docs/features/offer_analytics.md`'s 2026-10-26 entry for the full webhook setup, the "attachment is null" root cause, and the Adaptive Card payload fix (`services/teams_notify.py` only). No change needed in this file; the export-completion ping now actually delivers.
+
 **2026-10-23d — Teams group-chat ping when an Offer Analytics export finishes.**
 - Part of the same session as `docs/features/offer_analytics.md`'s 2026-10-23 entry (task #16: "Teams notification on Offer/Vendor/Brand Analytics completion") — see that entry for the shared `services/teams_notify.py` module, the webhook setup walkthrough, and the payload-format caveat (not yet live-verified, no URL was available to test against).
 - **Wired into `routers/vendor_offers.py`'s `_launch_export`'s `_run()`**: fires right after `job["status"] = "complete"`, alongside (but independent of) the existing email-on-completion logic — a Teams-send failure doesn't affect the email, and vice versa. Message includes the export's filename and scope (one vendor or "the whole desk"). Unconditional (not an opt-in toggle like the per-export email recipient is) — fires for every completed export whenever `TEAMS_WEBHOOK_URL` is configured, same as the Offer Analysis/Brand Analytics hooks.

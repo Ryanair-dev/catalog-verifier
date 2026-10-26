@@ -10,13 +10,12 @@ own try/except too, so a notification failure never breaks the actual
 feature it's attached to — same pattern as services/graph_mail.py's email
 sending).
 
-Payload shape: `{"text": message}` — the simplest, most broadly-compatible
-body for a Teams Workflows webhook trigger (also matches the legacy
-Incoming Webhook connector's format). NOT YET LIVE-TESTED against a real
-webhook URL as of this writing (none was available) — the first real send
-should be checked for delivery/formatting once a URL is configured, and
-this payload shape adjusted if the specific configured workflow expects a
-different field name.
+Payload shape: an Adaptive Card wrapped in `attachments`, per the "Post to
+a channel when a webhook request is received" Workflows template's expected
+schema — live-tested against the real webhook: a plain `{"text": message}`
+body triggers the flow (202) but the run then fails with "the attachment is
+null", since the template's post-message action reads
+attachments[0].content. The Adaptive Card shape posts successfully.
 """
 from __future__ import annotations
 
@@ -41,7 +40,22 @@ def send_teams_message(text: str) -> None:
     url = os.getenv("TEAMS_WEBHOOK_URL")
     if not url:
         raise RuntimeError("Teams notifications are not configured (.env TEAMS_WEBHOOK_URL).")
-    resp = requests.post(url, json={"text": text}, timeout=20)
+    payload = {
+        "attachments": [
+            {
+                "contentType": "application/vnd.microsoft.card.adaptive",
+                "content": {
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "type": "AdaptiveCard",
+                    "version": "1.0",
+                    "body": [
+                        {"type": "TextBlock", "text": text, "wrap": True},
+                    ],
+                },
+            }
+        ]
+    }
+    resp = requests.post(url, json=payload, timeout=20)
     if resp.status_code not in (200, 202):
         log.error("[teams_notify] webhook post failed %s: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()

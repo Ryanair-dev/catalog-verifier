@@ -63,6 +63,8 @@ User enters a brand or manufacturer name; AI discovers sub-brands; Keepa's Produ
 
 ## Changelog
 
+**2026-10-26** — The Teams webhook payload-format caveat flagged below is resolved and `TEAMS_WEBHOOK_URL` is now live — see `docs/features/offer_analytics.md`'s 2026-10-26 entry for the full webhook setup, the "attachment is null" root cause, and the Adaptive Card payload fix (`services/teams_notify.py` only). No change needed in this file; Brand Analytics' completion ping now actually delivers.
+
 **2026-10-23** — Teams group-chat ping when a Brand Analytics run finishes.
 - Part of the same session as `docs/features/offer_analytics.md`'s 2026-10-23 entry (task #16: "Teams notification on Offer/Vendor/Brand Analytics completion") — see that entry for the shared `services/teams_notify.py` module, the webhook setup walkthrough, and the payload-format caveat (not yet live-verified, no URL was available to test against).
 - **Wired into `services/analytics/brand_runner.py`**: new `_notify_teams_complete(run_id, total_items)`, called right after `_brand_pipeline`'s own final `status="Complete"` update (the one real completion site — the earlier `_keepa_brand_pipeline` sub-phase always runs with `mark_complete=False` when called from `_brand_pipeline`, so it never fires its own separate completion update/notification). Message includes the run name and total ASINs found.
