@@ -4568,6 +4568,11 @@
       </div>`;
     };
  
+    // Amazon product page of an ASIN, on the run's own marketplace (US / CA / MX / BR, like services/spapi)
+    const _AMAZON_DOMAIN = { US: "amazon.com", CA: "amazon.ca", MX: "amazon.com.mx", BR: "amazon.com.br" };
+    const _amazonDomain = _AMAZON_DOMAIN[String((j && j.run && j.run.marketplace) || "US").toUpperCase()] || "amazon.com";
+    const _amazonUrl = (asin) => `https://www.${_amazonDomain}/dp/${encodeURIComponent(String(asin || ""))}`;
+ 
     const _asinConflicts = state.analyticsRun._asinConflicts || {};
     body.innerHTML = pageRows.map(c => {
       const src = srcByIdx[c.row_idx] || {};
@@ -4626,7 +4631,7 @@
             <div class="text-xs" style="color:#94a3b8;">${escapeHtml(src.brand || "")}</div>
             ${queryAgentDetails}
           </td>
-          <td class="font-mono text-xs">${escapeHtml(c.asin || "")}${conflictBadge}</td>
+          <td class="font-mono text-xs"><a href="${escapeHtml(_amazonUrl(c.asin))}" target="_blank" rel="noopener noreferrer" title="Open on Amazon" style="color:#4f46e5;text-decoration:none;">${escapeHtml(c.asin || "")}</a>${conflictBadge}</td>
           <td style="max-width:300px;">
             <div class="text-sm" style="color: #475569;">${escapeHtml(amzTitle)}</div>
           </td>
@@ -4658,33 +4663,6 @@
     _renderPagination(page, totalPages, totalRows);
   }
  
-  // ---- verdict-transition POST + local state update ------------------
-  async function applyAnalyticsVerdict(row_idx, asin, verdict, review_status) {
-    const id = state.analyticsRun.id;
-    if (!id) return;
-    const j = await api(`/api/analytics/runs/${id}/candidates/verdict`, {
-      method: "POST",
-      body: { row_idx, asin, verdict, review_status: review_status || "" },
-    });
-    // Mirror into local state so we don't need to re-fetch
-    const data = state.analyticsRun.data;
-    if (data && Array.isArray(data.candidates)) {
-      const c = data.candidates.find(x => x.row_idx === row_idx && x.asin === asin);
-      if (c) {
-        c.verdict = verdict;
-        if (review_status) c.review_status = review_status;
-        if (!c.data) c.data = {};
-        c.data.verdict = verdict;
-      }
-      // Also mirror run counts returned by the server.
-      if (j && j.counts && data.run) {
-        data.run.total_candidates_found = j.counts.total_candidates_found;
-        data.run.verified_count        = j.counts.verified_count;
-        data.run.review_count          = j.counts.review_count;
-        data.run.not_approved_count    = j.counts.not_approved_count;
-      }
-    }
-  }
 
   async function handleAnalyticsRunAction(e) {
     const btn = e.currentTarget;

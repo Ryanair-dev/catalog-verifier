@@ -2,27 +2,6 @@
 The variant gate: ONE shared check that runs on the result of ALL THREE scorers
 (weighted, cascade, classifier).  It uses the unified attribute reader, so every scorer now
 checks color, clothing size, units, flavor and scent the same way, on the same boxes.
-
-HARD difference -> rejected (confidence capped at 29), reason added.
-                   (also: BOTH sides state a brand and they are clearly different brands, no UPC match)
-SOFT difference -> never auto-approved (an approved result drops to review, capped at 89).
-NOT STATED      -> the listing says a color / size / flavor / scent but the vendor row does not
-                   ("women's socks" vs "women's socks blue"): never auto-approved, goes to review.
-                   Skipped when the barcode (UPC) is confirmed, because a UPC already pins the variant.
-                   A different brand WITH a confirmed UPC also goes to review, not to approved.
-                   Only the attributes that can really vary for this PRODUCT CATEGORY count (a dish soap's
-                   "Blue" is not a variant; a sock's is).  The category comes from product_categorizer.py.
-CATEGORY FAR    -> (optional, off by default: MATCH_CATEGORY_CHECK=1) the two products are in categories that
-                   are far apart (Medical vs Automotive): never auto-approved, goes to review.
-Nothing differs and nothing is missing -> result untouched.
-It only ever BLOCKS or DOWNGRADES. Volume and weight are left to the scorers' own checks.
-
-v9 (2026-10-22):
-  - a combined size that only partly matches (S vs XS/S, M vs M/L) is SOFT ("size_partial"): review, not
-    reject, because it is usually but not always another SKU.  vendor_families.py settles it later when the
-    run itself proves it (Amazon sells the plain size as its own listing).
-  - a HARD difference that rests on a value read only from the unabbreviation agent's expanded title
-    (attr_extract "soft" box, source "ai_title") becomes SOFT: an AI-derived value never rejects on its own.
 """
 from __future__ import annotations
 

@@ -1,33 +1,3 @@
-"""
-The product-line check.
-
-Color, size, count, flavor ... are VARIANTS of a product.  This check is about something else: the
-product LINE.  "Sport Original Weight Mini-Crew" and "Run Original Weight Mini-Crew" are different
-products even when color, size and brand are identical, and so are "Crew" and "Mini-Crew".
-
-How it decides, without a hand-made list of line names:
-  * The vendor file itself is the vocabulary.  Every word that appears in a title of a vendor row of the
-    same brand (once variant words, brand and filler words are removed) is a "line word" of that
-    catalog: sport, run, trail, liner, crew, mini, midweight ...
-  * A listing is compared with the vendor row using ONLY those line words.  Words the vendor file never
-    uses (marketing words, abbreviations: "Coolmax", "Toesocks", "GG") are ignored.  So the check stays
-    quiet when it has no evidence.
-  * It says "different line" in two cases:
-      a) each side names a line word the other lacks        (vendor: sport | listing: run)
-      b) the listing is exactly the line of ANOTHER vendor row of the same file, and not this row's
-                                                             (vendor: trail midweight MINI crew |
-                                                              listing = "trail midweight crew", which is
-                                                              another row of the file)
-  * With a confirmed UPC the check is not used.  With fewer than two comparable words it says nothing.
-
-v9 (2026-10-22): an ABBREVIATION is not a different line.  Before the two cases above, a word on one side
-that is the initials of consecutive words on the other side covers them: vendor "GG" = listing "Good Grips",
-vendor "Good Grips" = listing "GG" (on OXO this one misfire carried 965 of 1191 rejections).  When such a
-cover was used, case b) is skipped too.
-
-Where the vendor titles come from: the run's own catalog rows (read once, cached for a few minutes), or
-register_line_index() for tests and the eval set.
-"""
 from __future__ import annotations
 
 import json

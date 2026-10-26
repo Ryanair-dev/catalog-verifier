@@ -1,12 +1,5 @@
 """
 Variation detection on the attribute boxes from attr_extract (vendor rows and Amazon candidates).
-
-varying_boxes(rows): which boxes take 2+ different values inside a family (vendor_families.py uses it).
-compare_boxes(vendor, amazon): box by box
-    match / mismatch / unknown (one side does not say) / open (the candidate's family varies by
-    that box, and the vendor row does not pick one, so it is not a conflict) /
-    partial (sizes only: S vs XS/S, M vs M/L - one combined size shares a part with the other).
-The variant gate (variant_gate.py) turns these results into Reject / Review.
 """
 from __future__ import annotations
 

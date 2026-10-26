@@ -1,49 +1,5 @@
 """
-Vendor families: which vendor rows are the SAME product in another variant, and how every Amazon listing
-relates to a vendor row.  This module only reads and reports; family_pass.py uses it to change verdicts.
-
-FAMILY of vendor rows = same brand + exactly the same PRODUCT WORDS.
-    Product words = the title minus everything that is a variant or noise:
-      - the values attr_extract read for the row (color, size, gender, flavor, scent, finish, type, tone, shade),
-        so a color named only in the vendor's COLOR column ("Celestine") is also removed from the title,
-      - every color / size / gender word of the word library, numbers, units, filler words (socks, toe, the ...),
-      - the brand, and a variant tail such as "(Small, Black)" or ", Granite, Small".
-    No fuzzy merge: "Crew" and "Mini-Crew" stay two families.  "Women's" is a variant (gender), so
-    "Women's Run Lightweight No-Show" joins "Run Lightweight No-Show".
-
-LISTING -> FAMILY.  Listings are grouped the same way.  A listing group is linked to a vendor family
-    1. by barcode: a listing of the group carries the UPC of a row of that family; otherwise
-    2. by style number: Amazon's part number starts with a row's STYLE NUMBER (052100 -> 052100BLKS); otherwise
-    3. by words: every product word of the family is in the listing ("GG" = "Good Grips" counts), and the
-       listing has no word that only a SIBLING family of the same brand has ("Mini" keeps "Liner Mini-Crew"
-       out of the "Liner Crew" family).
-
-RELATION of one listing to one vendor row (same brand needed for the first five):
-    exact variant       same product; the barcode matches, or every variant the two sides state agrees
-    other variant       same product; a stated variant differs (size S vs M), or the RUN ITSELF proves it
-                        (sibling evidence, below)
-    variant not stated  same product; one side states a variant the other does not
-    unclear             same product; it cannot be decided (a color name the word library cannot place and no
-                        sibling evidence; a combined size like S vs XS/S; one side's own sources disagree)
-    other product       same brand, not this product
-    other brand
-
-SIBLING EVIDENCE (v3).  Inside a family, the other rows and the other listings tell what the options are:
-    color   vendor "gray" vs listing "celestine" (a name the word library cannot place) is OTHER VARIANT when
-            Amazon sells gray as its own listing of the same product, or another vendor row of the family IS
-            celestine.  Without that proof it stays UNCLEAR.
-    size    vendor "S" vs listing "XS/S" is OTHER VARIANT when Amazon sells plain S as its own listing of the
-            same product, or another vendor row IS XS/S.  Without that proof it stays UNCLEAR.
-    gender  a vendor row with no gender vs a listing for women is OTHER VARIANT when the vendor file names
-            Women's items as their own rows for the same brand (rows 19, 31 ...).
-    A pair marked OTHER VARIANT gets "settle": True (unless the barcode matches): family_pass.py may then move
-    it from Review to Not Approved.
-
-Row numbers in every report are shown the way the app shows them (row_idx + 1).
-
-Command (from the repo root):
-    uv run python -m services.analytics.vendor_families --run 123                  # print the families
-    uv run python -m services.analytics.vendor_families --run 123 --xlsx fam.xlsx  # + a review workbook
+Vendor families: which vendor rows are the SAME product in another variant.
 """
 from __future__ import annotations
 

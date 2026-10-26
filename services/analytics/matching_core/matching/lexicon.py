@@ -14,18 +14,7 @@ The word library.  Every list the attribute reader uses lives HERE, in one place
     finishes        phrase, canonical                      (hardware finishes: satin nickel, venetian bronze ...)
     types           phrase, canonical                      (function types: privacy, passage, dummy, entry ...)
 
-WHO EDITS IT: developers only, as plain CSV files in  matching_core/lexicon/  (a lines that starts
-with # is a comment).  Nobody edits it from the app.
-WHERE THE WORDS COME FROM:  if the CSV file of a table exists, the file is the truth for that table
-(delete a line = the word is gone).  If the file does not exist, the built-in starter list below is used.
-VERSION: a short hash of all the content.  It is saved with every variant check, so any past verdict
-can be traced to the exact word lists that produced it.
-
-Commands (run from the repo root):
-    uv run python -m services.analytics.matching_core.matching.lexicon --write-seed   # create the CSV files
-    uv run python -m services.analytics.matching_core.matching.lexicon --check        # validate + show a summary
-    uv run python -m services.analytics.matching_core.matching.lexicon --old-candidates
-                              # list words from the OLD lists that are not in the library yet (for review)
+WHO EDITS IT: developers only.
 """
 from __future__ import annotations
 

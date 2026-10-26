@@ -1,46 +1,5 @@
 """
-Shared attribute reader (SHADOW MODE).
-
-Reads the SAME boxes from a vendor row and from an Amazon item, so they can be compared box to
-box later. At this stage it only READS and SAVES. No scorer uses it yet, so no verdict changes.
-
-Boxes: color, flavor, scent, material, gender (men / women / boys / girls / kids / unisex),
-       size (clothing size S/M/L), volume_ml, weight_g,
-       count (units in one package), pack (number of packages), bundle ("4 Pack": can mean either),
-       style (a vendor STYLE NUMBER column, "052100": the product, not the variant; compared with
-       Amazon's part number by vendor_families.py, never used to reject).
-
-v11 rules (2026-10-22):
-  - sizes agree only when they are the SAME set: S = S, but S != XS/S and M != M/L (size_relation()
-    says "partial" for those); so Amazon's size field "S" and its title "X-Small/Small" now count as a
-    conflict instead of silently agreeing.
-  - a color field with junk around real color words keeps only the color words:
-    "Liner Socks Light Gray" -> "light gray", "E4824 Black 3 Pairs" -> "black".
-  - "Women's" / "Men's" in an Amazon title beats Amazon's gender field "unisex".
-  - a barcode in a part-number field (760172011715, INJ760172021332) is not a model number.
-
-Every item also gets an "identity" block (brand, title, part number, ALL barcodes, model ...) and
-a "notes" block (everything else worth keeping: style, item form, Amazon's raw counts, weights and
-dimensions).  Vendor row and Amazon item are read by the SAME helpers, so the two dicts line up:
-    {"identity": {...}, "fields": {box: {"value", "source", ...}}, "notes": {...}}
-
-Each box that is found looks like:   {"value": "black", "source": "title"}
-    source = "amazon_field"  a field Amazon filled in
-             "title"         read from the title text
-             "vendor_column" a column of the vendor file itself (Color, Size, Flavor ...)
-             "ai"            the AI step (color, flavor, scent, material, unit_count)
-             "ai_title"      the AI title reader (agents/attr_ai.py), a value DECODED from an abbreviation or
-                             code ("SN" -> satin nickel, the expanded title "OXO Good Grips Stainless Steel ...").
-                             Gets "soft": True = it may send a pair to Review, never reject it on its own.
-             "ai_read"       the AI title reader, a value whose words are written in the title as they are
-                             (the rules just missed it): counts like a rule.
-                             Both are read LAST (they only fill boxes nothing else stated).  On by default when
-                             ANTHROPIC_API_KEY is set; MATCH_AI_TITLE_ATTRS=0 switches it off.
-If two sources disagree, the box also gets  "conflict": True  and  "also": [...].
-
-Optional word files, one word per line (# starts a comment), in a folder called  lexicon  next to
-this file:  flavor_words.txt   scent_words.txt   color_words.txt   generic_values.txt
-A file ADDS to the built-in words. A missing file is fine.
+Shared attribute reader for both vendor row items and Amazon candidates
 """
 from __future__ import annotations
 

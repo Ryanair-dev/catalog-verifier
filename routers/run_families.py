@@ -1,13 +1,5 @@
 """
-Families of one Analytics run, for the UI and as a download.  Read only: nothing here changes a verdict.
-
-    GET /api/run-families/{run_id}          JSON: the families + every candidate pair with its relation,
-                                            + what the AI router did ("ai": expanded vendor titles)
-    GET /api/run-families/{run_id}/export   Excel: a Families sheet + a Pairs sheet
-
-Its own URL prefix (/api/run-families/...) so it can never collide with the routes in routers/analytics.py.
-Paths here are written without "/api": main.py adds it, the same way as for every other router:
-    app.include_router(run_families.router, prefix="/api", tags=["families"])
+Families of one Analytics run, for the UI and as a download. Makes review faster.
 """
 from __future__ import annotations
 
@@ -46,37 +38,25 @@ def _plain(value: Any) -> Any:
     return value if isinstance(value, (int, float, str)) or value is None else str(value)
 
 
-def _ai_summary(vendor_rows: list[dict]) -> tuple[dict, dict]:
-    """What the AI title reader did for this run: ({"rows_total", "rows_checked", "rows_with_result",
-    "attributes_found", "pairs_ai", "pairs_learned", "switch_on"},
-    {row number as shown: {"expanded_title", "pairs", "attributes", "why"}})."""
-    try:
-        from services.analytics.matching_core.agents.attr_ai import enabled
-        switch_on = bool(enabled())
-    except Exception:  # noqa: BLE001
-        switch_on = False
+def _ai_summary(vendor_rows: list[dict], run_id: int) -> tuple[dict, dict]:
+    """What the AI reader (brand_extractor.py, GPT-4o-mini) found for this run's vendor rows, and what it spent:
+    ({"installed", "switch_on", "rows_total", "rows_with_result", "attributes_found", "sent", "cached",
+      "cost_usd", "error", "message"}, {row number as shown: {"attributes": {...}}})."""
+    totals = {"installed": True, "switch_on": False, "rows_total": len(vendor_rows), "rows_with_result": 0,
+              "attributes_found": 0, "sent": 0, "cached": 0, "cost_usd": 0.0, "error": "", "message": ""}
     per_row: dict = {}
-    totals = {"rows_total": len(vendor_rows), "rows_checked": 0, "rows_with_result": 0, "attributes_found": 0,
-              "pairs_ai": 0, "pairs_learned": 0, "switch_on": switch_on}
-    for vr in vendor_rows:
-        record = (vr.get("source") or {}).get("ai_unabbrev")
-        if not isinstance(record, dict):
-            continue
-        totals["rows_checked"] += 1
-        pairs = [{"from": p.get("from"), "to": p.get("to"), "source": p.get("source") or "ai"}
-                 for p in record.get("pairs") or []]
-        attributes = {box: {"value": (v or {}).get("value"), "evidence": (v or {}).get("evidence")}
-                      for box, v in (record.get("attributes") or {}).items() if isinstance(v, dict)}
-        if not pairs and not attributes:
-            continue
-        totals["rows_with_result"] += 1
-        totals["attributes_found"] += len(attributes)
-        totals["pairs_ai"] += sum(1 for p in pairs if p["source"] == "ai")
-        totals["pairs_learned"] += sum(1 for p in pairs if p["source"] == "learned")
-        expanded = record.get("expanded_title") or ""
-        per_row[str(row_label(vr["row_idx"]))] = {
-            "expanded_title": expanded if expanded != record.get("original_title") else "",
-            "pairs": pairs, "attributes": attributes, "why": record.get("why") or []}
+    try:
+        from services import database
+        from services.analytics import brand_extractor
+        with database._connect() as conn:
+            row = conn.execute("SELECT ai_clean_titles FROM analytics_runs WHERE id = ?", (run_id,)).fetchone()
+        totals["switch_on"] = bool(row and row[0]) and brand_extractor.enabled()
+        summary = brand_extractor.run_summary(run_id, vendor_rows)
+        for key in ("rows_with_result", "attributes_found", "sent", "cached", "cost_usd", "error"):
+            totals[key] = summary[key]
+        per_row = {str(row_label(idx)): {"attributes": attrs} for idx, attrs in summary["per_row"].items()}
+    except Exception as exc:  # noqa: BLE001 - brand_extractor.py missing or broken
+        totals.update(installed=False, message=f"{type(exc).__name__}: {exc}")
     return totals, per_row
 
 
@@ -87,7 +67,7 @@ def run_families(run_id: int) -> dict:
     counts: dict[str, Counter] = {}
     for d in lines:
         counts.setdefault(d["Family"], Counter())[d["Relation"]] += 1
-    ai_totals, ai_rows = _ai_summary(vendor_rows)
+    ai_totals, ai_rows = _ai_summary(vendor_rows, run_id)
 
     families = []
     for f in result["families"]:

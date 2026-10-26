@@ -1,11 +1,4 @@
 """Adapt Catalog Verifier's normalized records to the matcher scoring core.
-
-2026-10-22 changes (FILE_VERSION at the bottom):
-  - NOT STATED rule: a listing's count of 1 and its gender "unisex" carry no information, so they no longer
-    send a pair to Review on their own ("the vendor row does not state gender, count ... count 1").
-  - The cascade's factor list says "(scorer's own title check)", so "Color: unknown" is not read as "the
-    attributes are unknown" (the variant gate reads them properly).
-  - Explanations name the source "AI-expanded title" and show the vendor STYLE number when there is one.
 """
 from __future__ import annotations
 
