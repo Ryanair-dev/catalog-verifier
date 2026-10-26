@@ -106,6 +106,20 @@ def _ledger_derived():
     return vendors, derived
 
 
+def winning_upcs_for_vendor(vendor_name: str) -> list[str]:
+    """UPCs where `vendor_name` currently has the lowest cost among every
+    vendor carrying it -- ties included, and a sole-source UPC (no other
+    vendor has it at all) counts as a win too. Same win logic build_xlsx's
+    focus_vendor column already uses (see _derive's `winners` list) --
+    reused here so "is this vendor cheapest" is computed identically
+    everywhere, not reimplemented a third time."""
+    vendors, derived = _ledger_derived()
+    if vendor_name not in vendors:
+        return []
+    idx = vendors.index(vendor_name)
+    return [upc for upc, r in derived.items() if idx in r["winners"]]
+
+
 def build_xlsx(upcs: list[str] | None = None, focus_vendor: str | None = None) -> bytes:
     """Price comparison workbook. `upcs` (already normalized ledger UPCs, in the
     desired order) restricts + orders the rows; `focus_vendor` adds a cheapest-flag

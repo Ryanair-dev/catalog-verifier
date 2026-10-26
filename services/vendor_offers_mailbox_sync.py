@@ -607,6 +607,21 @@ def sync_all_from_mailbox() -> dict:
         database.set_setting("vendor_offers_mailbox_sync_last", json.dumps(summary))
     except Exception:  # noqa: BLE001
         log.warning("[vendor_offers_mailbox_sync] failed to persist sync status", exc_info=True)
+
+    # Dispatched on its own thread, including the import itself -- this
+    # function is what the 30-min scheduler (and the manual "sync all"
+    # endpoint) depend on for core data freshness, so nothing about the new
+    # auto-alert feature is allowed to add so much as a millisecond to its
+    # own execution time, whatever that feature ends up doing.
+    def _dispatch_auto_alert() -> None:
+        try:
+            from services import vendor_offers_auto_alert as voaa
+            voaa.process_sync_summary(summary)
+        except Exception:  # noqa: BLE001
+            log.exception("[vendor_offers_mailbox_sync] auto-alert dispatch failed")
+
+    threading.Thread(target=_dispatch_auto_alert, name="vendor-offers-auto-alert-dispatch", daemon=True).start()
+
     return summary
 
 

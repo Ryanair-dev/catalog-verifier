@@ -6,6 +6,7 @@ Serves the static single-page UI from /static and exposes the REST API under /ap
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -94,17 +95,52 @@ async def _lifespan(app: FastAPI):
     # the one-shot thread it replaces. Best-effort; every feature that reads
     # this data already falls back to the local snapshot if Azure is
     # unconfigured/unreachable.
-    try:
-        from services import azure_sql
-        if azure_sql.is_configured():
-            azure_sql.start_scheduler()
-    except Exception:
-        pass
+    # --- Startup scheduler stagger (2026-10-26) ---------------------------
+    # All 6 of the schedulers below used to call their own start_scheduler()
+    # directly here, and every one of them runs its FIRST loop iteration
+    # immediately (not after its own interval) so the app is warm right at
+    # startup. That's fine individually, but running all of them
+    # concurrently turned into a real production incident: azure_sql's own
+    # first pull alone is documented at "~165s", vendor_offers_mailbox_sync's
+    # measured at ~100-116s against real data, and with mpn_check_sync/
+    # sc_catalog_index/po_automation ALSO firing at the same moment, the
+    # server became unresponsive for 10+ minutes straight on every restart
+    # (confirmed independent of any other same-day code change -- reproduced
+    # with a fully clean, single process running nothing but this stock
+    # startup sequence). CPU climbed into the hundreds of seconds with no
+    # recovery, rather than the brief, bounded warm-up this was designed for.
+    #
+    # Fix: stagger each scheduler's very first start by a fixed delay via
+    # threading.Timer, so only one of them is doing its heavy first-run work
+    # at any given moment. health_check is exempt -- it only fires at Friday
+    # 19:00 America/New_York, never immediately at startup, so it was never
+    # part of the pile-up.
+    def _delayed_start(seconds: float, fn) -> None:
+        t = threading.Timer(seconds, fn)
+        t.daemon = True
+        t.start()
+
     # Weekly catalog health check (Eligibility + DOG over the Pair Library),
-    # scheduled in-process for Friday 19:00 America/New_York.
+    # scheduled in-process for Friday 19:00 America/New_York -- not part of
+    # the startup pile-up, starts immediately as before.
     try:
         from services import health_check
         health_check.start_scheduler()
+    except Exception:
+        pass
+    # Live SellerCloud (Azure) catalog: hourly background refresh (2026-10-07,
+    # replaces a one-shot startup-only warm) so PO Analytics/Create SKUs/
+    # sc_reference almost always find an already-warm cache (<1h old) instead
+    # of paying the ~165s pull inline, and so a change made in SellerCloud
+    # shows up here within the hour even with nobody actively using the app.
+    # Best-effort; every feature that reads this data already falls back to
+    # the local snapshot if Azure is unconfigured/unreachable. Starts first
+    # (0s) of the staggered group -- its own ~165s is the single biggest
+    # individual cost, so it gets the whole warm-up window to itself.
+    try:
+        from services import azure_sql
+        if azure_sql.is_configured():
+            _delayed_start(0, azure_sql.start_scheduler)
     except Exception:
         pass
     # Vendor Offer Analytics: 30-min sync of the 5 vendors straight from their
@@ -113,10 +149,11 @@ async def _lifespan(app: FastAPI):
     # from the offers and inbox ourselves" -- see services/
     # vendor_offers_mailbox_sync.py's module docstring). The old DB-sync
     # module/endpoints are left intact, just not scheduled, as a safety net.
+    # Starts at +210s -- after azure_sql's ~165s should be done.
     try:
         from services import vendor_offers_mailbox_sync as vo_mail_sync
         if vo_mail_sync.is_configured():
-            vo_mail_sync.start_scheduler()
+            _delayed_start(210, vo_mail_sync.start_scheduler)
     except Exception:
         pass
     # vendor_offers_db_sync's hourly Azure scheduler is DELIBERATELY not
@@ -126,10 +163,11 @@ async def _lifespan(app: FastAPI):
     # (/db-sync/status, /db-sync/run) still work if ever needed as a fallback.
     # MPN Check: local mirror of fbidb products/manufacturers (hourly,
     # incremental after the first full pull) so a check never hits Azure live.
+    # Starts at +360s -- after the mailbox sync's own ~100-116s should be done.
     try:
         from services import mpn_check_sync
         if azure_sql.is_configured():
-            mpn_check_sync.start_scheduler()
+            _delayed_start(360, mpn_check_sync.start_scheduler)
     except Exception:
         pass
     # Local SellerCloud catalog snapshot (Create SKUs / PO Analytics' Main
@@ -139,18 +177,20 @@ async def _lifespan(app: FastAPI):
     # result) even though the source file itself had been refreshed that same
     # morning — this closes that gap with a periodic background check instead
     # of relying on someone remembering to run `--snapshot` by hand.
+    # Starts at +450s.
     try:
         from services.sellercloud import catalog_index as sc_catalog_index
-        sc_catalog_index.start_scheduler()
+        _delayed_start(450, sc_catalog_index.start_scheduler)
     except Exception:
         pass
     # PO Analytics day-before-ETA automation: hourly check against Azure's own
     # Monday.com mirror (zero Monday API calls — services/monday_eta.py).
     # Dormant until a real recipient list is configured on the Settings page
     # (see services/po_automation.py — check_and_trigger() no-ops otherwise).
+    # Starts at +540s.
     try:
         from services import po_automation
-        po_automation.start_scheduler()
+        _delayed_start(540, po_automation.start_scheduler)
     except Exception:
         pass
     yield

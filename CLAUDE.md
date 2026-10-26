@@ -205,6 +205,16 @@ The abbreviation library (see `docs/features/library.md`) is loaded via `databas
 
 ---
 
+## Startup scheduler staggering (`main.py` lifespan)
+
+`main.py`'s lifespan starts several in-process background schedulers (`azure_sql`, `vendor_offers_mailbox_sync`, `mpn_check_sync`, `services.sellercloud.catalog_index`, `po_automation`), each of which runs its **first loop iteration immediately** on startup (not after its own interval) so the app is warm right away. **These first runs are individually expensive** — `azure_sql`'s own code comment documents a "~165s pull inline" on a cold cache, and `vendor_offers_mailbox_sync`'s first run against a real day's vendor emails measured ~100–116s.
+
+Starting all of them at once caused a real incident (2026-10-26): the server became unresponsive for 10+ minutes on every restart (CPU climbing into the hundreds of seconds with no recovery), reproduced with a single, clean process running nothing but the stock startup sequence — confirmed independent of any same-day feature code. Fix: each scheduler's very first start is staggered via `threading.Timer` (`_delayed_start(seconds, fn)` in `main.py`) — `azure_sql` at 0s, `vendor_offers_mailbox_sync` at +210s, `mpn_check_sync` at +360s, `services.sellercloud.catalog_index` at +450s, `po_automation` at +540s — so only one scheduler is doing its heavy first-run work at any given moment. `health_check` is exempt (it only fires Friday 19:00 America/New_York, never at startup).
+
+**If you add a new "fires immediately on startup" scheduler, give it its own staggered slot** (past the existing ones, or interleaved if you've profiled its actual first-run cost) rather than calling `start_scheduler()` directly in the lifespan — the whole point of this section is that direct, unstaggered calls are exactly what caused the incident.
+
+---
+
 ## Known scaling limitations (SQLite single-writer)
 
 For true multi-hundred-user concurrency, the current bottleneck is SQLite's single-writer lock. Future migration path:
