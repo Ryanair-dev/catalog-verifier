@@ -247,46 +247,125 @@ def _inlist(vals):
     return ",".join("'" + str(v).replace("'", "") + "'" for v in vals)
 
 
-def _sku_data_by_asin(asins: list[str]) -> dict:
-    """{asin: {main_sku, fba_sku, on_order, or33}} from the live SellerCloud view
-    (Ford Medical). Main SKU = the Merchant (parent) SKU, FBA SKU = the Amazon
-    shadow. On order = OnOrder; OR33 = InventoryPhysicalQty (OR33 is the warehouse)."""
-    out: dict = {}
-    for chunk in _chunks([a.strip().upper() for a in asins if a]):
+def _sku_data_by_asin(asins: list[str], asin_to_upc: dict[str, str] | None = None) -> dict:
+    """{asin: {main_sku, fba_sku, on_order, or33, upc}} from the live SellerCloud
+    view (Ford Medical).
+
+    Main SKU is looked up by UPC, not ASIN -- mirroring the user's own "SC
+    data.xlsx" reference file (its "Sku Data extended" tab keys the parent/
+    main SKU off UPC; its "FBA"/"FBM" Power Queries separately group by ASIN).
+    Fixed 2026-10-27, per user report that SKU/FBA SKU (among other columns)
+    were coming back inaccurate: the true parent/main SellerCloud SKU is
+    often never itself listed on Amazon -- only its FBA/FBM shadow children
+    carry a real ASIN -- so filtering this view by ASIN AND FulfilledBy=
+    'Merchant' could silently return nothing, or the wrong row, whenever the
+    real main SKU's own ASIN column was blank or stale. UPC doesn't have
+    that problem; it's the stable identifier of the underlying product.
+    FBA SKU keeps the ASIN-based lookup (FulfilledBy='Amazon'), since that
+    IS the SKU actually listed under that exact ASIN -- that half was never
+    the bug.
+
+    `asin_to_upc` is the caller's own UPC -> ASIN(s) assignment (an ASIN has
+    exactly one UPC; a UPC can have several ASINs, so this is the per-ASIN
+    reverse lookup) -- Vendor Offers' export always has this (it starts from
+    a UPC). Seller Analytics (`services/seller_analytics.py`) does NOT --
+    it starts from a bare ASIN list with no known UPC yet, and actually uses
+    this function's own `upc` return value to discover one. For any ASIN
+    with no entry in `asin_to_upc`, this falls back to the original
+    ASIN-keyed main-SKU query for just that ASIN, so that caller doesn't
+    regress -- it was never the half of this that was wrong."""
+    asin_to_upc = asin_to_upc or {}
+    clean_asins = [a.strip().upper() for a in asins if a]
+    upcs = sorted({u for u in asin_to_upc.values() if u})
+    asins_without_upc = [a for a in clean_asins if not asin_to_upc.get(a)]
+
+    main_by_upc: dict = {}
+    for chunk in _chunks(upcs):
+        try:
+            rows, cols = _azure_rows(
+                "SELECT UPC, ProductID, ShadowOf, FulfilledBy, Status, "
+                "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
+                "FROM analytics.sku_data_extended_view "
+                f"WHERE CompanyName LIKE 'Ford%' AND UPC IN ({_inlist(chunk)})")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[template_export] sku view (main by UPC) query failed: %s", str(exc)[:120])
+            continue
+        by: dict = {}
+        for r in rows:
+            d = dict(zip(cols, r))
+            by.setdefault(d["UPC"], []).append(d)
+        for upc, rs in by.items():
+            merch = [r for r in rs if r["FulfilledBy"] == "Merchant"]
+            mkey = lambda r: (r["Status"] == "Active", not (r["ShadowOf"] or ""),
+                              r["LastPurchasedOn"] or dt.datetime.min)
+            main = max(merch, key=mkey) if merch else (max(rs, key=mkey) if rs else None)
+            # main SKU = the base/parent: prefer ShadowOf; else strip the shadow
+            # suffixes (-FBA/-FBM/_QY<n>) off the ProductID → the base SKU.
+            base = ((main or {}).get("ShadowOf") or (main or {}).get("ProductID")) if main else None
+            main_sku = re.sub(r"(_QY\d+|-FB[AM])+$", "", base) if base else None
+            main_by_upc[upc] = {
+                "main_sku": main_sku,
+                "on_order": (main or {}).get("OnOrder"),
+                "or33": (main or {}).get("InventoryPhysicalQty"),
+            }
+
+    fba_by_asin: dict = {}
+    for chunk in _chunks(clean_asins):
+        try:
+            rows, cols = _azure_rows(
+                "SELECT LTRIM(RTRIM(ASIN)) asin, ProductID, UPC "
+                "FROM analytics.sku_data_extended_view "
+                f"WHERE CompanyName LIKE 'Ford%' AND FulfilledBy = 'Amazon' "
+                f"AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)})")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[template_export] sku view (fba by ASIN) query failed: %s", str(exc)[:120])
+            continue
+        for r in rows:
+            d = dict(zip(cols, r))
+            fba_by_asin.setdefault(d["asin"], d)   # first Amazon row wins, same as before
+
+    # Fallback for callers with no known UPC per ASIN (Seller Analytics) --
+    # the original ASIN-keyed main-SKU query, scoped to just those ASINs, so
+    # that caller keeps the exact behavior it had before this fix.
+    main_by_asin_fallback: dict = {}
+    for chunk in _chunks(asins_without_upc):
         try:
             rows, cols = _azure_rows(
                 "SELECT LTRIM(RTRIM(ASIN)) asin, ProductID, ShadowOf, FulfilledBy, Status, "
-                "OnOrder, InventoryPhysicalQty, LastPurchasedOn, UPC "
+                "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
                 "FROM analytics.sku_data_extended_view "
-                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)})")
+                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)}) "
+                "AND FulfilledBy = 'Merchant'")
         except Exception as exc:  # noqa: BLE001
-            log.warning("[template_export] sku view query failed: %s", str(exc)[:120])
+            log.warning("[template_export] sku view (main by ASIN fallback) query failed: %s", str(exc)[:120])
             continue
         by: dict = {}
         for r in rows:
             d = dict(zip(cols, r))
             by.setdefault(d["asin"], []).append(d)
         for asin, rs in by.items():
-            merch = [r for r in rs if r["FulfilledBy"] == "Merchant"]
-            amz = [r for r in rs if r["FulfilledBy"] == "Amazon"]
             mkey = lambda r: (r["Status"] == "Active", not (r["ShadowOf"] or ""),
                               r["LastPurchasedOn"] or dt.datetime.min)
-            main = max(merch, key=mkey) if merch else (max(rs, key=mkey) if rs else None)
-            fba = amz[0] if amz else None
-            # main SKU = the base/parent: prefer ShadowOf; else strip the shadow
-            # suffixes (-FBA/-FBM/_QY<n>) off the ProductID → the base SKU.
-            base = ((main or {}).get("ShadowOf") or (main or {}).get("ProductID")) if main else None
+            main = max(rs, key=mkey)
+            base = main.get("ShadowOf") or main.get("ProductID")
             main_sku = re.sub(r"(_QY\d+|-FB[AM])+$", "", base) if base else None
-            out[asin] = {
+            main_by_asin_fallback[asin] = {
                 "main_sku": main_sku,
-                "fba_sku": (fba or {}).get("ProductID"),
-                "on_order": (main or {}).get("OnOrder"),
-                "or33": (main or {}).get("InventoryPhysicalQty"),
-                # Only needed by Seller Analytics (an ASIN we don't carry has no
-                # vendor-offer UPC to key off of, so this is the fallback source
-                # when Keepa's own UPC/EAN list comes back empty for it).
-                "upc": (main or {}).get("UPC") or (fba or {}).get("UPC"),
+                "on_order": main.get("OnOrder"),
+                "or33": main.get("InventoryPhysicalQty"),
             }
+
+    out: dict = {}
+    for asin in clean_asins:
+        upc = asin_to_upc.get(asin)
+        fba = fba_by_asin.get(asin)
+        entry = dict(main_by_upc.get(upc, {})) if upc else dict(main_by_asin_fallback.get(asin, {}))
+        entry["fba_sku"] = (fba or {}).get("ProductID")
+        # Only needed by Seller Analytics (an ASIN we don't carry has no
+        # vendor-offer UPC to key off of, so this is the fallback source
+        # when Keepa's own UPC/EAN list comes back empty for it).
+        entry["upc"] = upc or (fba or {}).get("UPC")
+        out[asin] = entry
     return out
 
 
@@ -619,6 +698,10 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
 
     chosen = {u: asins_for(u) for u in upc_list}                 # upc -> [asin, ...]
     chosen_asins = sorted({a for lst in chosen.values() for a in lst})
+    # Reverse lookup for _sku_data_by_asin's UPC-keyed main-SKU query -- an
+    # ASIN has exactly one UPC (a UPC can have several ASINs), so this is a
+    # clean 1:1 map even though `chosen` itself isn't.
+    asin_to_upc = {a: u for u, lst in chosen.items() for a in lst}
 
     # Keepa (live /product pricing) and the per-ASIN SP-API enrichment (eligibility +
     # storage fee, both off-peak and Q4 peak) hit two entirely DIFFERENT external
@@ -701,7 +784,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     elig_cache = _eligibility_by_asin()
 
     # SellerCloud + Amazon + SellerSnap enrichment for the chosen ASINs
-    sku_by_asin = _sku_data_by_asin(chosen_asins)                # SKU / FBA SKU / on order / OR33
+    sku_by_asin = _sku_data_by_asin(chosen_asins, asin_to_upc)   # SKU / FBA SKU / on order / OR33
     fba_total = _fba_total_by_asin(chosen_asins)                 # FBA total (Amazon FBA inventory)
     snap30 = _sellersnap_30d_by_asin(chosen_asins)               # 30d sales fallback (SellerSnap)
     report30 = sp_reports.get_units_30d() if live else {}        # 30d sales (SP-API Sales & Traffic, cached daily)
