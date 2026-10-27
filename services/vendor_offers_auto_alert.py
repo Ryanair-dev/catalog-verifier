@@ -81,7 +81,10 @@ def _asin_having_upcs(upcs: list[str]) -> set[str]:
 
 def _row_count(blob: bytes) -> int:
     wb = load_workbook(io.BytesIO(blob), read_only=True)
-    ws = wb.active
+    # The template has 4 sheets (Analytics/Order/Keepa/offer) and wb.active is
+    # NOT Analytics once re-read -- counting wb.active always returned 0, so
+    # the alert silently skipped every real run.
+    ws = wb["Analytics"] if "Analytics" in wb.sheetnames else wb.active
     n = max(0, (ws.max_row or 1) - 1)   # minus the header row
     wb.close()
     return n

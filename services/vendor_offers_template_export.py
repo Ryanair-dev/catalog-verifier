@@ -145,15 +145,37 @@ def _azure_rows(sql: str) -> list[tuple]:
 # ── data gathering ─────────────────────────────────────────────────────────
 
 def _vendor_offers_by_upc(upcs: set[str] | None):
-    """{upc: {vendor: {cost, qty, item_id, title}}} — best (cheapest) offer per
-    (upc, vendor). Also returns the ordered vendor list."""
+    """{upc: {vendor: {cost, qty, item_id, title, avail}}} — best (cheapest)
+    offer per (upc, vendor). Also returns the ordered vendor list.
+
+    Reads from vo_vendor_best_offer (the SQL view every other "cheapest
+    offer per vendor" consumer in this app already uses -- see
+    services/vendor_offers.py's own definition) rather than hand-rolling a
+    second "best offer" resolver here. Fixed 2026-10-27: the old hand-rolled
+    version only kept a row on STRICT cost improvement (`c < prev["cost"]`)
+    with no tie-break at all -- on a cost TIE between two offer rows for the
+    same (upc, vendor) (e.g. the same UPC re-synced same-day with an
+    unchanged price, which is exactly what happened right after the
+    2026-10-27 Cencora CS/PK parser fix added new offer rows alongside
+    older ones at an identical cost), it silently kept whichever row the
+    unordered SQL query happened to return first -- which could easily be a
+    stale row with avail_qty=NULL, even when a same-cost row with real,
+    current stock also existed. That directly broke `only_available=True`
+    for every UPC with this shape: `win.get("avail")` resolved to the stale
+    NULL instead of the real quantity, confirmed live against UPC
+    012044010693/Cencora (avail=72 as of today, avail=NULL from an older
+    row, both at $4.45 -- the auto-alert's 70-minute Cencora run came back
+    with ZERO qualifying products specifically because of this). The view's
+    own tie-break (cost, then avail_qty DESC, then qty_per_case ASC, then
+    offer_id ASC) is correct and already battle-tested elsewhere; reusing
+    it here instead of a second, buggier implementation fixes this for
+    every vendor, not just Cencora."""
     with database._connect() as conn:
         vendors = [r[0] for r in conn.execute(
             "SELECT DISTINCT vendor_name FROM vo_vendor_best_offer ORDER BY vendor_name")]
         rows = conn.execute("""
-            SELECT v.vendor_name, o.upc, o.vendor_item_id, o.cost, o.qty_per_case,
-                   o.description, o.avail_qty
-            FROM vo_vendor_offers o JOIN vo_vendors v ON v.vendor_id = o.vendor_id
+            SELECT vendor_name, upc, vendor_item_id, cost, qty_per_case, description, avail_qty
+            FROM vo_vendor_best_offer
         """).fetchall()
     by_upc: dict = {}
     for vname, upc, iid, cost, qty, desc, avail in rows:
@@ -162,10 +184,9 @@ def _vendor_offers_by_upc(upcs: set[str] | None):
         c = _f(cost)
         if c is None:
             continue
-        slot = by_upc.setdefault(upc, {})
-        prev = slot.get(vname)
-        if prev is None or c < prev["cost"]:
-            slot[vname] = {"cost": c, "qty": qty, "item_id": iid, "title": desc, "avail": _f(avail)}
+        by_upc.setdefault(upc, {})[vname] = {
+            "cost": c, "qty": qty, "item_id": iid, "title": desc, "avail": _f(avail),
+        }
     return by_upc, vendors
 
 
