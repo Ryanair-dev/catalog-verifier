@@ -1,3 +1,7 @@
+"""
+Vendor families: which vendor rows are the SAME product in another variant, and how every Amazon listing
+relates to a vendor row.  This module only reads and reports; family_pass.py uses it to change verdicts.
+"""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +23,7 @@ from services.analytics.matching_core.matching.attr_extract import (
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, norm
 from services.analytics.matching_core.matching.variation import _count_value, compare_boxes, varying_boxes
 
-FILE_VERSION = "2026-10-28 vendor_families v4 (parent ASIN)"
+FILE_VERSION = "2026-10-28 vendor_families v4.1 (parent ASIN, names from product words)"
 
 EXACT = "exact variant"
 OTHER_VARIANT = "other variant"
@@ -118,6 +122,19 @@ def product_words(title: Any, brand: Any, fields: dict[str, dict]) -> list[str]:
             continue
         out.append(tok)
     return out
+
+
+def family_display_name(title: Any, words: list[str]) -> str:
+    """The family's name in the vendor's own spelling: only the title words that are product words.
+    'Kwikset 93002-943 Casey Matte Black' -> 'Casey';  "Injinji Women's Run Lightweight No-Show" ->
+    'Run Lightweight No-Show'.  '' when no word is left."""
+    keep = set(words)
+    out: list[str] = []
+    for part in str(strip_variant_tail(title) or "").split():
+        toks = _tokens(part)
+        if toks and all(t in keep for t in toks):
+            out.append(part.strip(",;:|()[]"))
+    return " ".join(p for p in out if p)
 
 
 def _missing_words(need: list[str], have: list[str]) -> list[str]:
@@ -292,7 +309,8 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
         fid = f"F{n}"
         shortest = min((rows[i]["title"] for i in members), key=len)
         brand = rows[members[0]]["brand"]
-        display = strip_variant_tail(shortest) or shortest
+        display = (family_display_name(shortest, rows[members[0]]["words"])
+                   or strip_variant_tail(shortest) or shortest)
         varying = varying_boxes([{"fields": rows[i]["fields"]} for i in members])
         families.append({
             "id": fid,
