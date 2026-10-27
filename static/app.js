@@ -2869,7 +2869,17 @@
   $("#abbr-close").addEventListener("click", () => _closeActivePanel());
 
   // Top-level library type tab switching
-  $$(".lib-type-tab").forEach(tab => {
+  // 2026-10-27: scoped to #abbr-panel -- this used to be a bare $$(".lib-type-tab")
+  // (every element with that class, anywhere in the document), which meant
+  // clicking ANY tab in Settings/Toolbox/Reports (they all reuse the same
+  // .lib-type-tab class for their own, separately-scoped tab bars) ALSO fired
+  // this handler and _switchLibTab(undefined) -- and since none of those
+  // other tabs carry a data-lib-type attribute at all, `t.dataset.libType
+  // === type` was `undefined === undefined` (true) for every single one of
+  // them, marking them ALL "active" at once. Reported: "when I open the side
+  // tab all the tabs are automatically highlighted... for both settings and
+  // toolbox."
+  $$("#abbr-panel .lib-type-tab").forEach(tab => {
     tab.addEventListener("click", () => {
       state.libActiveType = tab.dataset.libType;
       _switchLibTab(state.libActiveType);
@@ -2879,7 +2889,7 @@
   });
 
   function _switchLibTab(type) {
-    $$(".lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.libType === type));
+    $$("#abbr-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.libType === type));
     $("#lib-tab-abbreviations").classList.toggle("hidden", type !== "abbreviations");
     $("#lib-tab-brands").classList.toggle("hidden", type !== "brands");
     $("#lib-tab-manufacturers").classList.toggle("hidden", type !== "manufacturers");
