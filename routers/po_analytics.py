@@ -60,6 +60,7 @@ def list_jobs_for_tasks_panel() -> list[dict]:
             "done": j.get("done"),
             "total": j.get("total"),
             "started_at": j.get("started"),
+            "completed_at": j.get("completed_at"),
         }
         for jid, j in items
     ]

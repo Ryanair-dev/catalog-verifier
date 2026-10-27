@@ -3331,14 +3331,28 @@
     error: "#dc2626", cancelled: "#9aa1ab", stopped: "#9aa1ab", idle: "#9aa1ab",
   };
 
-  function _taskCardHtml(title, status, detail, done, total) {
+  function _fmtTimestamp(value) {
+    // Job dicts store Unix epoch seconds (numbers); DB run-table columns
+    // and scheduler ISO strings are already date strings -- handle both.
+    if (value === null || value === undefined || value === "") return "";
+    const d = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  }
+
+  function _taskCardHtml(title, status, detail, done, total, startedAt, completedAt) {
     const color = _TASK_STATUS_COLORS[(status || "").toLowerCase()] || "#6b7480";
+    const timeBits = [];
+    const startedStr = _fmtTimestamp(startedAt);
+    const completedStr = _fmtTimestamp(completedAt);
+    if (startedStr) timeBits.push(`Started ${startedStr}`);
+    if (completedStr) timeBits.push(`Finished ${completedStr}`);
     return `<div style="border:1px solid #e2e6ec;border-radius:8px;padding:10px 12px;">
               <div class="flex items-center justify-between" style="gap:8px;">
                 <div class="text-sm font-semibold" style="color:var(--navy-800);">${escapeHtml(title)}</div>
                 <span class="text-xs" style="color:${color};font-weight:600;text-transform:uppercase;white-space:nowrap;">${escapeHtml(status || "—")}</span>
               </div>
               ${detail ? `<div class="text-xs" style="color:#6b7480;margin-top:3px;">${escapeHtml(detail)}</div>` : ""}
+              ${timeBits.length ? `<div class="text-xs" style="color:#9aa1ab;margin-top:3px;">${escapeHtml(timeBits.join(" · "))}</div>` : ""}
               ${_taskProgressBarHtml(done, total)}
             </div>`;
   }
@@ -3374,19 +3388,28 @@
     } catch {
       return;
     }
-    const jobsEl = $("#tasks-jobs-list");
+    const activeJobsEl = $("#tasks-jobs-active-list");
+    const recentJobsEl = $("#tasks-jobs-recent-list");
     const runsEl = $("#tasks-runs-list");
     const schedEl = $("#tasks-schedulers-list");
-    const activeJobs = (data.jobs || []).filter(j => j.job_id);
-    if (jobsEl) {
-      jobsEl.innerHTML = activeJobs.length
-        ? activeJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total)).join("")
+    const allJobs = (data.jobs || []).filter(j => j.job_id);
+    const activeJobs = allJobs.filter(j => (j.status || "").toLowerCase() === "running");
+    const recentJobs = allJobs.filter(j => (j.status || "").toLowerCase() !== "running");
+    if (activeJobsEl) {
+      activeJobsEl.innerHTML = activeJobs.length
+        ? activeJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total, j.started_at, j.completed_at)).join("")
         : `<div class="text-xs" style="color:#9aa1ab;">Nothing running right now.</div>`;
+    }
+    if (recentJobsEl) {
+      recentJobsEl.innerHTML = recentJobs.length
+        ? recentJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total, j.started_at, j.completed_at)).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No recent jobs.</div>`;
     }
     if (runsEl) {
       runsEl.innerHTML = (data.runs || []).length
         ? data.runs.map(r => _taskCardHtml(
             r.name ? `${r.feature}: ${r.name}` : r.feature, r.status, r.phase || "", r.done, r.total,
+            r.created_at, r.updated_at,
           )).join("")
         : `<div class="text-xs" style="color:#9aa1ab;">No recent runs.</div>`;
     }
