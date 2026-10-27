@@ -16,19 +16,15 @@ schema — live-tested against the real webhook: a plain `{"text": message}`
 body triggers the flow (202) but the run then fails with "the attachment is
 null", since the template's post-message action reads
 attachments[0].content. The Adaptive Card shape posts successfully.
-Separately, `send_teams_opportunity_alert()` posts a vendor-offer "cheapest
-and unique" opportunity (see services/vendor_offers_auto_alert.py) WITH the
-generated Excel file attached, via its own dedicated webhook/flow
-(`TEAMS_OPPORTUNITY_WEBHOOK_URL`) — a different Power Automate flow than the
-plain-text one above, since posting an actual file in Teams needs extra
-flow steps (Create file in the channel's SharePoint library, then a Post
-message step that attaches it) that the simple "post an Adaptive Card"
-flow doesn't have. Payload carries the file as base64 (`fileContentBase64`)
-for the flow's `base64ToBinary(...)` expression to decode.
+
+(2026-10-26/27: a second webhook + `send_teams_opportunity_alert()` were
+briefly added here for a vendor-offer "cheapest & unique" auto-alert, to
+post the generated Excel file into Teams. Reverted 2026-10-27 per user
+request — that feature now emails the file instead, via
+services/graph_mail.py, see services/vendor_offers_auto_alert.py.)
 """
 from __future__ import annotations
 
-import base64
 import logging
 import os
 
@@ -39,10 +35,6 @@ log = logging.getLogger(__name__)
 
 def is_configured() -> bool:
     return bool(os.getenv("TEAMS_WEBHOOK_URL"))
-
-
-def is_opportunity_alert_configured() -> bool:
-    return bool(os.getenv("TEAMS_OPPORTUNITY_WEBHOOK_URL"))
 
 
 def send_teams_message(text: str) -> None:
@@ -72,29 +64,4 @@ def send_teams_message(text: str) -> None:
     resp = requests.post(url, json=payload, timeout=20)
     if resp.status_code not in (200, 202):
         log.error("[teams_notify] webhook post failed %s: %s", resp.status_code, resp.text[:500])
-        resp.raise_for_status()
-
-
-def send_teams_opportunity_alert(vendor: str, count: int, filename: str, file_bytes: bytes) -> None:
-    """POST a vendor cheapest-and-unique opportunity, with the generated
-    Excel file attached, to the dedicated opportunity-alert webhook.
-
-    Raises on failure — same best-effort convention as send_teams_message();
-    callers should catch around this themselves."""
-    url = os.getenv("TEAMS_OPPORTUNITY_WEBHOOK_URL")
-    if not url:
-        raise RuntimeError(
-            "Teams opportunity alerts are not configured (.env TEAMS_OPPORTUNITY_WEBHOOK_URL)."
-        )
-    plural = "s" if count != 1 else ""
-    payload = {
-        "vendor": vendor,
-        "count": count,
-        "summary": f"{vendor} is now cheapest & unique on {count} product{plural} — see attached.",
-        "fileName": filename,
-        "fileContentBase64": base64.b64encode(file_bytes).decode("ascii"),
-    }
-    resp = requests.post(url, json=payload, timeout=120)
-    if resp.status_code not in (200, 202):
-        log.error("[teams_notify] opportunity webhook post failed %s: %s", resp.status_code, resp.text[:500])
         resp.raise_for_status()

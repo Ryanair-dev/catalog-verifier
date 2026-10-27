@@ -5,8 +5,18 @@ whether that vendor is now "cheapest & unique" (the same win logic
 vendor_offers_export.build_xlsx's focus_vendor column uses -- lowest cost
 among every vendor carrying the UPC, ties included, sole-source counts too)
 on any products, and if so build the Keepa-enriched template export scoped
-to just those UPCs and post it to Teams via the dedicated opportunity-alert
-webhook (services/teams_notify.send_teams_opportunity_alert).
+to just those UPCs and email it, with the file attached, via
+services/graph_mail.py send_mail() -- the exact same email mechanism the
+Price Desk export's own "email it when done" option already uses (see
+routers/vendor_offers.py's analytics_export completion path).
+
+Originally built 2026-10-26 to post to Teams instead (see that date's
+changelog entry in docs/features/vendor_offers.md for the Teams webhook
+file-attachment investigation) -- switched to email 2026-10-27 per user
+request ("revert all the changes of adding to teams. Instead send via
+mail... the usual thing that worked when we used the price desk").
+Recipients are fixed (see RECIPIENTS below), not configurable per-run like
+the manual export's recipient field.
 
 Scoped down with build_template_xlsx's own existing filters -- per user
 request 2026-10-26, after the raw winning-UPC count turned out to be
@@ -30,14 +40,13 @@ delays the scheduler's own 30-minute cadence. The dispatch itself (this
 module's own import, done lazily by the caller) also happens off the
 scheduler's thread -- see vendor_offers_mailbox_sync.py's 2026-10-26
 changelog entry for why: an early version of this hook, imported inline in
-sync_all_from_mailbox() itself, caused a real live-server hang the first
-time it was deployed. Root cause not fully isolated (reproducing the exact
-import/threading interaction outside the live uvicorn process wasn't
-possible), so the dispatch is now fully decoupled as a defense-in-depth
-fix regardless of the precise mechanism.
+sync_all_from_mailbox() itself, coincided with a real live-server hang the
+first time it was deployed (later root-caused to an unrelated startup
+scheduler pile-up, not this module -- but the decoupling is kept as cheap
+defense-in-depth regardless).
 
-Inert (silent no-op) unless TEAMS_OPPORTUNITY_WEBHOOK_URL is configured --
-mirrors every other Teams-notification call site's "never break the real
+Inert (silent no-op) unless graph_mail.is_configured() (.env OUTLOOK_*) --
+mirrors every other notification call site's "never break the real
 feature" convention.
 """
 from __future__ import annotations
@@ -50,11 +59,13 @@ import threading
 from openpyxl import load_workbook
 
 from services import database
-from services import teams_notify
+from services import graph_mail
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 
 log = logging.getLogger(__name__)
+
+RECIPIENTS = ["raiann@fordmed.com", "AviS@fordmed.com", "DinaB@fordmed.com"]
 
 
 def _asin_having_upcs(upcs: list[str]) -> set[str]:
@@ -92,10 +103,15 @@ def _alert_for_vendor(vendor: str) -> None:
             log.info("[vendor_offers_auto_alert] %s: 0 rows survived filters, skipping", vendor)
             return
         filename = f"{vendor.replace(' ', '_')}_cheapest_unique_{dt.date.today().isoformat()}.xlsx"
-        teams_notify.send_teams_opportunity_alert(
-            vendor=vendor, count=count, filename=filename, file_bytes=blob,
+        subject = f"Cheapest & unique opportunity — {vendor} ({count} product{'s' if count != 1 else ''})"
+        body_html = (
+            f"<p><b>{vendor}</b> is now the cheapest vendor on <b>{count}</b> "
+            f"product{'s' if count != 1 else ''} (sole-source or price-winning), "
+            f"filtered to in-stock, non-DOG/Restricted, ≥50 units/month sellers.</p>"
+            f"<p>Attached: <b>{filename}</b>.</p>"
         )
-        log.info("[vendor_offers_auto_alert] %s: posted opportunity alert, %d rows", vendor, count)
+        graph_mail.send_mail(RECIPIENTS, subject, body_html, attachments=[(filename, blob)])
+        log.info("[vendor_offers_auto_alert] %s: emailed opportunity alert, %d rows", vendor, count)
     except Exception:
         log.exception("[vendor_offers_auto_alert] %s: alert failed", vendor)
 
@@ -105,7 +121,7 @@ def process_sync_summary(summary: dict) -> None:
     actually merged new offer rows this run (summary["results"][v]["added"] > 0
     -- the no-new-email/unchanged-since-last-sync status dicts have no
     "added" key at all, so .get(..., 0) naturally skips them)."""
-    if not teams_notify.is_opportunity_alert_configured():
+    if not graph_mail.is_configured():
         return
     for vendor, result in (summary.get("results") or {}).items():
         if isinstance(result, dict) and result.get("added", 0) > 0:
