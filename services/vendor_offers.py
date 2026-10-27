@@ -176,6 +176,33 @@ def as_int(value):
     return int(n)
 
 
+_CASE_QTY_RE = re.compile(r"(\d+)\s*[Xx]\s*\d")
+
+
+def extract_case_qty_from_desc(desc: str | None) -> int | None:
+    """Extract a case/pack quantity multiplier from a product description
+    shaped like "...12X4.25OZ" or "...6X32OZ" -- the number immediately
+    before an "X" that's itself followed by another number (the per-unit
+    size that follows it). Takes the LAST such match in the string, since
+    the quantity marker is a trailing size descriptor by convention and an
+    earlier number could coincidentally match the same shape.
+
+    Used for Cencora rows priced per case/pack (ABC Selling UoM == 'CS' or
+    'PK'), where the file has no separate structured case-quantity column
+    for these rows -- the true case qty only exists embedded in the free-
+    text description. Confirmed by the user 2026-10-27 with real examples:
+    "SURGILUBE STERILE FLIP CAP 12X4.25OZ" at $39.82/case -> divide by 12
+    for the per-each price; "SIMILAC NEOSURE RTF BOTL LIQ RETL 6X32OZ" at
+    $85.54/case -> divide by 6."""
+    if not desc:
+        return None
+    matches = _CASE_QTY_RE.findall(desc)
+    if not matches:
+        return None
+    n = int(matches[-1])
+    return n if n > 0 else None
+
+
 def file_date(path: Path) -> str:
     return dt.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
@@ -269,7 +296,14 @@ def load_quality_king(path: Path, block: int | None = None):
 
 
 def load_cencora(path: Path):
-    """Cencora product catalog. Only ABC Selling UoM == 'EA' rows loaded."""
+    """Cencora product catalog. ABC Selling UoM == 'EA' rows load at face
+    value (qty_per_case=1). 'CS'/'PK' rows are case/pack-priced -- divided
+    by the case quantity embedded in the Product Description (the number
+    right before an "NxSIZE" pattern, e.g. "12X4.25OZ" -> 12; see
+    extract_case_qty_from_desc) to get a true per-each cost, with that same
+    number recorded as qty_per_case. Any other UoM, or a CS/PK row whose
+    description doesn't carry a parseable quantity, is skipped (no
+    reliable per-each divisor) -- per user confirmation 2026-10-27."""
     df = pick_columns(pd.read_excel(path, sheet_name="Results", skiprows=1), {
         "ABC #": "item", "Product Description": "desc", "ABC Selling UoM": "uom",
         "Current Acq Cost": "cost", "UPC Barcode": "upc", "FDB Case Pack": "case_pack",
@@ -280,23 +314,32 @@ def load_cencora(path: Path):
         uom = _clean(r["uom"])
         cost = pd.to_numeric(r["cost"], errors="coerce")
         upc = norm_upc(r["upc"])
+        desc = _clean(r["desc"])
         reason = None
-        if uom != "EA":
+        divisor = 1
+        if uom == "EA":
+            divisor = 1
+        elif uom in ("CS", "PK"):
+            divisor = extract_case_qty_from_desc(desc)
+            if divisor is None:
+                reason = f"UoM={uom!r} but no case-quantity ('NxSIZE') pattern found in description"
+        else:
             reason = f"UoM={uom!r} -- cost is per case/pack, no reliable per-each divisor"
-        elif upc is None:
-            reason = "missing/unparseable UPC Barcode"
-        elif not is_valid_upc_a(upc):
-            reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
-        elif pd.isna(cost) or cost <= 0:
-            reason = "missing or non-positive Current Acq Cost"
+        if reason is None:
+            if upc is None:
+                reason = "missing/unparseable UPC Barcode"
+            elif not is_valid_upc_a(upc):
+                reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
+            elif pd.isna(cost) or cost <= 0:
+                reason = "missing or non-positive Current Acq Cost"
         if reason:
             skipped.append({"vendor": "Cencora", "item": _clean(r["item"]),
-                            "description": _clean(r["desc"]), "reason": reason})
+                            "description": desc, "reason": reason})
             continue
         rows.append({
-            "vendor_item_id": _clean(r["item"]), "upc": upc, "cost": float(cost),
-            "qty_per_case": as_int(r["case_pack"]), "avail_qty": None,
-            "description": _clean(r["desc"]), "seen": stamp,
+            "vendor_item_id": _clean(r["item"]), "upc": upc, "cost": float(cost) / divisor,
+            "qty_per_case": divisor, "avail_qty": None,
+            "description": desc, "seen": stamp,
         })
     return [(stamp, rows)], skipped
 

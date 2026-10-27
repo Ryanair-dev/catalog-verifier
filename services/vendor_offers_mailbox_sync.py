@@ -260,7 +260,9 @@ def _parse_cencora_mailbox(catalog_bytes: bytes, inventory_bytes: bytes | None,
     load_cencora (same underlying file) by: excluding Ford Medical's own
     "Supplier Name" rows (our own inventory being listed back at us is not a
     vendor offer) and joining the inventory file for real quantities instead
-    of always leaving avail_qty blank."""
+    of always leaving avail_qty blank. Shares load_cencora's CS/PK
+    per-each-price-from-description conversion (see
+    vo.extract_case_qty_from_desc) -- per user confirmation 2026-10-27."""
     df = pd.read_excel(io.BytesIO(catalog_bytes), skiprows=1, dtype=str)
     df = vo.pick_columns(df, {
         "ABC #": "item", "Product Description": "desc", "ABC Selling UoM": "uom",
@@ -296,26 +298,35 @@ def _parse_cencora_mailbox(catalog_bytes: bytes, inventory_bytes: bytes | None,
         uom = vo._clean(r["uom"])
         cost = pd.to_numeric(r["cost"], errors="coerce")
         upc = vo.norm_upc(r["upc"])
+        desc = vo._clean(r["desc"])
         reason = None
-        if uom != "EA":
+        divisor = 1
+        if uom == "EA":
+            divisor = 1
+        elif uom in ("CS", "PK"):
+            divisor = vo.extract_case_qty_from_desc(desc)
+            if divisor is None:
+                reason = f"UoM={uom!r} but no case-quantity ('NxSIZE') pattern found in description"
+        else:
             reason = f"UoM={uom!r} -- cost is per case/pack, no reliable per-each divisor"
-        elif upc is None:
-            reason = "missing/unparseable UPC Barcode"
-        elif not vo.is_valid_upc_a(upc):
-            reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code)"
-        elif pd.isna(cost) or cost <= 0:
-            reason = "missing or non-positive Current Acq Cost"
+        if reason is None:
+            if upc is None:
+                reason = "missing/unparseable UPC Barcode"
+            elif not vo.is_valid_upc_a(upc):
+                reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code)"
+            elif pd.isna(cost) or cost <= 0:
+                reason = "missing or non-positive Current Acq Cost"
         if reason:
             skipped.append({"vendor": "Cencora", "item": vo._clean(r["item"]),
-                            "description": vo._clean(r["desc"]), "reason": reason})
+                            "description": desc, "reason": reason})
             continue
         item = vo._clean(r["item"])
         avail = inv_qty.get(item)
         rows.append({
-            "vendor_item_id": item, "upc": upc, "cost": float(cost),
-            "qty_per_case": vo.as_int(r["case_pack"]),
+            "vendor_item_id": item, "upc": upc, "cost": float(cost) / divisor,
+            "qty_per_case": divisor,
             "avail_qty": float(avail) if avail is not None else None,
-            "description": vo._clean(r["desc"]), "seen": stamp,
+            "description": desc, "seen": stamp,
         })
     return rows, skipped, warnings
 
@@ -400,18 +411,26 @@ def _parse_bilo_mailbox(data: bytes, stamp: str) -> tuple[list[dict], list[dict]
 
 def _parse_qkd_mailbox(data: bytes, filename: str, stamp: str) -> tuple[list[dict], list[dict]]:
     """Quality King's daily emailed single-snapshot file (subject contains
-    "Updated File - QKD"). NOT independently verified against a live file
-    this session (QK's email typically lands late morning) -- ported as-is
-    from fbi-offer-upload's transform_qkd. NOTE this is a DIFFERENT, simpler
-    file than services.vendor_offers.load_quality_king's manual-upload format
-    (that one is a stacked multi-snapshot historical file with an INNER
-    column; this one is one plain daily snapshot) -- confirmed real
-    discrepancy, not an oversight."""
+    "Updated File - QKD"). Ported as-is from fbi-offer-upload's
+    transform_qkd, EXCEPT for qty_per_case (see below). NOTE this is a
+    DIFFERENT, simpler file than services.vendor_offers.load_quality_king's
+    manual-upload format (that one is a stacked multi-snapshot historical
+    file; this one is one plain daily snapshot) -- but it DOES carry the
+    same UM/INNER/PACK columns the manual loader uses (confirmed live
+    2026-10-27 against a real same-day file, FDM102626.xlsx -- the
+    2026-10-23 note claiming this file lacked an INNER column was wrong,
+    or the format has changed since).
+
+    qty_per_case = INNER x PACK (not PACK alone), and cost is only trusted
+    when UM == "EA" -- identical to load_quality_king's own logic (see that
+    function's 2026-09-24 note: using PACK alone silently under-counted
+    every case size by a factor of INNER)."""
     ext = os.path.splitext(filename)[1].lower()
     df = (pd.read_excel(io.BytesIO(data), dtype=str) if ext == ".xlsx"
           else pd.read_csv(io.BytesIO(data), dtype=str))
     df = vo.pick_columns(df, {
-        "UPC": "upc", "QKD PRICE": "cost", "MFG NAME": "mfg",
+        "UPC": "upc", "QKD PRICE": "cost", "MFG NAME": "mfg", "UM": "uom",
+        "INNER": "inner", "PACK": "pack",
         "ITEM": "item", "DESCRIPTION": "desc", "ONHAND": "qty",
     }, "QKD mailbox file")
 
@@ -419,8 +438,11 @@ def _parse_qkd_mailbox(data: bytes, filename: str, stamp: str) -> tuple[list[dic
     for r in df.to_dict("records"):
         upc = vo.norm_upc(r["upc"])
         cost = pd.to_numeric(r["cost"], errors="coerce")
+        uom = vo._clean(r.get("uom"))
         reason = None
-        if upc is None:
+        if uom != "EA":
+            reason = f"UoM={uom!r} not EA (repeated header row or non-each pricing)"
+        elif upc is None:
             reason = "missing/unparseable UPC"
         elif not vo.is_valid_upc_a(upc):
             reason = "UPC isn't a valid UPC-A (likely an internal/warehouse code)"
@@ -432,7 +454,8 @@ def _parse_qkd_mailbox(data: bytes, filename: str, stamp: str) -> tuple[list[dic
             continue
         rows.append({
             "vendor_item_id": vo._clean(r["item"]), "upc": upc, "cost": float(cost),
-            "qty_per_case": None, "avail_qty": pd.to_numeric(r["qty"], errors="coerce"),
+            "qty_per_case": (vo.as_int(r.get("inner")) or 1) * (vo.as_int(r.get("pack")) or 1),
+            "avail_qty": pd.to_numeric(r["qty"], errors="coerce"),
             "description": vo._clean(r["desc"]), "seen": stamp,
         })
     return rows, skipped
