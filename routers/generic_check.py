@@ -59,6 +59,24 @@ def _eta(job: dict) -> int | None:
     return max(0, round(elapsed / done * (job["total"] - done)))
 
 
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot for the Settings > Tasks Running tab -- see
+    routers/settings.py tasks_running()."""
+    with _JOBS_LOCK:
+        jobs = list(_JOBS.values())
+    return [
+        {
+            "feature": "Toolbox: Generic/DOG Check",
+            "job_id": j.get("job_id"),
+            "status": j.get("status"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started_at"),
+        }
+        for j in jobs
+    ]
+
+
 class CheckBody(BaseModel):
     asins: list[str]
 

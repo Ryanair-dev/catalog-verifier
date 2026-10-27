@@ -2293,7 +2293,13 @@
       </div>
       <button id="settings-close" class="icon-btn" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
     </div>
-    <div class="p-5 space-y-4">
+
+    <div class="lib-type-tabs tools-tab-bar" role="tablist">
+      <button class="lib-type-tab active" data-settings-tab="thresholds" type="button">Thresholds</button>
+      <button class="lib-type-tab" data-settings-tab="tasks" type="button">Tasks Running</button>
+    </div>
+
+    <div id="settings-tab-thresholds" class="p-5 space-y-4">
       <div>
         <label class="text-xs uppercase tracking-wider" style="color: #6b7480;">Approved ≥</label>
         <div class="flex items-center gap-2 mt-1">
@@ -2328,6 +2334,25 @@
         <div class="text-xs mt-1" style="color:#6b7480;">Per-unit prep &amp; outbound cost used by the vendor Offer Analytics export.</div>
         <button id="prep-out-save" class="btn btn-primary w-full" style="margin-top:8px">Save fee</button>
         <div id="prep-out-feedback" class="text-xs" style="color: var(--green-500);"></div>
+      </div>
+    </div>
+
+    <div id="settings-tab-tasks" class="hidden" style="flex:1; overflow-y:auto; padding:18px 20px; display:flex; flex-direction:column; gap:14px;">
+      <div class="flex items-center justify-between">
+        <div class="text-xs" style="color:#6b7480;">Every background job, run, and scheduled sync across the app, live.</div>
+        <button id="tasks-refresh-btn" class="icon-btn" title="Refresh now"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+      </div>
+      <div id="tasks-section-jobs">
+        <div class="text-xs uppercase tracking-wider" style="color:#6b7480; margin-bottom:6px;">Active &amp; recent jobs</div>
+        <div id="tasks-jobs-list" class="space-y-2"></div>
+      </div>
+      <div id="tasks-section-runs">
+        <div class="text-xs uppercase tracking-wider" style="color:#6b7480; margin-bottom:6px;">Recent runs</div>
+        <div id="tasks-runs-list" class="space-y-2"></div>
+      </div>
+      <div id="tasks-section-schedulers">
+        <div class="text-xs uppercase tracking-wider" style="color:#6b7480; margin-bottom:6px;">Background schedulers</div>
+        <div id="tasks-schedulers-list" class="space-y-2"></div>
       </div>
     </div>
   </div>

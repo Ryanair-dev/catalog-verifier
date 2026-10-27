@@ -46,6 +46,25 @@ def _get_job(job_id: str) -> dict:
     return job
 
 
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot for the Settings > Tasks Running tab -- see
+    routers/settings.py tasks_running()."""
+    with _JOBS_LOCK:
+        items = list(_JOBS.items())
+    return [
+        {
+            "feature": "PO Analytics Export",
+            "job_id": jid,
+            "status": j.get("status"),
+            "phase": j.get("phase"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started"),
+        }
+        for jid, j in items
+    ]
+
+
 def _xlsx_response(blob: bytes, filename: str) -> StreamingResponse:
     return StreamingResponse(
         iter([blob]),

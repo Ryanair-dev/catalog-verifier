@@ -512,6 +512,8 @@ _SNAPSHOT_CHECK_INTERVAL_HOURS = 6     # how often to check the snapshot's age
 _SNAPSHOT_MAX_AGE_HOURS = 24           # refresh once it's older than this
 _scheduler_thread: threading.Thread | None = None
 _scheduler_stop = threading.Event()
+_scheduler_running_now = False
+_LAST_RUN_SETTING_KEY = "catalog_index_scheduler_last_run"
 
 
 def _snapshot_age_hours() -> float:
@@ -520,21 +522,69 @@ def _snapshot_age_hours() -> float:
     return (time.time() - SNAPSHOT_JSON.stat().st_mtime) / 3600.0
 
 
+def _record_last_run(outcome: str, rows: int | None = None, error: str | None = None) -> None:
+    """Persists the outcome of the last actual refresh ATTEMPT (not every
+    no-op cycle where the snapshot was already fresh) -- for the Settings >
+    Tasks Running tab (services/sellercloud/catalog_index.scheduler_status,
+    routers/settings.py tasks_running())."""
+    try:
+        import datetime as _dt
+        import json as _json
+        from services import database
+        database.set_setting(_LAST_RUN_SETTING_KEY, _json.dumps({
+            "outcome": outcome, "rows": rows, "error": error,
+            "finished_at": _dt.datetime.utcnow().isoformat(),
+        }))
+    except Exception:  # noqa: BLE001
+        log.exception("[catalog_index] failed to persist last-run status")
+
+
+def scheduler_status() -> dict:
+    """Running state + last refresh-attempt outcome, for the Settings >
+    Tasks Running tab. Added 2026-10-27 -- this scheduler previously had no
+    public status function at all, unlike every other recurring scheduler
+    in this app."""
+    last_run = None
+    try:
+        import json as _json
+        from services import database
+        raw = database.get_setting(_LAST_RUN_SETTING_KEY)
+        if raw:
+            last_run = _json.loads(raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "running_now": _scheduler_running_now,
+        "snapshot_age_hours": round(_snapshot_age_hours(), 1),
+        "last_run": last_run,
+    }
+
+
 def _scheduler_loop() -> None:
+    global _scheduler_running_now
     while not _scheduler_stop.is_set():
         try:
             age = _snapshot_age_hours()
             if age > _SNAPSHOT_MAX_AGE_HOURS:
                 log.info("[catalog_index] snapshot is %.1fh old (> %dh) — refreshing", age, _SNAPSHOT_MAX_AGE_HOURS)
-                n = refresh_snapshot()
+                _scheduler_running_now = True
+                try:
+                    n = refresh_snapshot()
+                finally:
+                    _scheduler_running_now = False
+                _record_last_run("ok", rows=n)
                 log.info("[catalog_index] snapshot refreshed: %d rows", n)
         except PermissionError:
             # SC data.xlsx is open in Excel / being written by its own export job
             # right now — harmless, just try again next cycle instead of crashing
             # the whole scheduler thread.
+            _scheduler_running_now = False
+            _record_last_run("locked", error="snapshot source is locked (likely open in Excel)")
             log.warning("[catalog_index] snapshot source is locked (likely open in "
                         "Excel) — will retry in %dh", _SNAPSHOT_CHECK_INTERVAL_HOURS)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            _scheduler_running_now = False
+            _record_last_run("error", error=str(exc)[:300])
             log.exception("[catalog_index] snapshot refresh failed")
         _scheduler_stop.wait(_SNAPSHOT_CHECK_INTERVAL_HOURS * 3600)
 

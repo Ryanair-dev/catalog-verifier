@@ -2853,6 +2853,7 @@
       _activePanel = null;
     }
     $("#panel-overlay")?.classList.remove("visible");
+    _stopTasksPoll();
   }
   $("#panel-overlay")?.addEventListener("click", _closeActivePanel);
 
@@ -3288,6 +3289,115 @@
       $("#prep-out-fee").value = Number(j.prep_out_fee);
     } catch {}
   }
+
+  // ── Settings > Tasks Running tab (2026-10-27) ─────────────────────────────
+  // Polls GET /api/settings/tasks-running (aggregates every background job/
+  // run/scheduler across the app) only while this tab is actually visible --
+  // _closeActivePanel() (shared by every side panel) stops the poll on close.
+  let _tasksPollTimer = null;
+  const TASKS_POLL_MS = 4000;
+
+  function _switchSettingsTab(tab) {
+    $$("#settings-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.settingsTab === tab));
+    $("#settings-tab-thresholds")?.classList.toggle("hidden", tab !== "thresholds");
+    $("#settings-tab-tasks")?.classList.toggle("hidden", tab !== "tasks");
+    if (tab === "tasks") {
+      _loadTasksRunning();
+      _stopTasksPoll();
+      _tasksPollTimer = setInterval(_loadTasksRunning, TASKS_POLL_MS);
+    } else {
+      _stopTasksPoll();
+    }
+  }
+  $$("#settings-panel .lib-type-tab").forEach(tab => {
+    tab.addEventListener("click", () => _switchSettingsTab(tab.dataset.settingsTab));
+  });
+
+  function _stopTasksPoll() {
+    if (_tasksPollTimer) { clearInterval(_tasksPollTimer); _tasksPollTimer = null; }
+  }
+
+  function _taskProgressBarHtml(done, total) {
+    if (total === null || total === undefined || total <= 0) return "";
+    const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+    return `<div style="background:#eef0f4;border-radius:6px;height:6px;overflow:hidden;margin-top:6px;">
+              <div style="background:var(--brand-600, #2563eb);height:100%;width:${pct}%;"></div>
+            </div>
+            <div class="text-xs" style="color:#9aa1ab;margin-top:2px;">${done ?? 0}/${total} (${pct}%)</div>`;
+  }
+
+  const _TASK_STATUS_COLORS = {
+    running: "#2563eb", complete: "#16a34a", done: "#16a34a", ok: "#16a34a",
+    error: "#dc2626", cancelled: "#9aa1ab", stopped: "#9aa1ab", idle: "#9aa1ab",
+  };
+
+  function _taskCardHtml(title, status, detail, done, total) {
+    const color = _TASK_STATUS_COLORS[(status || "").toLowerCase()] || "#6b7480";
+    return `<div style="border:1px solid #e2e6ec;border-radius:8px;padding:10px 12px;">
+              <div class="flex items-center justify-between" style="gap:8px;">
+                <div class="text-sm font-semibold" style="color:var(--navy-800);">${escapeHtml(title)}</div>
+                <span class="text-xs" style="color:${color};font-weight:600;text-transform:uppercase;white-space:nowrap;">${escapeHtml(status || "—")}</span>
+              </div>
+              ${detail ? `<div class="text-xs" style="color:#6b7480;margin-top:3px;">${escapeHtml(detail)}</div>` : ""}
+              ${_taskProgressBarHtml(done, total)}
+            </div>`;
+  }
+
+  function _schedulerCardHtml(s) {
+    const status = s.running_now ? "running" : "idle";
+    const parts = [];
+    if (s.next_run) parts.push(`Next: ${new Date(s.next_run).toLocaleString()}`);
+    if (s.last && s.last.results) {
+      const vendorParts = Object.entries(s.last.results)
+        .map(([vendor, r]) => {
+          if (r && typeof r.added === "number") return `${vendor} +${r.added}`;
+          if (r && r.status) return `${vendor}: ${r.status}`;
+          return null;
+        })
+        .filter(Boolean);
+      if (vendorParts.length) parts.push(vendorParts.join(", "));
+      if (s.last.errors && Object.keys(s.last.errors).length) {
+        parts.push(`errors: ${Object.keys(s.last.errors).join(", ")}`);
+      }
+    } else if (s.last_run) {
+      parts.push(`Last: ${s.last_run.outcome}${s.last_run.rows != null ? ` (${s.last_run.rows} rows)` : ""}${s.last_run.error ? ` — ${s.last_run.error}` : ""}`);
+    } else if (s.last_refresh_at) {
+      parts.push(`Last refresh: ${new Date(s.last_refresh_at * 1000).toLocaleString()}${s.last_refresh_rows != null ? ` (${s.last_refresh_rows} rows)` : ""}`);
+    }
+    return _taskCardHtml(s.feature, status, parts.join(" — "));
+  }
+
+  async function _loadTasksRunning() {
+    let data;
+    try {
+      data = await api("/api/settings/tasks-running");
+    } catch {
+      return;
+    }
+    const jobsEl = $("#tasks-jobs-list");
+    const runsEl = $("#tasks-runs-list");
+    const schedEl = $("#tasks-schedulers-list");
+    const activeJobs = (data.jobs || []).filter(j => j.job_id);
+    if (jobsEl) {
+      jobsEl.innerHTML = activeJobs.length
+        ? activeJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total)).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">Nothing running right now.</div>`;
+    }
+    if (runsEl) {
+      runsEl.innerHTML = (data.runs || []).length
+        ? data.runs.map(r => _taskCardHtml(
+            r.name ? `${r.feature}: ${r.name}` : r.feature, r.status, r.phase || "", r.done, r.total,
+          )).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No recent runs.</div>`;
+    }
+    if (schedEl) {
+      schedEl.innerHTML = (data.schedulers || []).length
+        ? data.schedulers.map(_schedulerCardHtml).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No scheduler data.</div>`;
+    }
+  }
+  $("#tasks-refresh-btn")?.addEventListener("click", _loadTasksRunning);
+
   $("#open-settings-btn").addEventListener("click", () => { _openPanel("settings-panel"); loadPrepFee(); });
   $("#settings-close").addEventListener("click", () => _closeActivePanel());
   $("#settings-save").addEventListener("click", async () => {

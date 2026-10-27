@@ -300,6 +300,24 @@ def _get_import_job(job_id: str) -> dict:
     return job
 
 
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot for the Settings > Tasks Running tab -- see
+    routers/settings.py tasks_running()."""
+    with _IMPORT_JOBS_LOCK:
+        items = list(_IMPORT_JOBS.items())
+    return [
+        {
+            "feature": "Pair Library Import",
+            "job_id": jid,
+            "status": j.get("status"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started"),
+        }
+        for jid, j in items
+    ]
+
+
 @router.post("/pairs/library/import")
 async def library_import(pairs_file: UploadFile = File(...)) -> dict:
     """Validates the file immediately (cheap — rejects a wrong template with a

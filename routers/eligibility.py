@@ -71,6 +71,26 @@ def _eta(job: dict) -> int | None:
     return max(0, round(elapsed / done * (job["total"] - done)))
 
 
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot of every tracked job (running or recently
+    finished) for the Settings > Tasks Running tab -- see routers/settings.py
+    tasks_running(). Reads the live dicts directly; no copy/lock needed
+    beyond what _JOBS_LOCK already guards against concurrent mutation."""
+    with _JOBS_LOCK:
+        jobs = list(_JOBS.values())
+    return [
+        {
+            "feature": "Toolbox: Eligibility / Check Brand",
+            "job_id": j.get("job_id"),
+            "status": j.get("status"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started_at"),
+        }
+        for j in jobs
+    ]
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 class CheckBody(BaseModel):
