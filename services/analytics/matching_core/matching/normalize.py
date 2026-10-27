@@ -41,10 +41,11 @@ def base_mpn(mpn: str | None) -> str:
 
 def normalize_upc(upc: str | None) -> str:
     """Digits only; zero-pad 11-digit UPCs to 12 (vendor feeds often strip the
-    leading zero)."""
+    leading zero).  A number read from Excel ('760172011852.0') loses its '.0'
+    first, otherwise the 0 would become an extra digit."""
     if not upc:
         return ""
-    digits = NON_DIGIT_RE.sub("", str(upc))
+    digits = NON_DIGIT_RE.sub("", re.sub(r"\.0+$", "", str(upc).strip()))
     return "0" + digits if len(digits) == 11 else digits
 
 
@@ -132,6 +133,13 @@ def all_id_forms(value: str | None) -> list[str]:
         if v.startswith("00"):
             forms.append(v[2:])
     return list(dict.fromkeys(forms))
+
+
+def barcode_forms(value: str | None) -> frozenset[str]:
+    """Every form of a barcode (UPC-12, EAN-13, GTIN-14 ...) after normalize_upc, as a set.
+    Two codes are the same barcode when their forms overlap; a set lets callers index and
+    look up barcodes (vendor_families.py) instead of comparing pair by pair."""
+    return frozenset(all_id_forms(normalize_upc(value)))
 
 
 def upc_matches(a: str | None, b: str | None) -> bool:

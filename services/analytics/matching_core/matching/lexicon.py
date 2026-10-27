@@ -439,6 +439,68 @@ keypad,keypad
 smart lock,smart lock
 """
 
+_DEFAULTS["variant_words"] = """
+# word   (a size, unit or quantity word: it describes a variant or an amount, never the product itself.
+#         Dropped from a title's product words when vendor rows are grouped into families.)
+# size words
+xxs
+xs
+s
+m
+l
+xl
+xxl
+xxxl
+small
+medium
+large
+extra
+x
+xx
+xxx
+size
+sizes
+# units and quantities
+oz
+ounce
+ounces
+fl
+ml
+liter
+liters
+litre
+lb
+lbs
+pound
+pounds
+kg
+g
+gram
+grams
+mg
+gal
+gallon
+count
+ct
+pack
+packs
+pk
+pcs
+pc
+piece
+pieces
+each
+ea
+pair
+pairs
+case
+box
+bundle
+inch
+inches
+qty
+"""
+
 _DEFAULTS["category_boxes"] = """
 # category,boxes     (boxes: color | size | flavor | scent | shade, separated by |)
 # Which attributes can be a REAL variant for a product category.  Used only by the rule
@@ -523,6 +585,7 @@ class Lexicon:
     line_filler: frozenset[str]
     finishes: dict[str, str]                        # phrase -> canonical finish
     types: dict[str, str]                           # phrase -> canonical type
+    variant_words: frozenset[str]                   # size / unit / quantity words (never a product name)
     version: str
     sources: dict[str, str]                        # table -> "file" | "built-in"
 
@@ -585,13 +648,14 @@ def get_lexicon() -> Lexicon:
         return out
 
     finishes, types = phrases("finishes"), phrases("types")
+    variant_words = frozenset(r[0].strip().lower() for r in _rows(texts["variant_words"]) if r and r[0].strip())
 
     digest = hashlib.sha1()
     for name in TABLES:
         digest.update(name.encode())
         digest.update(repr(sorted(tuple(r) for r in _rows(texts[name]))).encode())
     return Lexicon(colors, flavors, scents, sizes, generic, spelling, category_boxes, tones, gender, line_filler,
-                   finishes, types, digest.hexdigest()[:10], sources)
+                   finishes, types, variant_words, digest.hexdigest()[:10], sources)
 
 
 def reload_lexicon() -> Lexicon:

@@ -1,6 +1,6 @@
 """
 Vendor families: which vendor rows are the SAME product in another variant, and how every Amazon listing
-relates to a vendor row.  This module only reads and reports; family_pass.py uses it to change verdicts.
+relates to a vendor row.  
 """
 from __future__ import annotations
 
@@ -21,9 +21,10 @@ from services.analytics.matching_core.matching.attr_extract import (
     size_relation,
 )
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, norm
+from services.analytics.matching_core.matching.normalize import barcode_forms, normalize_upc
 from services.analytics.matching_core.matching.variation import _count_value, compare_boxes, varying_boxes
 
-FILE_VERSION = "2026-10-28 vendor_families v4.1 (parent ASIN, names from product words)"
+FILE_VERSION = "2026-10-29 vendor_families v4.2 (variant words from the lexicon, shared barcode matching)"
 
 EXACT = "exact variant"
 OTHER_VARIANT = "other variant"
@@ -44,10 +45,6 @@ _STRIP_BOXES = ("color", "size", "gender", "flavor", "scent", "shade_code", "ton
 _FAMILY_BOXES = ("size", "color", "gender", "flavor", "scent", "shade_code", "tone", "finish", "type",
                  "volume_ml", "weight_g", "count")
 
-_SIZE_WORDS = frozenset("xxs xs s m l xl xxl xxxl small medium large extra x xx xxx size sizes".split())
-_UNIT_WORDS = frozenset(("oz ounce ounces fl ml l liter liters litre lb lbs pound pounds kg g gram grams mg "
-                         "gal gallon count ct pack packs pk pcs pc piece pieces each ea pair pairs case box "
-                         "bundle inch inches qty").split())
 _LABEL = {"size": "size", "color": "color", "gender": "", "flavor": "flavor", "scent": "scent",
           "shade_code": "shade", "tone": "tone", "finish": "finish", "type": "type"}
 
@@ -70,6 +67,7 @@ def _vocab(version: str) -> dict[str, frozenset[str]]:
         "filler": lex.line_filler,
         "flavor_scent": lex.flavors | lex.scents,
         "sizes": frozenset(lex.sizes),
+        "variant_words": lex.variant_words,        # size / unit / quantity words (lexicon table variant_words)
     }
 
 
@@ -79,7 +77,7 @@ def _v() -> dict[str, frozenset[str]]:
 
 def _is_variant_token(tok: str) -> bool:
     v = _v()
-    return (any(c.isdigit() for c in tok) or tok in _SIZE_WORDS or tok in _UNIT_WORDS or tok in v["sizes"]
+    return (any(c.isdigit() for c in tok) or tok in v["variant_words"] or tok in v["sizes"]
             or tok in v["colors"] or tok in v["genders"] or tok in v["flavor_scent"])
 
 
@@ -172,13 +170,6 @@ def _same_brand(vendor_key: str, listing_key: str, listing_title: Any) -> bool:
         return True
     short, long_ = sorted((vendor_key, listing_key), key=len)
     return len(short) >= 4 and long_.startswith(short)  # "injinji" = "injinjiinc"
-
-
-def _barcode(value: Any) -> str:
-    s = str(value or "").strip()
-    s = re.sub(r"\.0+$", "", s)                         # 760172011852.0 (a number read from Excel)
-    s = re.sub(r"\D", "", s).lstrip("0")
-    return s if len(s) >= 6 else ""
 
 
 def _style_matches(style: str, models: list[str]) -> bool:
@@ -293,7 +284,8 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
             "title": str(src.get("title") or ""),
             "brand": brand,
             "brand_key": _brand_key(brand),
-            "upc": _barcode(src.get("upc")),
+            "upc": normalize_upc(src.get("upc")),
+            "upc_forms": barcode_forms(src.get("upc")),
             "style": str((fields.get("style") or {}).get("value") or ""),
             "fields": fields,
             "words": product_words(src.get("title"), brand, fields),
@@ -348,7 +340,7 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
             "title": title,
             "brand": brand,
             "brand_key": _brand_key(brand),
-            "barcodes": {b for b in (_barcode(x) for x in ext["identity"]["upcs"]) if b},
+            "barcodes": set().union(*(barcode_forms(x) for x in ext["identity"]["upcs"])),
             "models": [m for m in model_value.split("/") if m],
             "fields": fields,
             "words": product_words(title, brand, fields),
@@ -393,7 +385,7 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
         group_models = [m for a in asins for m in listings[a]["models"]]
         code_hits, style_hits = Counter(), Counter()
         for f in families:
-            code_hits[f["id"]] = sum(1 for i in f["rows"] if rows[i]["upc"] and rows[i]["upc"] in group_codes)
+            code_hits[f["id"]] = sum(1 for i in f["rows"] if rows[i]["upc_forms"] & group_codes)
             style_hits[f["id"]] = sum(1 for i in f["rows"]
                                       if rows[i]["style"] and _style_matches(rows[i]["style"], group_models))
         by_words = [f["id"] for f in families if word_fit(f, first["words"], first)[0]]
@@ -524,9 +516,10 @@ def _parent_sibling(idx: Any, asin: str, ctx: dict) -> str:
     Returns the explanation, or '' when there is no such proof."""
     rows, listings = ctx["rows"], ctx["listings"]
     r, l = rows[idx], listings[asin]
-    if not r["upc"] or not l.get("parent"):
+    if not r["upc_forms"] or not l.get("parent"):
         return ""
-    for match in ctx["by_barcode"].get(r["upc"], []):
+    matches = dict.fromkeys(a for form in r["upc_forms"] for a in ctx["by_barcode"].get(form, []))
+    for match in matches:
         m = listings[match]
         if match == asin or m.get("parent") != l["parent"]:
             continue
@@ -547,7 +540,7 @@ def _relate(idx: Any, asin: str, ctx: dict) -> dict:
     if not _same_brand(r["brand_key"], l["brand_key"], l["title"]):
         out.update(relation=OTHER_BRAND, detail=f"listing brand '{l['brand'] or '-'}', vendor brand '{r['brand']}'")
         return out
-    barcode = bool(r["upc"]) and r["upc"] in l["barcodes"]
+    barcode = bool(r["upc_forms"] & l["barcodes"])
     style_hit = bool(r["style"]) and _style_matches(r["style"], l["models"])
     out["barcode"] = barcode
     if not barcode:
