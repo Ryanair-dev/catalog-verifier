@@ -13,8 +13,8 @@ from anthropic import Anthropic
 from services.analytics.matching_core.agents.query_prompts import (
     ASSESS_RESULTS,
     ASSESS_SYSTEM,
-    BUILD_QUERY_SYSTEM,
-    PROMPT_VERSION,
+    BUILD_SYSTEM,
+    READ_PROMPT_VERSION,
 )
 from services.analytics.matching_core.models import Candidate, Offer
 from services.analytics.runner import normalize_amazon_item
@@ -23,8 +23,9 @@ log = logging.getLogger(__name__)
 MODEL = "claude-sonnet-4-6"
 MAX_ITERATIONS = 2
 MAX_CANDIDATES = 20
-INCLUDED_DATA = "summaries,identifiers,attributes,salesRanks"
+INCLUDED_DATA = "summaries,identifiers,attributes,salesRanks,relationships"   # relationships = parent ASIN
 MAX_QUERY_WORDS = 15
+BUILD_MAX_TOKENS = 1000          # was 400: the answer now also holds expansions + attributes
 
 
 def _parse_json(text: str) -> dict[str, Any]:
@@ -54,6 +55,24 @@ def _offer_text(offer: Offer) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _new_stats() -> dict[str, Any]:
+    return {
+        "used_agent": True,
+        "model": MODEL,
+        "prompt_version": READ_PROMPT_VERSION,
+        "queries_tried": [],
+        "llm_calls": 0,
+        "api_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "seconds_llm": 0.0,
+        "seconds_search": 0.0,
+        "llm_steps": [],
+        "search_steps": [],
+        "trace": [],
+    }
+
+
 class QueryAgent:
     def __init__(self, client: Any, api: Any, max_iterations: int = MAX_ITERATIONS):
         self.client = client
@@ -61,12 +80,12 @@ class QueryAgent:
         self.max_iterations = max_iterations
 
     def _call(
-        self, system: str, user: str, stats: dict[str, Any], action: str,
+        self, system: str, user: str, stats: dict[str, Any], action: str, max_tokens: int = 400,
     ) -> dict[str, Any]:
         started = time.monotonic()
         response = self.client.messages.create(
             model=MODEL,
-            max_tokens=400,
+            max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -91,9 +110,12 @@ class QueryAgent:
 
     def _build_query(self, offer: Offer, stats: dict[str, Any]) -> tuple[str, str]:
         text = _offer_text(offer)
-        output = self._call(BUILD_QUERY_SYSTEM, text, stats, "build_query")
+        output = self._call(BUILD_SYSTEM, text, stats, "build_query", max_tokens=BUILD_MAX_TOKENS)
         query = str(output.get("search_query") or "").strip()
         comparison_title = str(output.get("comparison_title") or "").strip()
+        # NEW: what the same step read from the title (checked later by attr_ai.py, never trusted as is)
+        stats["expansions"] = output.get("expansions") if isinstance(output.get("expansions"), list) else []
+        stats["attributes"] = output.get("attributes") if isinstance(output.get("attributes"), dict) else {}
         if not _valid_query(query):
             query = (offer.title or offer.raw_text or "").strip()
             log.warning("Query agent returned no usable search query; using raw title")
@@ -113,6 +135,31 @@ class QueryAgent:
                 "reasoning": output.get("reasoning", ""),
             })
         return query, comparison_title
+
+    def read_title(self, offer: Offer) -> dict[str, Any]:
+        """NEW: the unabbreviation step alone (the same prompt as for the search, no search).
+        Returns {"comparison_title", "search_query", "expansions", "attributes", "llm_calls", "tokens_in",
+        "tokens_out", "seconds_llm", "model", "prompt_version", "error"?}."""
+        stats = _new_stats()
+        try:
+            query, comparison_title = self._build_query(offer, stats)
+        except Exception as exc:
+            stats["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            log.warning("Title reading failed for offer %s: %s", offer.offer_id, stats["error"])
+            query, comparison_title = "", ""
+        return {
+            "comparison_title": comparison_title,
+            "search_query": query,
+            "expansions": stats.get("expansions") or [],
+            "attributes": stats.get("attributes") or {},
+            "llm_calls": stats["llm_calls"],
+            "tokens_in": stats["tokens_in"],
+            "tokens_out": stats["tokens_out"],
+            "seconds_llm": round(stats["seconds_llm"], 3),
+            "model": MODEL,
+            "prompt_version": READ_PROMPT_VERSION,
+            **({"error": stats["error"]} if stats.get("error") else {}),
+        }
 
     def _search(self, query: str, stats: dict[str, Any]) -> list[dict[str, Any]]:
         if not query:
@@ -181,21 +228,7 @@ class QueryAgent:
         return output
 
     def run(self, offer: Offer) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        stats: dict[str, Any] = {
-            "used_agent": True,
-            "model": MODEL,
-            "prompt_version": PROMPT_VERSION,
-            "queries_tried": [],
-            "llm_calls": 0,
-            "api_calls": 0,
-            "tokens_in": 0,
-            "tokens_out": 0,
-            "seconds_llm": 0.0,
-            "seconds_search": 0.0,
-            "llm_steps": [],
-            "search_steps": [],
-            "trace": [],
-        }
+        stats = _new_stats()
         started = time.monotonic()
         candidates: list[dict[str, Any]] = []
         query = ""
@@ -275,3 +308,8 @@ def create_query_agent(api: Any) -> QueryAgent:
     if not key:
         raise RuntimeError("ANTHROPIC_API_KEY is required to use the query agent")
     return QueryAgent(Anthropic(api_key=key, max_retries=3, timeout=30.0), api)
+
+
+def create_title_reader() -> QueryAgent:
+    """NEW: the agent for read_title() only (no Amazon search, so no catalog API is needed)."""
+    return create_query_agent(api=None)

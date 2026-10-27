@@ -219,6 +219,18 @@ def _extract_sales_rank(raw: dict) -> tuple[int | None, str, list[dict]]:
     return main_rank, main_category, all_ranks
 
 
+def _variation_info(raw: dict) -> tuple[str, str]:
+    """(parent ASIN, variation theme) from the item's "relationships" data ('' when Amazon sent none):
+    the listings that share a parent ASIN are Amazon's own variants of one product (sizes, colors ...)."""
+    for group in raw.get("relationships") or []:
+        for rel in (group or {}).get("relationships") or []:
+            parents = (rel or {}).get("parentAsins") or []
+            if parents:
+                theme = (rel.get("variationTheme") or {}).get("theme") or ""
+                return str(parents[0]).strip().upper(), str(theme)
+    return "", ""
+
+
 def normalize_amazon_item(raw: dict) -> dict:
     """
     Flatten a single SP-API Catalog Items v2022-04-01 item for the matcher adapter.
@@ -275,6 +287,7 @@ def normalize_amazon_item(raw: dict) -> dict:
     description = _attr_str("product_description")
 
     best_rank, best_rank_category, all_ranks = _extract_sales_rank(raw)
+    parent_asin, variation_theme = _variation_info(raw)
 
     return {
         "asin": asin,
@@ -290,6 +303,8 @@ def normalize_amazon_item(raw: dict) -> dict:
         "upc": upcs[0] if upcs else "",
         "ean": eans[0] if eans else "",
         "gtin": gtin_val,
+        "parent_asin": parent_asin,           # Amazon's variation family ('' = none / not fetched)
+        "variation_theme": variation_theme,   # e.g. "SIZE/COLOR"
         "description": description,
         "bullet_points": bullets,
         "item_package_quantity": _attr_str("item_package_quantity"),
@@ -1373,9 +1388,10 @@ def _rescore_pipeline(
             # ASIN Exclusivity was an automatic legacy rule, not a user
             # decision; let the selected scorer replace those old verdicts.
             review_status = (c["review_status"] or "").strip()
-            # CHANGED: "ASIN claimed" / "Variant settled" come from family_pass.py (automatic, not a person),
+            # "ASIN claimed" / "Variant settled" / "Several variants approved" come from family_pass.py (automatic),
             # so those candidates are rescored too; the family pass below decides them again.
-            if review_status and review_status not in ("ASIN Exclusivity", "ASIN claimed", "Variant settled"):
+            if review_status and review_status not in ("ASIN Exclusivity", "ASIN claimed", "Variant settled",
+                                                     "Several variants approved"):
                 continue
  
             cat = catalog_map.get(row_idx, {})

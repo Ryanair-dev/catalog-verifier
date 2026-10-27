@@ -97,3 +97,31 @@ term and needs rebuilding from the product description instead.
 
 Be decisive. Reply with JSON only, no prose.
 """
+
+
+# The build_query step also returns the abbreviations it decoded and the variant attributes the title
+# states (read by attr_ai.py). BUILD_SYSTEM = BUILD_QUERY_SYSTEM + this block.
+ATTRIBUTES_ADDON = """\
+ALSO, in the same JSON object, add two more keys:
+
+"expansions": every abbreviation or code of the title you decoded, as pairs; "from" = the token exactly as written
+  in the title.  Examples: BLK -> Black, SS -> Stainless Steel, SN -> Satin Nickel, VB -> Venetian Bronze,
+  GG -> Good Grips, PRIV -> Privacy, PASS -> Passage, LG -> Large, CT -> Count.
+  Leave brand names, model numbers and ordinary words out.
+
+"attributes": the VARIANT attributes the title states, each with "evidence" = the exact words of the title (or of
+  the vendor part number) that state it, copied as written - an abbreviation or code is fine as evidence:
+    color, finish (door hardware / faucet finish), size (clothing S/M/L/XS/S ...), type (function: privacy,
+    passage, entry, keyed, dummy, deadbolt, handleset ...), flavor, scent, gender (men/women/kids/unisex),
+    material, count (units in ONE package, a number), volume (with unit, "8 fl oz"), weight (with unit, "16 oz").
+  Leave out what the title does not state. Never guess from the brand or the product type alone.
+  A model or series number may tell an attribute only when you know that brand's numbering for sure
+  (Kwikset 97200-xxx = passage, 97300-xxx = privacy, 97402-xxx = entry); then the evidence is that number.
+
+Example of the two extra keys:
+  "expansions": [{"from": "SN", "to": "Satin Nickel"}, {"from": "PRIV", "to": "Privacy"}],
+  "attributes": {"finish": {"value": "satin nickel", "evidence": "SN"}, "type": {"value": "privacy", "evidence": "PRIV"}}
+"""
+
+BUILD_SYSTEM = BUILD_QUERY_SYSTEM.rstrip() + "\n\n" + ATTRIBUTES_ADDON
+READ_PROMPT_VERSION = f"{PROMPT_VERSION}+attrs1"

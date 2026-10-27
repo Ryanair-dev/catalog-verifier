@@ -1,38 +1,8 @@
-"""
-Family pass: the decisions that need the WHOLE run (all rows and all listings), made once after scoring.
-It uses vendor_families.py.  It replaces asin_dedupe.py (delete that file).
-
-1. DEDUP (agreed with the product side).  One Amazon listing goes to ONE vendor row, decided only among rows of
-   the SAME family:
-     - the row whose variant matches the listing keeps it (exact variant with proof: barcode or stated variants);
-     - several rows match: the row carrying the listing's barcode keeps it; otherwise the lowest row number
-       keeps it and the others are marked as duplicate rows;
-     - no row matches: none keeps it (the reason says what the listing does not state).
-   Losers go to Review, status "ASIN claimed", confidence capped at 89.  Rows of DIFFERENT families approved for
-   the same listing are not changed (printed by --dry-run).
-2. SETTLE.  A pair in Review that the run itself proves is ANOTHER variant of the same product goes to
-   Not Approved, status "Variant settled", confidence capped at 29.  "Proves" = vendor_families.py relation
-   "other variant" (sibling evidence: Amazon sells the vendor's exact color/size as its own listing, another
-   vendor row is that color/size, the vendor file lists Women's items as their own rows).  Never when the
-   barcode matches, never for an approved pair, never for a pair a person decided.
-
-Never touched: pairs a person decided (review_status "Reviewed", "Manually Approved", "Manually Rejected",
-"ai-accepted", "ai-rejected" or anything else that is not one of AUTO_STATUSES).  If a person approved one row
-of a family for a listing, the other automatically approved rows of that family lose it.
-Every change is saved with what it replaced (data_json["family_pass"]) and the reason is added to the
-explanation ("Family check: ...").  Running it again is safe: a pair is restored when the reason is gone.
-
-Wiring: runner.py calls run_family_pass(run_id) after every full run and every re-score.
-Command (repo root):
-    uv run python -m services.analytics.family_pass --run 123 --dry-run     # show what would change
-    uv run python -m services.analytics.family_pass --run 123               # write the changes
-"""
 from __future__ import annotations
 
 import argparse
 import copy
 import json
-import sqlite3
 import sys
 from collections import Counter, defaultdict
 from typing import Any
@@ -47,15 +17,17 @@ from services.analytics.vendor_families import (
     row_label,
 )
 
-FILE_VERSION = "2026-10-22 family_pass v1"
+FILE_VERSION = "2026-10-28 family_pass v2 (parent ASIN siblings)"
 
 DEDUPE_STATUS = "ASIN claimed"
 SETTLE_STATUS = "Variant settled"
-OUR_STATUSES = frozenset({DEDUPE_STATUS, SETTLE_STATUS})
+SIBLINGS_STATUS = "Several variants approved"
+OUR_STATUSES = frozenset({DEDUPE_STATUS, SETTLE_STATUS, SIBLINGS_STATUS})
 # statuses written by automatic rules, not by a person ("ASIN Exclusivity" = a legacy rule in routers/analytics.py)
 AUTO_STATUSES = OUR_STATUSES | {"ASIN Exclusivity"}
 DEDUPE_CAP = 89.0
 SETTLE_CAP = 29.0
+SIBLINGS_CAP = 89.0
 
 
 def _key(c: dict) -> tuple:
@@ -170,10 +142,46 @@ def _decide_group(asin: str, group: list[dict], fam: dict, family: dict | None) 
     return out
 
 
+def _siblings(candidates: list[dict], fam: dict) -> dict[tuple, str]:
+    """{key: reason} for automatically approved pairs that must go to Review because the same vendor row was
+    approved for several variants of one Amazon product (listings sharing a parent ASIN)."""
+    listings = fam["listings"]
+    by_row: dict[Any, list[dict]] = defaultdict(list)
+    for c in candidates:
+        approved = (str(c.get("verdict") or "") == "verified") if _is_human(c) else (_base(c)[0] == "verified")
+        if approved:
+            by_row[c.get("row_idx")].append(c)
+    out: dict[tuple, str] = {}
+    for group in by_row.values():
+        by_parent: dict[str, list[dict]] = defaultdict(list)
+        for c in group:
+            parent = (listings.get(str(c.get("asin") or "")) or {}).get("parent")
+            if parent:
+                by_parent[parent].append(c)
+        for parent, members in by_parent.items():
+            if len(members) < 2:
+                continue
+            anchors = [c for c in members if (fam["pairs"].get(_key(c)) or {}).get("barcode") or _is_human(c)]
+            movable = [c for c in members if c not in anchors and not _is_human(c)]
+            if anchors:
+                names = ", ".join(str(c.get("asin")) for c in anchors)
+                why = "it carries this row's barcode" if any((fam["pairs"].get(_key(c)) or {}).get("barcode")
+                                                            for c in anchors) else "a person approved it"
+                reason = f"another variant of {names}, which is this row's product ({why})"
+            else:
+                names = ", ".join(sorted(str(c.get("asin")) for c in members))
+                reason = (f"{len(members)} variants of one Amazon product ({parent}) were approved for this row "
+                          f"({names}); at most one can be right")
+            for c in movable:
+                out[_key(c)] = reason
+    return out
+
+
 def plan_changes(vendor_rows: list[dict], candidates: list[dict], families: dict | None = None) -> dict:
     """{"changes": [...], "cross_family": [...], "counts": {...}}.  Pure: nothing is written."""
     fam = families or build_families(vendor_rows, candidates)
     dedup, cross = _dedup(candidates, fam)
+    siblings = _siblings(candidates, fam)
     changes: list[dict] = []
     for c in candidates:
         if _is_human(c):
@@ -185,6 +193,11 @@ def plan_changes(vendor_rows: list[dict], candidates: list[dict], families: dict
         dec = dedup.get(key)
         if dec and not dec["keep"]:
             target_verdict, target_status, kind, reason = "review", DEDUPE_STATUS, "dedup", dec["reason"]
+        elif key in siblings:
+            target_verdict, target_status, kind, reason = "review", SIBLINGS_STATUS, "siblings", siblings[key]
+        elif base_verdict == "verified" and pair.get("proof") == "parent" and not pair.get("barcode"):
+            target_verdict, target_status, kind = "review", SIBLINGS_STATUS, "siblings"
+            reason = pair.get("detail") or "another variant of this row's barcode match"
         elif base_verdict == "review" and pair.get("settle") and not pair.get("barcode"):
             target_verdict, target_status, kind = "not_approved", SETTLE_STATUS, "settle"
             reason = f"another variant of the same product: {pair.get('detail')}"
@@ -230,13 +243,13 @@ def _change(c: dict, key: tuple, kind: str | None, reason: str, verdict: str, st
     except (TypeError, ValueError):
         conf = 0.0
     if kind:
-        cap = DEDUPE_CAP if kind == "dedup" else SETTLE_CAP
+        cap = {"dedup": DEDUPE_CAP, "siblings": SIBLINGS_CAP}.get(kind, SETTLE_CAP)
         data["family_pass"] = {"kind": kind, "reason": reason, "was": base_verdict, "was_status": base_status,
                                "was_confidence": conf, "summary_before": summary_before, "version": FILE_VERSION}
         if summary_before is not None:
             _summary_set(data, f"{summary_before.rstrip()} Family check: {reason}.")
         new_conf = min(conf, cap)
-        what = "dedup" if kind == "dedup" else "settle"
+        what = kind
     else:
         data.pop("family_pass", None)
         if record and summary_before is not None:
@@ -300,14 +313,15 @@ def run_family_pass(run_id: Any, dry_run: bool = False) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Family pass (dedup + settle) for one run")
+    ap = argparse.ArgumentParser(description="Family pass (dedup + settle + siblings) for one run")
     ap.add_argument("--run", required=True, help="run id")
     ap.add_argument("--dry-run", action="store_true", help="show the changes, write nothing")
     a = ap.parse_args(argv)
     s = run_family_pass(a.run, dry_run=a.dry_run)
     print(f"run {a.run}  ({FILE_VERSION})  {'DRY RUN, nothing written' if a.dry_run else 'changes written'}")
     print(f"  changes: {s['counts'] or 'none'}   (dedup = lost a listing to another row, settle = Review -> "
-          f"Not Approved, restore = an earlier change undone)")
+          f"Not Approved, siblings = approved variant of the same Amazon product -> Review, "
+          f"restore = an earlier change undone)")
     for ch in s["changes"]:
         row_idx, asin = ch["key"]
         print(f"  row {row_label(row_idx)!s:>5}  {asin}  {ch['what']:8s} -> {ch['verdict']} / {ch['review_status'] or '-'}")

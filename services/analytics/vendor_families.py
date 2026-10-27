@@ -1,6 +1,3 @@
-"""
-Vendor families: which vendor rows are the SAME product in another variant.
-"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +5,7 @@ import json
 import re
 import sqlite3
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from functools import lru_cache
 from typing import Any
 
@@ -22,7 +19,7 @@ from services.analytics.matching_core.matching.attr_extract import (
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, norm
 from services.analytics.matching_core.matching.variation import _count_value, compare_boxes, varying_boxes
 
-FILE_VERSION = "2026-10-22 vendor_families v3"
+FILE_VERSION = "2026-10-28 vendor_families v4 (parent ASIN)"
 
 EXACT = "exact variant"
 OTHER_VARIANT = "other variant"
@@ -338,6 +335,7 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
             "fields": fields,
             "words": product_words(title, brand, fields),
             "variant": variant_text(fields),
+            "parent": str(item.get("parent_asin") or "").strip().upper(),
         }
 
     # ---- link listing groups to vendor families ----
@@ -394,13 +392,45 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
         for a in asins:
             listings[a]["family"], listings[a]["link"] = chosen
 
+    # ---- Amazon's variation families: an unplaced listing joins the family of a sibling linked by barcode or
+    #      style number (same parent ASIN), unless it carries words that only another family of the brand has ----
+    by_parent: dict[str, list[str]] = defaultdict(list)
+    for asin, l in listings.items():
+        if l.get("parent"):
+            by_parent[l["parent"]].append(asin)
+    for parent, asins in by_parent.items():
+        strong = {listings[a]["family"] for a in asins if listings[a].get("family")
+                  and str(listings[a].get("link") or "").startswith(("barcode", "style number"))}
+        if len(strong) != 1:
+            continue                                     # no proven family, or two: leave the words' decision
+        fid = next(iter(strong))
+        fam = fam_by_id[fid]
+        others = set()
+        for other in families:
+            if other is not fam and other["brand_key"] == fam["brand_key"]:
+                others |= set(other["words"])
+        anchor = next(a for a in asins if listings[a].get("family") == fid
+                      and str(listings[a].get("link") or "").startswith(("barcode", "style number")))
+        for a in asins:
+            l = listings[a]
+            if l.get("family") or not _same_brand(fam["brand_key"], l["brand_key"], l["title"]):
+                continue
+            if (set(l["words"]) & others) - set(fam["words"]):
+                continue                                 # Amazon groups it with ours, but it names another product
+            l["family"], l["link"] = fid, f"parent ASIN {parent} (variant of {anchor})"
+
     # ---- what each family's rows and listings offer (for sibling evidence) ----
     fam_listings: dict[str, list[str]] = {}
     for asin, l in listings.items():
         if l.get("family"):
             fam_listings.setdefault(l["family"], []).append(asin)
+    by_barcode: dict[str, list[str]] = defaultdict(list)
+    for asin, l in listings.items():
+        for code in l["barcodes"]:
+            by_barcode[code].append(asin)
     ctx = {"rows": rows, "listings": listings, "fam_by_id": fam_by_id,
-           "fam_listings": fam_listings, "women_rows": women_rows, "word_fit": word_fit}
+           "fam_listings": fam_listings, "women_rows": women_rows, "word_fit": word_fit,
+           "by_barcode": by_barcode}
 
     # ---- relation of every candidate pair ----
     pairs: dict[tuple, dict] = {}
@@ -470,6 +500,27 @@ def _label(row_idx: Any) -> str:
     return f"row {row_label(row_idx)}"
 
 
+def _parent_sibling(idx: Any, asin: str, ctx: dict) -> str:
+    """Proof from Amazon's own variation data that the listing is NOT this row's product: it shares a parent ASIN
+    with the listing that carries the row's barcode, and Amazon's data states a difference between the two.
+    Returns the explanation, or '' when there is no such proof."""
+    rows, listings = ctx["rows"], ctx["listings"]
+    r, l = rows[idx], listings[asin]
+    if not r["upc"] or not l.get("parent"):
+        return ""
+    for match in ctx["by_barcode"].get(r["upc"], []):
+        m = listings[match]
+        if match == asin or m.get("parent") != l["parent"]:
+            continue
+        cv = compare_variants(m["fields"], l["fields"])
+        diffs = cv["mismatch"] + cv["partial"]
+        if diffs:
+            shown = "; ".join(f"{_names([b])} {_show(m['fields'], b)} vs {_show(l['fields'], b)}" for b in diffs)
+            return (f"Amazon lists it as another variant of {match}, the listing with this row's barcode "
+                    f"({shown})")
+    return ""
+
+
 def _relate(idx: Any, asin: str, ctx: dict) -> dict:
     rows, listings, fam_by_id = ctx["rows"], ctx["listings"], ctx["fam_by_id"]
     r, l = rows[idx], listings[asin]
@@ -481,6 +532,11 @@ def _relate(idx: Any, asin: str, ctx: dict) -> dict:
     barcode = bool(r["upc"]) and r["upc"] in l["barcodes"]
     style_hit = bool(r["style"]) and _style_matches(r["style"], l["models"])
     out["barcode"] = barcode
+    if not barcode:
+        sibling = _parent_sibling(idx, asin, ctx)
+        if sibling:
+            out.update(relation=OTHER_VARIANT, proof="parent", detail=sibling, settle=True)
+            return out
     if not barcode and not style_hit and (fam is None or l.get("family") != fam["id"]):
         if l.get("family"):
             detail = f"listing belongs to family {l['family']} ({fam_by_id[l['family']]['name']})"
