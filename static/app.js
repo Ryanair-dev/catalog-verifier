@@ -8664,7 +8664,7 @@
     ERROR:          { bg: "#fef2f2", color: "#dc2626", icon: "!" },
   };
 
-  const _brandCheckState = { cancel: false, results: [] };
+  const _brandCheckState = { cancel: false, results: [], jobId: null };
 
   function _renderSingleBrandResult(r) {
     const out = $("#brand-check-result");
@@ -8694,6 +8694,19 @@
     tbody.appendChild(tr);
   }
 
+  // 2026-10-27: rewritten to start a real server-tracked background job
+  // (POST .../check-brand/start) and poll it, instead of looping client-side
+  // Promise.all calls to the plain single-brand endpoint -- the old version
+  // left the backend with zero visibility that a check was even running, so
+  // it could never show up in Settings > Tasks Running. See
+  // docs/infra/job_persistence.md's 2026-10-27c entry.
+  async function _cancelBrandCheckJob() {
+    _brandCheckState.cancel = true;
+    if (_brandCheckState.jobId) {
+      try { await api(`/api/eligibility/check-brand/jobs/${_brandCheckState.jobId}/cancel`, { method: "POST" }); } catch {}
+    }
+  }
+
   async function _checkBrands() {
     const input = $("#brand-check-input");
     const btn = $("#brand-check-btn");
@@ -8710,6 +8723,7 @@
     const params = _brandCheckParams();
     _brandCheckState.cancel = false;
     _brandCheckState.results = [];
+    _brandCheckState.jobId = null;
 
     singleOut?.classList.add("hidden");
     tableWrap?.classList.add("hidden");
@@ -8723,40 +8737,53 @@
       progress?.classList.remove("hidden");
       if (progress) progress.textContent = `0 / ${brands.length} checked…`;
       btn.textContent = "Cancel";
-      btn.onclick = () => { _brandCheckState.cancel = true; };
+      btn.onclick = _cancelBrandCheckJob;
     } else {
       btn.disabled = true;
       btn.textContent = "Checking…";
     }
 
-    let done = 0;
-    let idx = 0;
-    const CONCURRENCY = 2;
+    let job;
+    try {
+      job = await api("/api/eligibility/check-brand/start", { method: "POST", body: { brands, ...params } });
+    } catch (e) {
+      showToast(`Couldn't start the brand check: ${e.message}`, "error");
+      btn.disabled = false;
+      btn.textContent = "Check";
+      btn.onclick = _checkBrands;
+      return;
+    }
+    _brandCheckState.jobId = job.job_id;
+    const total = job.total || brands.length;   // backend dedupes brand names, so job.total is authoritative
 
-    async function worker() {
-      while (idx < brands.length) {
-        if (_brandCheckState.cancel) return;
-        const brand = brands[idx++];
-        let r;
-        try {
-          r = await api("/api/eligibility/check-brand", { method: "POST", body: { brand, ...params } });
-        } catch (e) {
-          r = { brand, verdict: "ERROR", summary: e.message, total_asins_in_catalog: 0, checked: [], dog_skipped: 0 };
-        }
+    const seen = new Set();
+    let done = 0;
+    while (true) {
+      let j;
+      try {
+        j = await api(`/api/eligibility/check-brand/jobs/${job.job_id}`);
+      } catch (e) {
+        break;   // job expired/evicted -- stop polling, show whatever we already rendered
+      }
+      for (const r of j.results) {
+        if (seen.has(r.brand)) continue;
+        seen.add(r.brand);
         _brandCheckState.results.push(r);
         if (isBulk) _appendBrandRow(r); else _renderSingleBrandResult(r);
-        done++;
-        if (progress) progress.textContent = `${done} / ${brands.length} checked…`;
       }
+      done = j.done;
+      if (progress) progress.textContent = `${done} / ${total} checked…`;
+      if (j.status !== "running") {
+        if (isBulk && progress) {
+          progress.textContent = j.status === "cancelled"
+            ? `Cancelled — ${done} / ${total} checked.`
+            : `Done — ${done} / ${total} checked.`;
+        }
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, brands.length) }, worker));
-
-    if (isBulk && progress) {
-      progress.textContent = _brandCheckState.cancel
-        ? `Cancelled — ${done} / ${brands.length} checked.`
-        : `Done — ${done} / ${brands.length} checked.`;
-    }
     if (isBulk) exportBtn?.classList.remove("hidden");
     btn.disabled = false;
     btn.textContent = "Check";
