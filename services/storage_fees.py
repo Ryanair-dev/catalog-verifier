@@ -220,7 +220,8 @@ def calc_storage_fee(
 
 
 # --------------------------------------------------------------------------- #
-# Storage-result cache (90-day TTL, ~3 months)                                #
+# Storage-result cache (150-day TTL, ~5 months; was 90 until 2026-10-28,     #
+# per user: "we can even go out and cache it for 4-5 months")                #
 #                                                                             #
 # A product's physical package dimensions essentially never change once      #
 # listed (barring a rare packaging redesign), so there's little reason to    #
@@ -233,12 +234,12 @@ def calc_storage_fee(
 # Offer-Analytics export (which reads the `storage_fee` column); the extra   #
 # `data_json` column holds the full result the Tool needs. Eligibility is    #
 # NEVER cached in THIS table — it stays live here; the separate, shorter     #
-# (7-day) `eligibility_cache` table in services/restrictions.py is an        #
+# (14-day) `eligibility_cache` table in services/restrictions.py is an        #
 # unrelated, opt-in cache used only by the Vendor Offers export pipeline —   #
 # see that module's own docstring.                                           #
 # --------------------------------------------------------------------------- #
 
-_STORAGE_TTL_DAYS = 90
+_STORAGE_TTL_DAYS = 150
 # statuses safe to cache — a live dims/DOG answer; transient errors are NOT cached
 _CACHEABLE_STATUSES = {"ok", "no_dimensions", "dog"}
 

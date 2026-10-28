@@ -178,7 +178,9 @@ def as_int(value):
 
 # A whole "NxSIZE" or multi-level "NxMxSIZE" chain, captured as one match so
 # the inner numbers of a multi-level chain can't be re-matched on their own.
-_CASE_QTY_RE = re.compile(r"(?<![\d.])(\d+)\s*[Xx]\s*\d+(?:\.\d+)?(?:\s*[Xx]\s*\d+(?:\.\d+)?)*")
+# Sizes may drop the leading zero ("12X.13OZ", "144 X .9GM").
+_SIZE_NUM = r"(?:\d+(?:\.\d+)?|\.\d+)"
+_CASE_QTY_RE = re.compile(rf"(?<![\d.])(\d+)\s*[Xx]\s*{_SIZE_NUM}(?:\s*[Xx]\s*{_SIZE_NUM})*")
 # What follows a chain that is really physical dimensions, not a pack count:
 # a CM/IN unit ("8X12.5X1 CM", "4X1X10IN 3000") or a bare count after a
 # space ("BAG T-SACK 9X5X18 1000").

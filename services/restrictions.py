@@ -7,7 +7,7 @@ shared SP-API infrastructure (auth, rate limiter, credential loader).
 Public API:
   get_restrictions_api()  -> RestrictionsAPI  (cached singleton)
   classify(asin, raw)     -> {"asin", "status", "reasons"}
-  eligibility_cache_get/put -> opt-in 7-day eligibility cache (see below)
+  eligibility_cache_get/put -> opt-in 14-day eligibility cache (see below)
 """
 from __future__ import annotations
 
@@ -27,7 +27,8 @@ from .spapi.rate_limiter import LIMITERS
 log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
-# Eligibility cache (7-day TTL) — OPT-IN, per user request (2026-10-19):      #
+# Eligibility cache (14-day TTL since 2026-10-28, per user "lets cache it for #
+# 2 weeks"; was 7) — OPT-IN, per user request (2026-10-19):                   #
 # "cache eligibility for 1 week" in the context of the Vendor Offers export   #
 # pipeline specifically. Deliberately NOT wired into the standalone Toolbox   #
 # "Eligibility Check" tool (routers/eligibility.py), which has its own        #
@@ -39,7 +40,7 @@ log = logging.getLogger(__name__)
 # enrich_asins) -- classify()/get_restrictions_api() are UNCHANGED and stay   #
 # fully live for every other existing caller.                                #
 # --------------------------------------------------------------------------- #
-_ELIGIBILITY_CACHE_TTL_DAYS = 7
+_ELIGIBILITY_CACHE_TTL_DAYS = 14
 
 
 def _ensure_eligibility_cache_table(conn) -> None:

@@ -157,7 +157,7 @@ def _recent_health_check_runs() -> list[dict]:
 async def tasks_running() -> dict:
     from routers import eligibility, generic_check, pairs, po_analytics, seller_analytics, storage_fees
     from routers import vendor_offers as vo_router
-    from services import azure_sql, health_check, mpn_check_sync
+    from services import azure_sql, eligibility_warmer, health_check, mpn_check_sync
     from services import vendor_offers_mailbox_sync as vo_mail_sync
     from services.sellercloud import catalog_index as sc_catalog_index
 
@@ -181,6 +181,7 @@ async def tasks_running() -> dict:
         ("MPN Check: Local Mirror Sync", mpn_check_sync),
         ("Create SKUs: SellerCloud Catalog Snapshot", sc_catalog_index),
         ("Pair Library Health Check (scheduler)", health_check),
+        ("Price Desk: Idle Eligibility Warmer", eligibility_warmer),
     ):
         try:
             schedulers.append({"feature": feature, **mod.scheduler_status()})
@@ -188,4 +189,3 @@ async def tasks_running() -> dict:
             pass
 
     return {"jobs": jobs, "runs": runs, "schedulers": schedulers}
-    return {**po_automation.get_recipients(tool), "label": AUTOMATION_TOOLS[tool]}

@@ -3371,7 +3371,9 @@
     const status = s.running_now ? "running" : "idle";
     const parts = [];
     if (s.next_run) parts.push(`Next: ${new Date(s.next_run).toLocaleString()}`);
-    if (s.last && s.last.results) {
+    if (s.summary) {
+      parts.push(s.summary);
+    } else if (s.last && s.last.results) {
       const vendorParts = Object.entries(s.last.results)
         .map(([vendor, r]) => {
           if (r && typeof r.added === "number") return `${vendor} +${r.added}`;

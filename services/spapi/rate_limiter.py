@@ -14,6 +14,20 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
+
+# Threads inside background_use() (the idle-time eligibility warmer) don't
+# count as "someone is using this store" -- see foreground_idle_seconds().
+_bg = threading.local()
+
+
+@contextmanager
+def background_use():
+    _bg.on = True
+    try:
+        yield
+    finally:
+        _bg.on = False
 
 
 class TokenBucketLimiter:
@@ -28,6 +42,7 @@ class TokenBucketLimiter:
         self._tokens = float(burst)
         self._last_refill = time.monotonic()
         self._lock = threading.Lock()
+        self.last_foreground = 0.0   # monotonic time of the last non-background acquire
 
     def _refill(self) -> None:
         now = time.monotonic()
@@ -37,6 +52,8 @@ class TokenBucketLimiter:
 
     def acquire(self) -> None:
         """Block until a token is available, then consume it."""
+        if not getattr(_bg, "on", False):
+            self.last_foreground = time.monotonic()
         with self._lock:
             self._refill()
             if self._tokens >= 1:
@@ -68,3 +85,10 @@ def new_limiters() -> dict[str, TokenBucketLimiter]:
 # The default/shared instance — every existing caller that doesn't pass its
 # own `limiters` dict keeps using this one, unchanged from before.
 LIMITERS: dict[str, TokenBucketLimiter] = new_limiters()
+
+
+def foreground_idle_seconds(limiters: dict[str, TokenBucketLimiter] | None = None) -> float:
+    """Seconds since any real (non-background) caller last used these buckets
+    -- all operations, so a catalog search or getCatalogItem counts as busy too."""
+    last = max(l.last_foreground for l in (limiters or LIMITERS).values())
+    return time.monotonic() - last

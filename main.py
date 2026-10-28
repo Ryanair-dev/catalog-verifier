@@ -193,6 +193,14 @@ async def _lifespan(app: FastAPI):
         _delayed_start(540, po_automation.start_scheduler)
     except Exception:
         pass
+    # Price Desk eligibility warmer (2026-10-28): fills eligibility_cache for
+    # every desk ASIN, only while nobody else is using the default store's
+    # SP-API -- see services/eligibility_warmer.py. Starts at +630s.
+    try:
+        from services import eligibility_warmer
+        _delayed_start(630, eligibility_warmer.start_scheduler)
+    except Exception:
+        pass
     yield
     try:
         from services import health_check
@@ -217,6 +225,11 @@ async def _lifespan(app: FastAPI):
     try:
         from services import po_automation
         po_automation.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import eligibility_warmer
+        eligibility_warmer.stop_scheduler()
     except Exception:
         pass
 

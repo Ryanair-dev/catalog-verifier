@@ -490,7 +490,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     {asin: generic_status}, {asin: storage_fee_peak}). Eligibility (getListingsRestrictions)
     is checked FIRST for every ASIN (not cached or live-checked); getCatalogItem (dims →
     storage fee off-peak AND Q4 peak) only runs when the ASIN is confirmed NOT dead AND its
-    storage isn't already cached (90-day TTL) — a DOG ASIN (determined via classify()'s own
+    storage isn't already cached (150-day TTL) — a DOG ASIN (determined via classify()'s own
     `dog` field, same signal the restrictions check already produces) never needs
     getCatalogItem at all, since there are no dimensions to compute for a delisted product.
     This ordering (2026-10-19, eligibility before catalog — was the reverse) both removes a
@@ -507,7 +507,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
     means a Vendor-Offers export and a Toolbox storage check for the same ASIN now reuse
     each other's work instead of each paying for their own getCatalogItem call.
 
-    Eligibility (getListingsRestrictions) is ALSO cached now (7-day TTL,
+    Eligibility (getListingsRestrictions) is ALSO cached now (14-day TTL since 2026-10-28, was 7;
     services.restrictions.eligibility_cache_get/put), per user request
     (2026-10-19: "cache eligibility for 1 week") — this is scoped to THIS
     pipeline only; the Toolbox's own standalone eligibility checker stays
@@ -548,7 +548,7 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
             storage_peak[a] = r["fee_peak"]
     to_cache: list[dict] = []
 
-    # Eligibility cache (7-day TTL) — OPT-IN here per user request (2026-10-19);
+    # Eligibility cache (14-day TTL) — OPT-IN here per user request (2026-10-19);
     # see services/restrictions.py's own eligibility_cache_get/put docstring for
     # why this is scoped to this export pipeline only, not the Toolbox's
     # standalone "always live" ASIN-lookup eligibility checker.
@@ -673,6 +673,14 @@ def enrich_asins(asins, on_progress=None, should_cancel=None,
 MIN_MONTHLY_UNITS_SOLD = 50
 MAX_AMAZON_30D_BB_SHARE = 0.90     # exclude ASINs where Amazon itself holds >=90% of the Buy Box
 EXCLUDED_APPROVAL_STATUSES = {"RESTRICTED", "DOG"}
+
+
+def _passes_keepa_filters(k: dict) -> bool:
+    """The part of apply_filters that Keepa alone decides (units sold + Amazon's
+    Buy Box share). Blank Keepa values count as 0, same as the row builder."""
+    monthly = _f(k.get("monthly_sold_quantity")) or 0
+    amz30 = (_f(k.get("amazon_bb_30d_percentage")) or 0) / 100
+    return monthly >= MIN_MONTHLY_UNITS_SOLD and amz30 < MAX_AMAZON_30D_BB_SHARE
 
 
 def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None = None,
@@ -801,7 +809,20 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     def _run_elig():
         try:
             if live:
-                elig_box[0] = enrich_asins(chosen_asins, _ep, should_cancel, check_generic=apply_filters)
+                targets = chosen_asins
+                if apply_filters:
+                    # Keepa first (2026-10-28, per user): rows failing the Keepa-only
+                    # filters are dropped regardless of eligibility/storage/generic,
+                    # so SP-API is only spent on survivors -- in a Cencora sample
+                    # ~77% of ASINs failed units/BB-share, and those SP-API calls
+                    # (eligibility + getCatalogItem + generic) were pure waste.
+                    t_keepa.join()
+                    if thread_errors:
+                        return
+                    kp = keepa_box[0]
+                    targets = [a for a in chosen_asins
+                               if _passes_keepa_filters(kp.get(a.strip().upper(), {}))]
+                elig_box[0] = enrich_asins(targets, _ep, should_cancel, check_generic=apply_filters)
             else:
                 _ep(0, 0)
         except Exception as exc:  # noqa: BLE001
@@ -864,9 +885,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             approved = live_elig.get(asin) or elig_cache.get(asin)
             monthly = z(k.get("monthly_sold_quantity"))
             if apply_filters:
-                amz30 = z(k.get("amazon_bb_30d_percentage")) / 100
-                if (monthly < MIN_MONTHLY_UNITS_SOLD
-                        or amz30 >= MAX_AMAZON_30D_BB_SHARE
+                if (not _passes_keepa_filters(k)
                         or approved in EXCLUDED_APPROVAL_STATUSES
                         or live_generic.get(asin) == "GENERIC"):
                     continue
