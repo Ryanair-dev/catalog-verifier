@@ -17,6 +17,9 @@ Amazon Selling Partner API client used across the whole app for catalog search (
 
 ## Changelog
 
+**2026-10-28 — `reports.py` now sums repeat child-ASIN rows in the Sales & Traffic report:**
+- A child ASIN appears once per parent listing; `fetch_sales_traffic_units` overwrote instead of summing, dropping 7,652 units across 92 ASINs. Fixed; cache keys renamed to `sales_traffic_30d_v2_json`/`_at` so the old under-counted map is abandoned (regenerated once on next use). Full story in `docs/features/vendor_offers.md`'s 2026-10-28b entry. Affects every `get_units_30d()` caller (Vendor Offers export, PO Analytics, Seller Analytics).
+
 **2026-10-20b — `CatalogAPI`/`RestrictionsAPI`'s retry/backoff loops are now cancellation-aware (`should_cancel` param, new shared `services/cancellation.py`):**
 - Fixed a real bug: a worker stuck in `CatalogAPI._get`'s 429/5xx/network retry backoff (up to 5 attempts × 30s) had no way to notice a caller's cancel request, so a long-running batch job (Vendor Offers export) couldn't actually be cancelled while throttled. Full story, user report, and verification are in `docs/features/vendor_offers.md`'s 2026-10-20 entry (this was a Vendor Offers bug, but the fix lives in this shared client, plus `services/restrictions.py` and `services/keepa.py` got the same treatment).
 - `get_by_asin`/`_get` (CatalogAPI) and `get_restrictions`/`_get` (RestrictionsAPI) now take an optional `should_cancel: Callable[[], bool] | None` that's checked before every retry attempt and polled (in ≤0.5s increments, via the new `services.cancellation.cancellable_sleep`) during any backoff sleep, raising `services.cancellation.JobCancelled` immediately instead of waiting out the full backoff. `services/spapi/catalog.py` re-exports it as `SPAPICancelled` for back-compat (that's where it was first built before being generalised).

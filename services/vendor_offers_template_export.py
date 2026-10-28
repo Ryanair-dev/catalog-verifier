@@ -391,29 +391,28 @@ def _sku_data_by_asin(asins: list[str], asin_to_upc: dict[str, str] | None = Non
 
 
 def _fba_total_by_asin(asins: list[str]) -> dict:
-    """{asin: FBA total qty} from amazon.amazon_fulfilled_by_amazon_manage_inventory
-    (latest snapshot per ASIN, summed across stores)."""
+    """{asin: FBA total qty} from amazon.amazon_fulfilled_by_amazon_manage_inventory,
+    summed across that ASIN's FBA SKUs on the table's latest daily snapshot.
+
+    Uses the table-wide MAX(dte), not each ASIN's own latest date: when Amazon
+    moves a SKU to another ASIN the old ASIN drops out of the daily feed, and
+    its last-ever snapshot kept showing stock that no longer exists (2026-10-28:
+    45 ASINs / 3,599 phantom units, e.g. B00AU0OSTE still showing 363). An ASIN
+    absent from the latest snapshot gets no entry (blank), same as never-stocked."""
     out: dict = {}
     for chunk in _chunks([a.strip().upper() for a in asins if a]):
         try:
             rows, cols = _azure_rows(
-                "SELECT LTRIM(RTRIM(asin)) asin, dte, fulfilled_by_amazon_total_quantity q "
+                "SELECT LTRIM(RTRIM(asin)) asin, SUM(fulfilled_by_amazon_total_quantity) q "
                 "FROM amazon.amazon_fulfilled_by_amazon_manage_inventory "
-                f"WHERE LTRIM(RTRIM(asin)) IN ({_inlist(chunk)})")
+                "WHERE dte = (SELECT MAX(dte) FROM amazon.amazon_fulfilled_by_amazon_manage_inventory) "
+                f"AND LTRIM(RTRIM(asin)) IN ({_inlist(chunk)}) GROUP BY LTRIM(RTRIM(asin))")
         except Exception as exc:  # noqa: BLE001
             log.warning("[template_export] fba inventory query failed: %s", str(exc)[:120])
             continue
-        latest: dict = {}   # asin -> max dte
         for r in rows:
             d = dict(zip(cols, r))
-            a, dte = d["asin"], d["dte"]
-            if dte is not None and (a not in latest or dte > latest[a]):
-                latest[a] = dte
-        for r in rows:
-            d = dict(zip(cols, r))
-            a = d["asin"]
-            if d["dte"] == latest.get(a):
-                out[a] = (out.get(a) or 0) + (_f(d["q"]) or 0)
+            out[d["asin"]] = _f(d["q"]) or 0
     return out
 
 
@@ -434,6 +433,18 @@ def _sellersnap_30d_by_asin(asins: list[str]) -> dict:
             d = dict(zip(cols, r))
             out[d["asin"]] = _f(d["s"])
     return out
+
+
+def _units_30d(asin, report30: dict, snap30: dict):
+    """30d sales for one ASIN. The SP-API Sales & Traffic report covers our whole
+    catalog, so once it has loaded an ASIN missing from it sold 0 -- falling
+    back to SellerSnap there mixed in unrelated numbers (summed across every
+    SellerSnap store; e.g. B00AU0OSTE showed 317 from SellerSnap). SellerSnap is
+    only used when the report didn't load at all (live=False or fetch failed)."""
+    a = (asin or "").strip().upper()
+    if report30:
+        return report30.get(a, 0) if a else None
+    return snap30.get(a)
 
 
 def _last_po_by_sku(skus: list[str]) -> dict:
@@ -897,9 +908,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             "Available qty": win.get("avail"),
             "OR33": sku.get("or33"), "On order": sku.get("on_order"),
             "FBA total": fba_total.get((asin or "").strip().upper()),
-            "30d sales": (report30.get((asin or "").strip().upper())
-                          if report30.get((asin or "").strip().upper()) is not None
-                          else snap30.get((asin or "").strip().upper())),
+            "30d sales": _units_30d(asin, report30, snap30),
             "Estimated Monthly Units Sold": d["monthly"], "amz pack": pack,
             "Last cost": (last_po.get(sku.get("main_sku")) or (None, None))[0],
             "Vendor": (last_po.get(sku.get("main_sku")) or (None, None))[1],
