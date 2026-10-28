@@ -185,9 +185,29 @@ _CASE_QTY_RE = re.compile(rf"(?<![\d.])(\d+)\s*[Xx]\s*{_SIZE_NUM}(?:\s*[Xx]\s*{_
 # a CM/IN unit ("8X12.5X1 CM", "4X1X10IN 3000") or a bare count after a
 # space ("BAG T-SACK 9X5X18 1000").
 _DIMENSION_TAIL_RE = re.compile(r"\s*(?:CM|IN)\b|\s+\d", re.I)
+# Diapers / training pants / adult incontinence. Matched on product wording,
+# not brand alone -- "HUGGIES ... WPE 560 DS" is wipes, not a diaper.
+_INCONTINENCE_RE = re.compile(
+    r"\b(?:DIAPERS?|DPR|BRIEFS?|BRF|U/G|UNDERWEAR|UNDWR|PULL.?UPS?|GOODNITES|DEPENDS?"
+    r"|POISE|PREVAIL|INCONT\w*)\b|\b(?:HUGGIES|PAMPERS|LUVS)\b.*\bSZ\s*\d", re.I)
+# A count: "50CT", "2/CS", "100/PK", or a bare integer at the very end
+# (optionally followed by the "DS" drop-ship tag): "PMP 24 DS", "... 1000".
+# At most 5 digits -- longer runs are part numbers ("SHELLS 1.3G O281000 DS").
+_COUNT_RE = re.compile(
+    r"(?<![\d./])(\d{1,5})(?!\d)\s*(?:CT|PK|PC|PCS|EA|BX)\b"
+    r"|(?<![\d./])(\d{1,5})(?!\d)\s*/\s*(?:PK|BX|CS)\b"
+    r"|(?<![\d./-])(\d{1,5})(?!\d)\s*(?:DS)?\s*$", re.I)
 
 
-def extract_case_qty_from_desc(desc: str | None) -> int | None:
+def _last_count(desc: str) -> int | None:
+    matches = list(_COUNT_RE.finditer(desc.strip()))
+    if not matches:
+        return None
+    n = int(next(g for g in matches[-1].groups() if g))
+    return n if n > 0 else None
+
+
+def extract_case_qty_from_desc(desc: str | None) -> int:
     """Extract a case/pack quantity multiplier from a product description
     shaped like "...12X4.25OZ" or "...6X32OZ" -- the number immediately
     before an "X" that's itself followed by another number (the per-unit
@@ -206,18 +226,28 @@ def extract_case_qty_from_desc(desc: str | None) -> int | None:
     Multi-level chains ("4X6X8OZ", "6X20X2CT") use their FIRST number --
     the outer count of the unit the UPC identifies (4 six-packs). The old
     regex re-matched inside such chains and returned junk (6X20X2CT -> 0,
-    7X4.25X13.5 -> 25). Chains that are dimensions (bags, CM sizes) return
-    None so the row is skipped rather than divided by a made-up number."""
+    7X4.25X13.5 -> 25).
+
+    Descriptions without a usable NxSIZE chain, per user rules 2026-10-28:
+      - chain is really dimensions (bags, dressings, "6X9 1000CT") -> the count
+        in the description (1000), or 1 if there is none;
+      - diapers / incontinence -> 1;
+      - a count ("50CT", "2/CS", trailing "PMP 24 DS") -> that count (last one);
+      - nothing at all -> 1.
+    So this always returns a positive divisor; every CS/PK row now loads."""
     if not desc:
-        return None
+        return 1
     matches = list(_CASE_QTY_RE.finditer(desc))
-    if not matches:
-        return None
-    m = matches[-1]
-    if _DIMENSION_TAIL_RE.match(desc, m.end()):
-        return None
-    n = int(m.group(1))
-    return n if n > 0 else None
+    if matches:
+        m = matches[-1]
+        if _DIMENSION_TAIL_RE.match(desc, m.end()):
+            return _last_count(desc) or 1
+        n = int(m.group(1))
+        if n > 0:
+            return n
+    if _INCONTINENCE_RE.search(desc):
+        return 1
+    return _last_count(desc) or 1
 
 
 def file_date(path: Path) -> str:
@@ -318,9 +348,10 @@ def load_cencora(path: Path):
     by the case quantity embedded in the Product Description (the number
     right before an "NxSIZE" pattern, e.g. "12X4.25OZ" -> 12; see
     extract_case_qty_from_desc) to get a true per-each cost, with that same
-    number recorded as qty_per_case. Any other UoM, or a CS/PK row whose
-    description doesn't carry a parseable quantity, is skipped (no
-    reliable per-each divisor) -- per user confirmation 2026-10-27."""
+    number recorded as qty_per_case. Since 2026-10-28 every CS/PK row gets a
+    divisor (count in the description, 1 for incontinence or no count -- see
+    extract_case_qty_from_desc). Any other UoM is skipped (no reliable
+    per-each divisor) -- per user confirmation 2026-10-27."""
     df = pick_columns(pd.read_excel(path, sheet_name="Results", skiprows=1), {
         "ABC #": "item", "Product Description": "desc", "ABC Selling UoM": "uom",
         "Current Acq Cost": "cost", "UPC Barcode": "upc", "FDB Case Pack": "case_pack",

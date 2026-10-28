@@ -262,7 +262,8 @@ def _parse_cencora_mailbox(catalog_bytes: bytes, inventory_bytes: bytes | None,
     vendor offer) and joining the inventory file for real quantities instead
     of always leaving avail_qty blank. Shares load_cencora's CS/PK
     per-each-price-from-description conversion (see
-    vo.extract_case_qty_from_desc) -- per user confirmation 2026-10-27."""
+    vo.extract_case_qty_from_desc, which since 2026-10-28 always returns a
+    divisor) -- per user confirmation 2026-10-27/28."""
     df = pd.read_excel(io.BytesIO(catalog_bytes), skiprows=1, dtype=str)
     df = vo.pick_columns(df, {
         "ABC #": "item", "Product Description": "desc", "ABC Selling UoM": "uom",
