@@ -300,21 +300,28 @@ def _sku_data_by_asin(asins: list[str], asin_to_upc: dict[str, str] | None = Non
     upcs = sorted({u for u in asin_to_upc.values() if u})
     asins_without_upc = [a for a in clean_asins if not asin_to_upc.get(a)]
 
-    main_by_upc: dict = {}
-    for chunk in _chunks(upcs):
+    # Matched on _bkey (leading zeros ignored), not the exact string: SellerCloud
+    # often drops the UPC's leading zero or pads it to EAN/GTIN length -- e.g.
+    # DRE007152 is stored as '30985007152' while the Victory offer has
+    # '030985007152', so an exact IN missed its main SKU (2026-10-28, user
+    # report; ~8.9k SC rows are 11-digit, ~7.6k 13, ~3.8k 14). Each UPC is
+    # queried in every zero-padded form from its bare digits up to 14 digits.
+    main_by_upc: dict = {}                       # keyed by _bkey(upc)
+    for chunk in _chunks({_bkey(u) for u in upcs if _bkey(u)}, n=300):
+        variants = {k.zfill(n) for k in chunk for n in range(len(k), 15)}
         try:
             rows, cols = _azure_rows(
                 "SELECT UPC, ProductID, ShadowOf, FulfilledBy, Status, "
                 "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
                 "FROM analytics.sku_data_extended_view "
-                f"WHERE CompanyName LIKE 'Ford%' AND UPC IN ({_inlist(chunk)})")
+                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(UPC)) IN ({_inlist(variants)})")
         except Exception as exc:  # noqa: BLE001
             log.warning("[template_export] sku view (main by UPC) query failed: %s", str(exc)[:120])
             continue
         by: dict = {}
         for r in rows:
             d = dict(zip(cols, r))
-            by.setdefault(d["UPC"], []).append(d)
+            by.setdefault(_bkey(d["UPC"]), []).append(d)
         for upc, rs in by.items():
             merch = [r for r in rs if r["FulfilledBy"] == "Merchant"]
             mkey = lambda r: (r["Status"] == "Active", not (r["ShadowOf"] or ""),
@@ -380,7 +387,7 @@ def _sku_data_by_asin(asins: list[str], asin_to_upc: dict[str, str] | None = Non
     for asin in clean_asins:
         upc = asin_to_upc.get(asin)
         fba = fba_by_asin.get(asin)
-        entry = dict(main_by_upc.get(upc, {})) if upc else dict(main_by_asin_fallback.get(asin, {}))
+        entry = dict(main_by_upc.get(_bkey(upc), {})) if upc else dict(main_by_asin_fallback.get(asin, {}))
         entry["fba_sku"] = (fba or {}).get("ProductID")
         # Only needed by Seller Analytics (an ASIN we don't carry has no
         # vendor-offer UPC to key off of, so this is the fallback source

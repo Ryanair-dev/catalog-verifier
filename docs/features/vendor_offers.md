@@ -18,6 +18,13 @@ A buy-side cross-vendor price comparison tool ("Price Desk") — ingests multipl
 
 ## Changelog
 
+**2026-10-28e** — Export main SKU missed when SellerCloud stores the UPC without its leading zero.
+- User: in today's Victory export, "some main skus weren't found even though those skus had the exact same upc as the one given in column a", e.g. DRE007152 for UPC 30985007152 (column A shows 11 digits because the export writes UPCs as numbers, dropping the leading zero).
+- Live check: SellerCloud (`analytics.sku_data_extended_view`) stores DRE007152 / -FBM / -FBA with UPC `'30985007152'` (11 digits); the Victory offer is `'030985007152'`. `_sku_data_by_asin`'s main-SKU query was an exact `UPC IN (...)`, so it missed. Not rare: SellerCloud UPC lengths are 12 (~39.8k rows), 11 (~8.9k), 13 (~7.6k), 14 (~3.8k).
+- Fix: match on `_bkey` (digits, leading zeros stripped). Each offer UPC is queried in every zero-padded form from its bare digits up to 14 digits (`LTRIM(RTRIM(UPC)) IN (...)`, 300 UPCs per chunk), and results are grouped back by `_bkey`. FBA SKU (by ASIN) unchanged.
+- Verified on today's Victory offers (3,486 UPCs, 1,397 with ASINs, 4,893 ASINs), old vs new code: UPCs with a main SKU **361 -> 476 (+115), 0 lost**; B000GF1E54 now gets `DRE007152`. Spot-checked 6 random gained UPCs -- all genuine (SKU suffix = last 6 UPC digits, e.g. `011111638082` -> `ULV638082` stored as `11111638082`). Lookup time 153s -> 200s for this set.
+- Mirrored to live; takes effect on restart.
+
 **2026-10-28d** — Cencora CS/PK: every row now loads, per the user's rules for the 797 rows the parser couldn't read.
 - User, after reviewing `Cencora_CS-PK_unparsed_2026-10-28.xlsx`: "the count you can take that value so 50 or 24 for the second title. The incontinence leave as qty/case 1. For the dimensions please take the count as well. No count at all write 1."
 - `extract_case_qty_from_desc` now always returns a divisor: NxSIZE chain -> first number (unchanged); dimension chain -> last count in the description (`BAG ZIP CLEAR 2ML 6X9 1000CT` -> 1000, `BAG T-SACK 9X5X18 1000` -> 1000), else 1; diapers/incontinence (`_INCONTINENCE_RE`: DPR/DIAPER/BRF/U/G/UNDERWEAR/DEPEND/POISE/PREVAIL..., or HUGGIES/PAMPERS/LUVS + `SZ n`) -> 1; a count (`50CT`, `2/CS`, `100/PK`, trailing bare `PMP 24 DS`) -> last one; nothing -> 1. Brand alone isn't incontinence -- two "HUGGIES ... WPE 560" rows are wipes and take the count (560). Counts are capped at 5 digits: `SUPPOSITORY SHELLS 1.3G O281000 DS` would otherwise read 281,000 (part number) -> 1.
