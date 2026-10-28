@@ -24,6 +24,7 @@ import requests
 from services.spapi.auth import LWATokenManager
 from services.spapi.client import get_catalog_api
 from services.spapi.config import load_sp_api_credentials
+from services.spapi.http import thread_session
 from services.spapi.rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ def _validation_preview(asin: str, product_type: str | None) -> dict:
         if limiter:
             limiter.acquire()
         try:
-            resp = requests.put(
+            resp = thread_session().put(
                 f"{ENDPOINT}/listings/2021-08-01/items/{seller}/VPGEN-{asin}",
                 headers={"x-amz-access-token": tm.get_token(), "Content-Type": "application/json"},
                 params={"marketplaceIds": mp, "mode": "VALIDATION_PREVIEW", "issueLocale": "en_US"},

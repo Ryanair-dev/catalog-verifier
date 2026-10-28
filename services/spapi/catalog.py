@@ -22,6 +22,7 @@ from typing import Callable, Iterable
 import requests
 
 from services.cancellation import JobCancelled, cancellable_sleep
+from .http import thread_session
 from .rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ class CatalogAPI:
                 limiter.acquire()
 
             try:
-                resp = requests.get(
+                resp = thread_session().get(
                     f"{self.endpoint}{path}",
                     headers=self._headers(),
                     params=params,

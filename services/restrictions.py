@@ -22,6 +22,7 @@ from services import database
 from services.cancellation import JobCancelled, cancellable_sleep
 from .spapi.auth import LWATokenManager
 from .spapi.config import load_sp_api_credentials
+from .spapi.http import thread_session
 from .spapi.rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ class RestrictionsAPI:
                 limiter.acquire()
 
             try:
-                resp = requests.get(
+                resp = thread_session().get(
                     f"{ENDPOINT}{path}",
                     headers=self._headers(),
                     params=params,

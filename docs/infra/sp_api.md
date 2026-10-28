@@ -17,6 +17,11 @@ Amazon Selling Partner API client used across the whole app for catalog search (
 
 ## Changelog
 
+**2026-10-28c — SP-API calls reuse one HTTPS session per thread (big CPU fix):**
+- Found while watching the live server after deploying the eligibility warmer: it checked ~0.57 ASINs/s instead of 3/s and the process burned ~0.75 CPU-s per check. cProfile of 10 `getListingsRestrictions` calls: 12.7s wall / 6.8s CPU, 6.9s of it in `ssl.SSLContext.load_verify_locations` -- plain `requests.get()` opened a new connection (and re-loaded the CA bundle) on every call.
+- New `services/spapi/http.py thread_session()` (a `requests.Session` per thread -- per-thread because export pipelines call from worker pools); `RestrictionsAPI._get`, `CatalogAPI._get` and `generic_check._validation_preview` now use it. Same 10 calls: **2.9s wall / 0.05s CPU**. Affects every caller: exports, Toolbox eligibility/storage/generic, Offer Analysis catalog search, health check.
+- Verified: catalog lookups + generic check smoke-tested live; Vendor Offers export A/B still produces the identical 18 rows; no tests mock `requests.get` on these modules.
+
 **2026-10-28b — `rate_limiter` can tell when the default store is idle:**
 - `TokenBucketLimiter.last_foreground` (monotonic time of the last acquire NOT inside `background_use()`), plus module helpers `background_use()` (thread-local context manager) and `foreground_idle_seconds(limiters=LIMITERS)` (max across all operations, so catalog search/getCatalogItem count as busy too). Used by the new `services/eligibility_warmer.py` to only run while nobody else is using the default store -- see `docs/features/vendor_offers.md`'s 2026-10-28c entry. Purely additive; existing callers unaffected.
 - `eligibility_cache` TTL 7 -> 14 days (`services/restrictions.py`, per user).
