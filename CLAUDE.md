@@ -1,5 +1,9 @@
 # CLAUDE.md — Project Intelligence for catalog-verifier
 
+Changes 2026-10-7 (Kate):
+- Ported the scoring logic from another repo (https://github.com/katestolbun/amazon_item_matching_agent), made some ui changes. 
+All of this is in the Offer Analysis Tab
+
 **Changes this session (2026-09-29i) — AI Check prompt: the LLM was itself wrongly calling a genuine count difference "just a bundle variation" (a different bug from every earlier one today — this is the AI's own reasoning, not the mechanical matcher):**
 - User reported two more Kotex mismatches: `"Kotex Ultra Thin Regular Pads with Wings, 36 Count"` matched to both `"Kotex Ultra Thin Pads, Wings, Regular, 100 Count, 2 Packs of 50"` and (separately) `"Kotex Ultra Thin Pads, Wings, Regular, 50 Count"`.
 - **Diagnosed from the live stored data — this was NOT a mechanical-scorer bug.** Both candidates' `data_json.scores.confidence_score` were already correctly `29.0` / `count_mismatch: true` (the mechanical matcher, with today's earlier fixes, already gets these right). The outer `verdict` was `'verified'` because `review_status='ai-accepted'` — i.e. the separate AI Check pass (a real LLM call, `services/analytics/ai_check.py`) had explicitly OVERRIDDEN the correct mechanical rejection. Pulled the stored `ai_reasoning` directly: *"per-unit count 50 vs 36 differs but bundle difference only"* and *"count difference is bundle variation only"* — the AI's own words show it explicitly weighed the count difference and still misclassified it as mere repackaging.

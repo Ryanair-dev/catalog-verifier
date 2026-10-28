@@ -147,7 +147,7 @@ class CatalogAPI:
         self,
         identifiers: Iterable[str],
         id_type: str = "UPC",
-        included_data: str = "summaries,identifiers,attributes,salesRanks",
+        included_data: str = "summaries,identifiers,attributes,salesRanks,relationships",
     ) -> dict:
         """
         Search by UPC, EAN, JAN, ISBN, or GTIN. Up to 20 identifiers per call.
@@ -170,7 +170,7 @@ class CatalogAPI:
         keywords: str,
         page_token: str | None = None,
         page_size: int = 20,
-        included_data: str = "summaries,identifiers,attributes,salesRanks",
+        included_data: str = "summaries,identifiers,attributes,salesRanks,relationships",
         max_retries: int = 5,
         brand_names: list[str] | None = None,
         classification_ids: list[str] | None = None,
