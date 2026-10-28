@@ -309,6 +309,14 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE analytics_runs ADD COLUMN use_llm_verifier INTEGER DEFAULT 0"
             )
+        # additive migrations — AI title reader as a run option, finished search tiers (resume),
+        # AI provider notices for the run page (out of credits, rate limit, bad key, outage)
+        if not _column_exists(conn, "analytics_runs", "use_ai_reader"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN use_ai_reader INTEGER DEFAULT 0")
+        if not _column_exists(conn, "analytics_runs", "tiers_done"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN tiers_done TEXT DEFAULT '[]'")
+        if not _column_exists(conn, "analytics_runs", "ai_notices"):
+            conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_notices TEXT DEFAULT '[]'")
 
         # additive migration — brand column/text saved at wizard time for rescore pre-population
         if not _column_exists(conn, "analytics_runs", "brand_col"):

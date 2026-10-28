@@ -1,6 +1,5 @@
 """
-Shared attribute reader for both vendor row items and Amazon candidates
-"""
+Shared attribute reader.  Reads color, flavor, scent etc."""
 from __future__ import annotations
 
 import json
@@ -39,12 +38,13 @@ SOFT_SOURCES = frozenset({"ai_title"})
 
 
 def ai_title_enabled() -> bool:
-    """AI title reading as an attribute source.  ON by default when an Anthropic key is set;
-    MATCH_AI_TITLE_ATTRS=0 in .env switches it off."""
+    """Use what the AI title reader found, when a run has it.  The reader only runs for runs where the user
+    ticked "AI title reader" in the wizard, so its results only exist for those runs.  MATCH_AI_TITLE_ATTRS=0
+    in .env is a developer kill switch that ignores them everywhere."""
     raw = os.getenv("MATCH_AI_TITLE_ATTRS")
     if raw is not None and raw.strip() != "":
         return raw.strip().lower() in ("1", "true", "yes", "on")
-    return bool(os.getenv("ANTHROPIC_API_KEY"))
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -841,4 +841,3 @@ def extract_amazon(item: dict[str, Any]) -> dict[str, Any]:
     return {"identity": identity, "fields": bag.resolve(), "notes": notes}
 
 
-FILE_VERSION = "2026-10-22 v13 (AI title reading: attributes with evidence, on by default with a key)"

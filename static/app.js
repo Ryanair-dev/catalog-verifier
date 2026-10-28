@@ -3738,6 +3738,9 @@
                   <span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#eef2ff;color:#4338ca;">${escapeHtml(r.scoring_method || "weighted")}</span>
                   ${r.use_query_agent ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fef3c7;color:#92400e;">query agent</span>' : ''}
                   ${r.use_llm_verifier ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#dcfce7;color:#166534;">LLM verifier</span>' : ''}
+                  ${r.use_ai_reader ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#ede9fe;color:#5b21b6;">AI title reader</span>' : ''}
+                  ${r.ai_clean_titles ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#e0f2fe;color:#075985;">AI reads titles</span>' : ''}
+                  ${(() => { try { return JSON.parse(r.ai_notices || "[]").length; } catch { return 0; } })() ? '<span title="An AI step could not work in this run; open it for details" style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fee2e2;color:#991b1b;">⚠ AI problem</span>' : ''}
                 </div>
                 <div class="text-xs mt-0.5" style="color: #6b7480;">
                   ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
@@ -4098,6 +4101,8 @@
   function _progressSubLabel(phase, done, total) {
     const p = (phase || "").toLowerCase();
     const d = done.toLocaleString(), t = total.toLocaleString();
+    if (p.includes("checking the ai provider"))     return "";
+    if (p.includes("reading vendor titles"))        return `${d} of ${t} titles read`;
     if (p.includes("upc"))                          return `${d} of ${t} UPC batches`;
     if (p.includes("item id"))                      return `${d} of ${t} Item ID lookups`;
     if (p.includes("title search") || p.includes("tier 3")) return `${d} of ${t} title searches`;
@@ -4274,6 +4279,38 @@
       dedupBanner.style.display = "flex";
     } else if (dedupBanner) {
       dedupBanner.style.display = "none";
+    }
+
+    // AI provider notices: an AI step hit "out of credits", a rate limit, a bad key or an outage
+    let aiBanner = $("#analytics-run-ai-banner");
+    const aiNotices = Array.isArray(run.ai_notices) ? run.ai_notices : [];
+    if (aiNotices.length) {
+      if (!aiBanner) {
+        aiBanner = document.createElement("div");
+        aiBanner.id = "analytics-run-ai-banner";
+        aiBanner.style.cssText = "margin:8px 0;padding:8px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:0.82rem;color:#991b1b;";
+        // right under the summary tiles (always visible), else under the progress card
+        const anchor = $("#analytics-run-summary-row") || $("#analytics-run-progress-card");
+        anchor?.insertAdjacentElement("afterend", aiBanner);
+      }
+      const help = {
+        "out of credits": "Add credits to that provider's account, then start the run again.",
+        "usage limit reached": "The API usage limit set for that account is reached; raise it in the provider's console or wait until it resets.",
+        "rate limit reached": "Too many requests at once; try again later.",
+        "API key invalid or missing": "Check the API key in .env and restart the server.",
+        "provider unavailable": "The provider was down or not answering; try again later.",
+      };
+      help["not reachable"] = "Claude did not answer at all (network, or a model/account problem). Hover for the exact error.";
+      help["stopped on a program error"] = "Not a provider problem: the step itself failed. Hover for the error and send it to the developer.";
+      aiBanner.innerHTML = aiNotices.map(n =>
+        `<div style="margin:2px 0;" title="${escapeHtml(n.detail || "")}">⚠ <b>${escapeHtml(n.step || "AI step")}</b>: ${escapeHtml(n.provider || "AI provider")} — ` +
+        `<b>${escapeHtml(n.kind || "failed")}</b>${n.count > 1 ? ` (${Number(n.count)}×)` : ""}. ` +
+        `${n.skipped ? "Skipped for this run." : "The run continued without it."} ` +
+        `<span style="color:#7f1d1d;">${escapeHtml(help[n.kind] || "")}</span></div>`
+      ).join("");
+      aiBanner.style.display = "block";
+    } else if (aiBanner) {
+      aiBanner.style.display = "none";
     }
 
     // Store ASIN conflicts map for use in renderAnalyticsRunCandidates
@@ -4572,7 +4609,7 @@
     const _AMAZON_DOMAIN = { US: "amazon.com", CA: "amazon.ca", MX: "amazon.com.mx", BR: "amazon.com.br" };
     const _amazonDomain = _AMAZON_DOMAIN[String((j && j.run && j.run.marketplace) || "US").toUpperCase()] || "amazon.com";
     const _amazonUrl = (asin) => `https://www.${_amazonDomain}/dp/${encodeURIComponent(String(asin || ""))}`;
- 
+
     const _asinConflicts = state.analyticsRun._asinConflicts || {};
     body.innerHTML = pageRows.map(c => {
       const src = srcByIdx[c.row_idx] || {};
@@ -4663,6 +4700,33 @@
     _renderPagination(page, totalPages, totalRows);
   }
  
+  // ---- verdict-transition POST + local state update ------------------
+  async function applyAnalyticsVerdict(row_idx, asin, verdict, review_status) {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const j = await api(`/api/analytics/runs/${id}/candidates/verdict`, {
+      method: "POST",
+      body: { row_idx, asin, verdict, review_status: review_status || "" },
+    });
+    // Mirror into local state so we don't need to re-fetch
+    const data = state.analyticsRun.data;
+    if (data && Array.isArray(data.candidates)) {
+      const c = data.candidates.find(x => x.row_idx === row_idx && x.asin === asin);
+      if (c) {
+        c.verdict = verdict;
+        if (review_status) c.review_status = review_status;
+        if (!c.data) c.data = {};
+        c.data.verdict = verdict;
+      }
+      // Also mirror run counts returned by the server.
+      if (j && j.counts && data.run) {
+        data.run.total_candidates_found = j.counts.total_candidates_found;
+        data.run.verified_count        = j.counts.verified_count;
+        data.run.review_count          = j.counts.review_count;
+        data.run.not_approved_count    = j.counts.not_approved_count;
+      }
+    }
+  }
 
   async function handleAnalyticsRunAction(e) {
     const btn = e.currentTarget;
@@ -5262,6 +5326,11 @@
     const llmVerifier = $("#awiz-llm-verifier");
     if (queryAgent) queryAgent.checked = false;
     if (llmVerifier) llmVerifier.checked = false;
+    const aiReader = $("#awiz-ai-reader");
+    const aiClean = $("#awiz-title-ai-clean");
+    if (aiReader) aiReader.checked = false;
+    if (aiClean) aiClean.checked = false;
+    _updateAiCostHint();
     // Clear passthrough pills so stale selections don't carry over to the next run.
     const ptList = $("#awiz-passthrough-list");
     if (ptList) Array.from(ptList.querySelectorAll(".pt-pill")).forEach(p => p.remove());
@@ -5892,6 +5961,7 @@
     fd.append("scoring_method", $("#awiz-scoring-method")?.value || "weighted");
     fd.append("use_query_agent", $("#awiz-query-agent")?.checked ? "true" : "false");
     fd.append("use_llm_verifier", $("#awiz-llm-verifier")?.checked ? "true" : "false");
+    fd.append("use_ai_reader", $("#awiz-ai-reader")?.checked ? "true" : "false");
     if (state.awiz.selectedSheet) fd.append("sheet_name", state.awiz.selectedSheet);
     const ptCols = Array.from(state.awiz.passthroughCols || []);
     if (ptCols.length) fd.append("passthrough_cols", JSON.stringify(ptCols));

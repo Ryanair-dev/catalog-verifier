@@ -9,18 +9,11 @@ Pipeline (per run):
 Each candidate ASIN is scored with the selected matcher against the source
 row. If the same ASIN comes back from multiple tiers, we
 dedupe and record which tiers contributed via the `sources` column.
-
-Progress is reported by updating the run row in `analytics_runs` so the
-UI's `loadAnalyticsRuns()` polling can show live phase / done / total.
-
-This mirrors `AmazonAsinResearch1/app/services/amazon_client.py`'s
-`batch_keyword_search` / `batch_identifier_search` flow, but skipped the
-Celery / SQLAlchemy layer -- we run in a plain `threading.Thread` and
-persist directly via `sqlite3`, matching the rest of catalog-verifier.
 """
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import logging
 import os
 import re
@@ -155,8 +148,9 @@ def clean_titles_parallel(
             idx, orig = futures[fut]
             try:
                 result[idx] = fut.result()
-            except Exception:
+            except Exception as exc:
                 result[idx] = orig
+                log.warning("AI title cleaning failed for run %s row %s: %s", run_id, idx, exc)
             done += 1
             if done % 50 == 0 or done == total:
                 _update_progress(
@@ -713,6 +707,12 @@ def _audit_run_approvals(
             audit_result = auditor.audit(
                 item["offer"], item["candidate"], item["result"],
             )
+            if audit_result.error:
+                log.warning("LLM verifier failed for run %s ASIN %s: %s", run_id, item["asin"], audit_result.error)
+                hit = _ai_error_kind(audit_result.error)
+                if hit and hit[0] in _AI_STOP_KINDS:
+                    log.warning("LLM verifier stopped for run %s: %s %s", run_id, hit[1], hit[0])
+                    break                                  # every further call would fail the same way
             audit = audit_result.as_record()
             adjusted = apply_audit(item["result"], audit_result)
             data = item["data"]
@@ -1265,12 +1265,14 @@ def _rescore_pipeline(
         # CHANGED: the AI title reader (abbreviations + attributes) for rows where the rules are not enough.
         # Runs BEFORE the rows are loaded below, so this rescore already scores with what it found.
         try:
-            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, enrich_run
-            if _attr_ai_on():
+            from services.analytics.matching_core.agents.attr_ai import enrich_run
+            if _run_uses_ai_reader(run_id):                 # the user's choice when the run was started
                 _update_progress(run_id, phase="Reading vendor titles with AI where the rules are not enough")
-                log.info("Run %s attribute AI (rescore): %s", run_id, enrich_run(run_id))
-        except Exception:
+                with _ai_step(run_id, "AI title reader"):
+                    log.info("Run %s attribute AI (rescore): %s", run_id, enrich_run(run_id))
+        except Exception as exc:
             log.exception("Attribute AI router failed for run %s (rescore continues without it)", run_id)
+            _note_step_crash(run_id, "AI title reader", exc)
  
         with database._connect() as conn:
             conn.row_factory = sqlite3.Row
@@ -1581,6 +1583,7 @@ def start_analytics_run(
     scoring_method: str = "weighted",
     use_query_agent: bool = False,
     use_llm_verifier: bool = False,
+    use_ai_reader: bool = False,
 ) -> int:
     """
     Create an analytics_runs row, persist source rows, and kick off a
@@ -1606,6 +1609,9 @@ def start_analytics_run(
         use_llm_verifier=use_llm_verifier,
     )
     _save_catalog_rows(run_id, source_rows)
+    with database._LOCK, database._connect() as conn:                # the AI title reader is a run option
+        conn.execute("UPDATE analytics_runs SET use_ai_reader=? WHERE id=?", (int(bool(use_ai_reader)), run_id))
+        conn.commit()
 
     # Run in a daemon thread so uvicorn shuts down cleanly. This is
     # fine for the local-first catalog-verifier; a larger deployment
@@ -1614,7 +1620,7 @@ def start_analytics_run(
         target=_run_pipeline,
         args=(run_id, marketplace, search_methods, pages_per_title,
               ai_clean_titles, source_rows, False, max_rank, min_rank, mode,
-              scoring_method, use_query_agent, use_llm_verifier),
+              scoring_method, use_query_agent, use_llm_verifier, bool(use_ai_reader)),
         daemon=True,
     )
     thread.start()
@@ -1624,7 +1630,7 @@ def start_analytics_run(
 def resume_run(run_id: int) -> bool:
     """
     Resume a Paused run. Reloads the source rows from the DB and restarts
-    the pipeline, skipping rows that already have candidates.
+    the pipeline, skipping the search tiers that already finished.
     Returns False if the run isn't in a resumable state.
     """
     with database._connect() as conn:
@@ -1672,6 +1678,7 @@ def resume_run(run_id: int) -> bool:
     scoring_method = run_d.get("scoring_method") or "weighted"
     use_query_agent = bool(run_d.get("use_query_agent"))
     use_llm_verifier = bool(run_d.get("use_llm_verifier"))
+    use_ai_reader = bool(run_d.get("use_ai_reader"))
  
     clear_control(run_id)
     _update_progress(run_id, status="Searching", phase="Resuming…")
@@ -1686,7 +1693,7 @@ def resume_run(run_id: int) -> bool:
               source_rows,
               True,       # is_resume=True
               max_rank, min_rank, run_mode, scoring_method,
-              use_query_agent, use_llm_verifier),
+              use_query_agent, use_llm_verifier, use_ai_reader),
         daemon=True,
     )
     thread.start()
@@ -1702,7 +1709,7 @@ def _vet_and_store(
     min_rank: int,
     mode: str,
     phase_label: str,
-    scoring_method: str = "weighted",
+    scoring_method: str = "cascade",
 ) -> None:
     """
     Score and persist every (row × ASIN) pair for ``rows_to_vet`` using the
@@ -1773,6 +1780,202 @@ def _load_ai_unabbrev(run_id: int) -> dict[int, dict]:
         log.exception("Could not load AI-expanded titles for run %s", run_id)
     return out
 
+# --------------------------------------------------------------------------- #
+# Run bookkeeping: finished search tiers (for resume) and AI notices (for the UI)
+# --------------------------------------------------------------------------- #
+
+def _json_list(text: Any) -> list:
+    try:
+        value = json.loads(text or "[]")
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _get_tiers_done(run_id: int) -> set[str]:
+    with database._connect() as conn:
+        row = conn.execute("SELECT tiers_done FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    return set(_json_list(row[0] if row else None))
+
+
+def _set_tiers_done(run_id: int, tiers: list[str]) -> None:
+    with database._LOCK, database._connect() as conn:
+        conn.execute("UPDATE analytics_runs SET tiers_done=? WHERE id=?", (json.dumps(tiers), run_id))
+        conn.commit()
+
+
+def _mark_tier_done(run_id: int, tier: str) -> None:
+    """A search tier finished for ALL rows; a resumed run skips it (and only it)."""
+    done = _get_tiers_done(run_id)
+    if tier not in done:
+        _set_tiers_done(run_id, sorted(done | {tier}))
+
+
+def _load_saved_candidates(run_id: int) -> dict[int, list[tuple[dict, str]]]:
+    """The candidates a run already stored, in the shape the tiers build (normalized item, source), so a resumed
+    run scores later tiers with everything found before the pause, and the query agent skips rows that have them."""
+    out: dict[int, list[tuple[dict, str]]] = {}
+    with database._connect() as conn:
+        rows = conn.execute("SELECT row_idx, sources, data_json FROM analytics_candidates WHERE run_id=?",
+                            (run_id,)).fetchall()
+    for row_idx, sources, data_json in rows:
+        try:
+            item = (json.loads(data_json or "{}") or {}).get("amazon") or {}
+        except (TypeError, ValueError):
+            continue
+        if not item.get("asin"):
+            continue
+        for src in _json_list(sources) or ["UPC"]:
+            out.setdefault(row_idx, []).append((item, str(src)))
+    return out
+
+
+# Provider error texts -> (what happened, which provider).  Only texts the AI SDKs produce: an Amazon SP-API
+# throttle (also a 429) never matches, so it can not show up as an AI notice.
+_AI_ERROR_SIGNS = (
+    ("credit balance is too low", "out of credits", "Anthropic (Claude)"),
+    ("reached your specified api usage limits", "usage limit reached", "Anthropic (Claude)"),
+    ("api usage limits", "usage limit reached", "Anthropic (Claude)"),
+    ("billing_hard_limit_reached", "usage limit reached", "OpenAI (GPT)"),
+    ("billing hard limit", "usage limit reached", "OpenAI (GPT)"),
+    ("insufficient_quota", "out of credits", "OpenAI (GPT)"),
+    ("exceeded your current quota", "out of credits", "OpenAI (GPT)"),
+    ("rate_limit_error", "rate limit reached", "Anthropic (Claude)"),
+    ("rate_limit_exceeded", "rate limit reached", "OpenAI (GPT)"),
+    ("authentication_error", "API key invalid or missing", "Anthropic (Claude)"),
+    ("invalid x-api-key", "API key invalid or missing", "Anthropic (Claude)"),
+    ("invalid_api_key", "API key invalid or missing", "OpenAI (GPT)"),
+    ("incorrect api key", "API key invalid or missing", "OpenAI (GPT)"),
+    ("overloaded_error", "provider unavailable", "Anthropic (Claude)"),
+)
+_AI_STOP_KINDS = ("out of credits", "usage limit reached", "API key invalid or missing")   # retrying cannot help
+
+
+def _ai_error_kind(text: Any) -> tuple[str, str] | None:
+    """(kind, provider) for an AI provider error text, else None."""
+    low = str(text or "").lower()
+    for needle, kind, provider in _AI_ERROR_SIGNS:
+        if needle in low:
+            return kind, provider
+    if "apiconnectionerror" in low or "apitimeouterror" in low:
+        return "provider unavailable", ("Anthropic (Claude)" if "anthropic" in low else
+                                        "OpenAI (GPT)" if "openai" in low else "AI provider")
+    return None
+
+
+class _AIErrorWatcher(logging.Handler):
+    """Collects AI provider failures from the log while one AI step runs (every AI module logs its errors).
+    The FIRST failure of each kind is shown on the run page at once (notice + progress line); the rest are
+    counted and added when the step ends."""
+
+    def __init__(self, run_id: int = 0, step: str = "") -> None:
+        super().__init__(logging.WARNING)
+        self.run_id, self.step = run_id, step
+        self.found: dict[tuple[str, str], int] = {}
+        self._busy = False                      # no recursion when saving the notice logs something itself
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self._busy:
+            return
+        try:
+            text = record.getMessage()
+            if record.exc_info and record.exc_info[1] is not None:
+                exc = record.exc_info[1]
+                text += f" {type(exc).__module__}.{type(exc).__name__} {exc}"
+        except Exception:  # noqa: BLE001
+            return
+        hit = _ai_error_kind(text)
+        if not hit:
+            return
+        first = hit not in self.found
+        self.found[hit] = self.found.get(hit, 0) + 1
+        if first and self.run_id:
+            self._busy = True
+            try:
+                _add_ai_notice(self.run_id, self.step, hit[0], hit[1], 1, detail=text[:300])
+                _update_progress(self.run_id, phase=f"{self.step}: {hit[1]} — {hit[0]}; continuing")
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                self._busy = False
+
+
+def _add_ai_notice(run_id: int, step: str, kind: str, provider: str, count: int = 1, detail: str = "",
+                   skipped: bool = False) -> None:
+    """One line for the run page: '<step>: <provider> <kind>'.  The same step + kind is kept once (count added).
+    detail = the provider's own error text (shown on hover); skipped = the step did not run at all."""
+    with database._LOCK, database._connect() as conn:
+        row = conn.execute("SELECT ai_notices FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        notices = _json_list(row[0] if row else None)
+        for n in notices:
+            if n.get("step") == step and n.get("kind") == kind:
+                n["count"] = int(n.get("count") or 0) + count
+                n["skipped"] = bool(n.get("skipped")) or skipped
+                n["detail"] = n.get("detail") or detail
+                break
+        else:
+            notices.append({"step": step, "kind": kind, "provider": provider, "count": count,
+                            "skipped": skipped, "detail": detail,
+                            "at": time.strftime("%Y-%m-%d %H:%M:%S")})
+        conn.execute("UPDATE analytics_runs SET ai_notices=? WHERE id=?", (json.dumps(notices), run_id))
+        conn.commit()
+
+
+@contextmanager
+def _ai_step(run_id: int, step: str):
+    """Wrap one AI step: provider failures it logs (no credits, rate limit, bad key, outage) become a notice on
+    the run page.  (While two runs work at the same time, a failure can show on both.)"""
+    watcher = _AIErrorWatcher(run_id, step)
+    root = logging.getLogger()
+    root.addHandler(watcher)
+    try:
+        yield watcher
+    finally:
+        root.removeHandler(watcher)
+        for (kind, provider), count in watcher.found.items():
+            if count > 1:                                   # the first one was saved when it happened
+                try:
+                    _add_ai_notice(run_id, step, kind, provider, count - 1)
+                except Exception:  # noqa: BLE001
+                    log.exception("Could not save the AI notice for run %s", run_id)
+
+
+def _note_step_crash(run_id: int, step: str, exc: BaseException) -> None:
+    """An AI step stopped on an error that is NOT a provider problem (a bug, bad data ...): the run page says so
+    too, with the error on hover, instead of staying silent.  A provider problem is already noted by _ai_step."""
+    text = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+    if _ai_error_kind(text):
+        return
+    try:
+        _add_ai_notice(run_id, step, "stopped on a program error", "this app", 1, detail=text[:300], skipped=True)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not save the AI notice for run %s", run_id)
+
+
+def _ping_anthropic() -> str:
+    """One tiny request to Claude (1 output token, no retries, short timeout) before a run's Claude steps start:
+    '' when Claude answers, else the error text.  Costs a fraction of a cent; saves a run from sitting on calls
+    that can only fail."""
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key:
+        return "no ANTHROPIC_API_KEY in .env (invalid x-api-key)"
+    try:
+        from anthropic import Anthropic
+        from services.analytics.matching_core.agents.query_agent import MODEL
+        Anthropic(api_key=key, max_retries=0, timeout=20.0).messages.create(
+            model=MODEL, max_tokens=1, messages=[{"role": "user", "content": "ping"}],
+        )
+        return ""
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+
+
+def _run_uses_ai_reader(run_id: int) -> bool:
+    with database._connect() as conn:
+        row = conn.execute("SELECT use_ai_reader FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    return bool(row and row[0])
+
+
 def _run_pipeline(
     run_id: int,
     marketplace: str,
@@ -1787,8 +1990,11 @@ def _run_pipeline(
     scoring_method: str = "weighted",
     use_query_agent: bool = False,
     use_llm_verifier: bool = False,
+    use_ai_reader: bool = False,
 ) -> None:
-    """Do the work. All errors are caught and recorded on the run row."""
+    """Do the work. All errors are caught and recorded on the run row.
+    is_resume: the run was paused / stopped before; search tiers that already finished are skipped (they are
+    recorded in analytics_runs.tiers_done), the others run for every row, with the candidates found earlier."""
     try:
         if not sp_api_configured():
             _update_progress(
@@ -1797,24 +2003,38 @@ def _run_pipeline(
             )
             return
  
-        # On resume, skip rows that already have at least one candidate.
-        if is_resume:
-            with database._connect() as conn:
-                done_idxs = {
-                    r["row_idx"] for r in conn.execute(
-                        "SELECT DISTINCT row_idx FROM analytics_candidates WHERE run_id=?",
-                        (run_id,),
-                    ).fetchall()
-                }
-            source_rows = [r for r in source_rows if r.row_idx not in done_idxs]
-            log.info("Resume run %s: %d rows remaining", run_id, len(source_rows))
- 
+        # On resume: skip the search TIERS that already finished for every row (not the rows that have a
+        # candidate: a row found by UPC still needs the title search if the run stopped before it).
+        tiers_done: set[str] = _get_tiers_done(run_id) if is_resume else set()
+        if not is_resume:
+            _set_tiers_done(run_id, [])
+        log.info("Run %s: %s, tiers already done: %s", run_id, "resume" if is_resume else "start",
+                 sorted(tiers_done) or "none")
+
+        # Claude steps the user ticked: check once that Claude answers at all.  If it cannot (no credits, usage
+        # limit, bad key, not reachable) the run page says so at once and those steps are skipped for this run.
+        claude_steps = [name for on, name in ((use_ai_reader, "AI title reader"),
+                                              (use_query_agent, "LLM query fallback"),
+                                              (use_llm_verifier, "LLM approval verifier")) if on]
+        if claude_steps:
+            _update_progress(run_id, status="Searching", phase="Checking the AI provider (Claude)…")
+            problem = _ping_anthropic()
+            if problem:
+                kind, provider = _ai_error_kind(problem) or ("not reachable", "Anthropic (Claude)")
+                passing = kind in ("rate limit reached", "provider unavailable")   # may work again in a minute
+                for step in claude_steps:
+                    _add_ai_notice(run_id, step, kind, provider, 1, detail=problem[:300], skipped=not passing)
+                log.warning("Run %s: Claude check failed (%s): %s", run_id, kind, problem[:300])
+                if not passing:
+                    use_ai_reader = use_query_agent = use_llm_verifier = False
+                    _update_progress(run_id, phase=f"Claude: {kind} — continuing without the Claude steps")
         api = get_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)
  
-        candidates_by_row: dict[int, list[tuple[dict, str]]] = {}
+        # a resumed run starts from the candidates it already stored
+        candidates_by_row: dict[int, list[tuple[dict, str]]] = _load_saved_candidates(run_id) if is_resume else {}
  
         # ------------------------------------------------------------------ #
         # Helper: check for pause/stop after each major step
@@ -1839,17 +2059,17 @@ def _run_pipeline(
         )
         _save_extracted_brands(run_id, extracted_brands)
  
-        # CHANGED: AI router for attribute extraction (MATCH_AI_TITLE_ATTRS=1): expands only the vendor titles
-        # with abbreviations no rule explains (learned pairs are free, answers are cached). Before any scoring,
-        # so every tier below scores with the expanded titles.
-        try:
-            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, enrich_run
-            if _attr_ai_on():
+        # AI title reader (attr_ai, Claude): only when the user ticked it for this run
+        if use_ai_reader:
+            try:
+                from services.analytics.matching_core.agents.attr_ai import enrich_run
                 _update_progress(run_id, phase="Reading vendor titles with AI where the rules are not enough")
-                _ai = enrich_run(run_id)
+                with _ai_step(run_id, "AI title reader"):
+                    _ai = enrich_run(run_id)
                 log.info("Run %s attribute AI: %s", run_id, _ai)
-        except Exception:
-            log.exception("Attribute AI router failed for run %s (run continues without it)", run_id)
+            except Exception as exc:
+                log.exception("Attribute AI router failed for run %s (run continues without it)", run_id)
+                _note_step_crash(run_id, "AI title reader", exc)
         if _handle_control():
             return
  
@@ -1857,7 +2077,7 @@ def _run_pipeline(
         # Extracts brand / product_type / model / size / pack_info from vendor
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
-        ai_fields_extracted = False
+        rows_with_ai_fields: set[int] = set()       # rows the AI extraction found fields for (decided per row)
         if ai_clean_titles and (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
             _update_progress(run_id, phase="Extracting product fields with AI…")
  
@@ -1869,13 +2089,14 @@ def _run_pipeline(
                     total=total_ext,
                 )
  
-            ai_extracted = extract_brands(
-                original_source_rows, run_id, progress_cb=_extraction_progress,
-            )
-            ai_fields_extracted = any(
-                any(fields.get(key) for key in ("brand", "product_type", "model", "size", "pack_info"))
-                for fields in ai_extracted.values()
-            )
+            with _ai_step(run_id, "AI reads vendor titles"):
+                ai_extracted = extract_brands(
+                    original_source_rows, run_id, progress_cb=_extraction_progress,
+                )
+            rows_with_ai_fields = {
+                row_idx for row_idx, fields in ai_extracted.items()
+                if any(fields.get(key) for key in ("brand", "product_type", "model", "size", "pack_info"))
+            }
             for row_idx, fields in ai_extracted.items():
                 extracted_brands.setdefault(row_idx, {}).update(fields)
             _save_extracted_brands(run_id, extracted_brands)
@@ -1884,10 +2105,13 @@ def _run_pipeline(
  
         # --- AI title cleaning (before Tier 3, if enabled) ------------------
         cleaned_titles: dict[int, str] = {}
-        if ai_clean_titles and "Title" in search_methods and not ai_fields_extracted:
-            # Only run simple title cleaning when full brand extraction didn't run
-            _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(total))
-            cleaned_titles = clean_titles_parallel(source_rows, run_id)
+        # Rows the AI extraction found nothing for get the simpler title cleaning instead (per row: before, one
+        # row with fields switched the cleaning off for every row).  Only the title search uses cleaned titles.
+        rows_to_clean = [r for r in source_rows if r.row_idx not in rows_with_ai_fields]
+        if ai_clean_titles and "Title" in search_methods and "Title" not in tiers_done and rows_to_clean:
+            _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(len(rows_to_clean)))
+            with _ai_step(run_id, "AI title cleaning"):
+                cleaned_titles = clean_titles_parallel(rows_to_clean, run_id)
             if _handle_control():
                 return
  
@@ -1916,7 +2140,7 @@ def _run_pipeline(
                                     for r in source_rows if r.search_term) if t})
  
         # --- Tier 1: UPC -----------------------------------------------------
-        if "UPC" in search_methods:
+        if "UPC" in search_methods and "UPC" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
             tier1, tier1_kw = _tier1_upc(api, source_rows, run_id=run_id)
@@ -1938,11 +2162,12 @@ def _run_pipeline(
                 max_rank, min_rank, mode, "Scoring UPC matches", scoring_method,
             )
             timings["upc"] = (time.monotonic() - _t0, _n_upc)
+            _mark_tier_done(run_id, "UPC")
             if _handle_control():
                 return
  
         # --- Tier 2: Item ID -------------------------------------------------
-        if "ItemID" in search_methods:
+        if "ItemID" in search_methods and "ItemID" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 2 / Item ID search")
             tier2 = _tier2_itemid(api, source_rows, run_id=run_id, max_pages=pages_per_title)
@@ -1955,11 +2180,12 @@ def _run_pipeline(
                 max_rank, min_rank, mode, "Scoring Item ID matches", scoring_method,
             )
             timings["itemid"] = (time.monotonic() - _t0, _n_ids)
+            _mark_tier_done(run_id, "ItemID")
             if _handle_control():
                 return
  
         # --- Tier 3: Title ---------------------------------------------------
-        if "Title" in search_methods:
+        if "Title" in search_methods and "Title" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 3 / Title search")
             tier3 = _tier3_title(
@@ -1978,15 +2204,17 @@ def _run_pipeline(
                 max_rank, min_rank, mode, "Scoring title matches", scoring_method,
             )
             timings["title"] = (time.monotonic() - _t0, _n_terms)
+            _mark_tier_done(run_id, "Title")
             if _handle_control():
                 return
  
-        if use_query_agent:
+        if use_query_agent and "agent" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="LLM query fallback")
-            comparison_titles, agent_rows = _run_query_agent_fallback(
-                run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
-            )
+            with _ai_step(run_id, "LLM query fallback"):
+                comparison_titles, agent_rows = _run_query_agent_fallback(
+                    run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
+                )
             fallback_rows = [row for row in source_rows if row.row_idx in agent_rows]
             if fallback_rows:
                 scored_rows = [
@@ -2001,11 +2229,13 @@ def _run_pipeline(
                 if _handle_control():
                     return
             timings["agent"] = (time.monotonic() - _t0, len(agent_rows))
+            _mark_tier_done(run_id, "agent")
  
         if use_llm_verifier:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Auditing approved matches with LLM")
-            _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
+            with _ai_step(run_id, "LLM approval verifier"):
+                _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
             timings["verifier"] = (time.monotonic() - _t0, _n_audited or 0)
  
         # Each tier vetted the rows it touched (with the full set of candidates
@@ -2018,13 +2248,15 @@ def _run_pipeline(
             run_family_pass(run_id)
         except Exception:
             log.exception("Family pass failed for run %d", run_id)
-        # CHANGED: unknown color names of this run -> suggestions for the word library (never a verdict change)
-        try:
-            from services.analytics.matching_core.agents.attr_ai import enabled as _attr_ai_on, suggest_color_names
-            if _attr_ai_on():
-                suggest_color_names(run_id)
-        except Exception:
-            log.exception("Color-name suggestions failed for run %s", run_id)
+        # unknown color names of this run -> suggestions for the word library (only with the AI title reader on)
+        if use_ai_reader:
+            try:
+                from services.analytics.matching_core.agents.attr_ai import suggest_color_names
+                with _ai_step(run_id, "AI title reader"):
+                    suggest_color_names(run_id)
+            except Exception as exc:
+                log.exception("Color-name suggestions failed for run %s", run_id)
+                _note_step_crash(run_id, "AI title reader (color names)", exc)
         _recompute_run_counts(run_id)
         clear_control(run_id)
         if not is_resume:
@@ -2073,6 +2305,12 @@ def _run_query_agent_fallback(
         )
         try:
             candidates, trace = agent.run(offer)
+            hit = _ai_error_kind((trace or {}).get("error"))
+            if hit and hit[0] in _AI_STOP_KINDS:
+                log.warning("Query agent stopped for run %s: %s %s (%s)", run_id, hit[1], hit[0], trace.get("error"))
+                _save_query_agent_result(run_id, row.row_idx, trace)
+                processed_rows.add(row.row_idx)
+                break                                      # every further row would fail the same way
         except Exception as exc:
             trace = {
                 "used_agent": True,

@@ -212,7 +212,7 @@ def list_analytics_runs() -> list[dict[str, Any]]:
                    verified_count, review_count, not_approved_count,
                    status, progress_phase, progress_done, progress_total,
                    max_rank, min_rank, vetting_mode, scoring_method,
-                   use_query_agent, use_llm_verifier,
+                   use_query_agent, use_llm_verifier, use_ai_reader, ai_notices,
                    ai_check_status, ai_check_done, ai_check_total,
                    elig_check_status, elig_check_done, elig_check_total,
                    created_at, updated_at
@@ -692,6 +692,12 @@ def get_run_detail(
         "query_agent": query_stats,
         "llm_verifier": verifier_stats,
     }
+    # AI provider problems during the run (out of credits, rate limit, bad key, outage) for the run page banner
+    try:
+        notices = json.loads(run_d.get("ai_notices") or "[]")
+    except (TypeError, ValueError):
+        notices = []
+    run_d["ai_notices"] = notices if isinstance(notices, list) else []
 
     resp: dict[str, Any] = {
         "run": run_d,
@@ -1727,6 +1733,7 @@ async def create_analytics_run(
     scoring_method: str = Form("weighted"),
     use_query_agent: bool = Form(False),
     use_llm_verifier: bool = Form(False),
+    use_ai_reader: bool = Form(False),           # AI title reader (abbreviations), Claude
     sheet_name: str = Form(""),
     passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
 ) -> dict[str, Any]:
@@ -1762,10 +1769,16 @@ async def create_analytics_run(
             status_code=400,
             detail="scoring_method must be one of: weighted, cascade, classifier",
         )
-    if (use_query_agent or use_llm_verifier) and not os.getenv("ANTHROPIC_API_KEY"):
+    if (use_query_agent or use_llm_verifier or use_ai_reader) and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=400,
-            detail="Set ANTHROPIC_API_KEY in .env to enable the matcher agents",
+            detail="Set ANTHROPIC_API_KEY in .env to use the LLM query fallback, the LLM verifier "
+                   "or the AI title reader",
+        )
+    if ai_clean_titles and not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        raise HTTPException(
+            status_code=400,
+            detail="Set ANTHROPIC_API_KEY or OPENAI_API_KEY in .env to use \"AI reads vendor titles\"",
         )
  
     # Check the file, parse it with the wizard's picks, clean the UPC column.
@@ -1871,6 +1884,7 @@ async def create_analytics_run(
         scoring_method=scoring_method,
         use_query_agent=bool(use_query_agent),
         use_llm_verifier=bool(use_llm_verifier),
+        use_ai_reader=bool(use_ai_reader),
         brand_col=saved_brand_col,
         brand_mode=saved_brand_mode,
         passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",

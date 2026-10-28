@@ -1,52 +1,5 @@
 """
-AI help for attribute extraction: rules first, AI only where the rules are unsure, the code checks the AI,
-and what a person accepts becomes a rule (so AI calls drop run after run).
-
-Switch: MATCH_AI_TITLE_ATTRS=1 (the same switch attr_extract.py v11 uses to READ the AI-expanded title).
-Needs ANTHROPIC_API_KEY.  With the switch off nothing here calls an AI.
-
-1. ROUTER + TITLE READING (runs inside every analytics run AND every re-score, before scoring: runner.py calls
-   enrich_run).  It uses the QUERY AGENT's own unabbreviation step (query_agent.py, read_title = the same prompt
-   it uses for the search, without the search); this file has no AI prompt of its own for it.
-   The agent is applied to a vendor row only when the rules were not enough (router_reasons):
-     - the title has abbreviations / codes that NO rule explains ("BLK", "GG", "RDT", "PGHXPSK"), or
-     - the rules found none of the attributes that matter for the product category, or
-     - door hardware without a function type (privacy / passage / entry: often only in the model series).
-   Rows where the rules were enough are never sent (Injinji: color and size come from the vendor columns -> 0 calls).
-   Learned pairs (abbreviations_learned.csv, step 3) are applied without any AI call.
-   The agent returns, per title:
-     - expansions: {"from": "SN", "to": "Satin Nickel"}  - checked: the short form must be a word of the title;
-     - attributes: {"finish": {"value": "satin nickel", "evidence": "SN"}}  - checked: the evidence must really be
-       written in the title or the vendor part number, else the attribute is dropped.
-   When the search fallback runs the agent anyway (nothing found), record_from_agent_trace keeps what it read, so
-   there is no second call.  Saved on the vendor row as data_json["ai_unabbrev"] (also "checked, nothing there").
-   attr_extract reads it LAST, so it only fills attributes the rules left empty; when it disagrees with the rules
-   the attribute becomes "unclear" (Review).  A value whose words are written in the title as they are
-   ("Satin Nickel") counts like a rule ("ai_read"); a value decoded from a code ("15" -> satin nickel) stays soft
-   ("ai_title"): it can send a pair to Review, never reject it alone.
-2. CACHE: every AI answer is stored in the table attr_ai_cache, keyed by task + prompt version + model + the
-   exact text.  The same title is never sent twice, also across runs.  Usage per run goes to attr_ai_usage.
-3. SUGGESTIONS -> RULES (the learning loop)
-     - every AI pair becomes a suggestion (table attr_ai_suggestions, kind "abbreviation");
-     - color names the word library does not know ("Atlantis", "Celestine") are asked once for a base color
-       (kind "color", only answers the AI is sure of);
-     - a person accepts or rejects them (command below).  Accepted abbreviations are appended to
-       matching_core/lexicon/abbreviations_learned.csv, accepted colors to matching_core/lexicon/colors.csv
-       (the lexicon CSV files are created from the built-in lists first when they do not exist yet).
-       Restart the app afterwards so it reads the new words.
-     - suggestions never change a verdict by themselves.
-4. AUDIT (on demand): a random sample of rows the rules handled CONFIDENTLY is shown to the AI together with
-   what the rules extracted; it reports wrong values and missed attributes, each with a quote that must really be
-   in the text.  Result: a workbook to read through.  Nothing is changed.
-
-Commands (repo root):
-  uv run python -m services.analytics.matching_core.agents.attr_ai --enrich --run 12 [--force] [--dry-run]
-  uv run python -m services.analytics.matching_core.agents.attr_ai --colors --run 12
-  uv run python -m services.analytics.matching_core.agents.attr_ai --suggestions [--kind color] [--status pending]
-  uv run python -m services.analytics.matching_core.agents.attr_ai --accept 3,4,9      (or --reject 5)
-  uv run python -m services.analytics.matching_core.agents.attr_ai --accept-all --kind abbreviation --min-seen 2
-  uv run python -m services.analytics.matching_core.agents.attr_ai --audit --run 12 --sample 50 [--out audit.xlsx]
-  uv run python -m services.analytics.matching_core.agents.attr_ai --usage
+AI help for attribute extraction: rules first, AI only where the rules are unsure.
 """
 from __future__ import annotations
 
@@ -184,11 +137,8 @@ LEARNED_FILE = "abbreviations_learned.csv"
 
 
 def enabled() -> bool:
-    """AI help for attribute extraction.  ON by default when an Anthropic key is set;
-    MATCH_AI_TITLE_ATTRS=0 in .env switches it off."""
-    raw = os.getenv("MATCH_AI_TITLE_ATTRS")
-    if raw is not None and raw.strip() != "":
-        return raw.strip().lower() in ("1", "true", "yes", "on")
+    """The AI title reader can run: an Anthropic key is set.  WHETHER it runs is the user's choice per run
+    (the wizard's "AI title reader" option, analytics_runs.use_ai_reader), not a setting in .env."""
     return bool(os.getenv("ANTHROPIC_API_KEY"))
 
 
@@ -456,7 +406,7 @@ def enrich_run(run_id: Any, force: bool = False, dry_run: bool = False) -> dict:
     """Run the title reader for a run and record what happened (ran / off / failed + the error) for the UI.
     Errors are recorded and raised again, so the caller's log shows them too."""
     if not enabled():
-        _set_status(run_id, "off", "MATCH_AI_TITLE_ATTRS=0 or no ANTHROPIC_API_KEY")
+        _set_status(run_id, "off", "no ANTHROPIC_API_KEY in .env")
         return {"run_id": run_id, "enabled": False}
     try:
         summary = _enrich_run(run_id, force=force, dry_run=dry_run)
@@ -587,7 +537,8 @@ def _enrich_run(run_id: Any, force: bool = False, dry_run: bool = False) -> dict
                 conn.commit()
             summary["saved"] += 1
         if not dry_run:
-            _usage(conn, run_id, "title_read", **{k: v for k, v in summary.items() if isinstance(v, int)})
+            _usage(conn, run_id, "title_read",          # the summary holds run_id too: not passed twice
+                   **{k: v for k, v in summary.items() if isinstance(v, int) and k != "run_id"})
     finally:
         conn.close()
     summary["cost_usd"] = cost_usd(summary["tokens_in"], summary["tokens_out"])
