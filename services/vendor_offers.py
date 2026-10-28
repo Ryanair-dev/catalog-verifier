@@ -176,7 +176,13 @@ def as_int(value):
     return int(n)
 
 
-_CASE_QTY_RE = re.compile(r"(\d+)\s*[Xx]\s*\d")
+# A whole "NxSIZE" or multi-level "NxMxSIZE" chain, captured as one match so
+# the inner numbers of a multi-level chain can't be re-matched on their own.
+_CASE_QTY_RE = re.compile(r"(?<![\d.])(\d+)\s*[Xx]\s*\d+(?:\.\d+)?(?:\s*[Xx]\s*\d+(?:\.\d+)?)*")
+# What follows a chain that is really physical dimensions, not a pack count:
+# a CM/IN unit ("8X12.5X1 CM", "4X1X10IN 3000") or a bare count after a
+# space ("BAG T-SACK 9X5X18 1000").
+_DIMENSION_TAIL_RE = re.compile(r"\s*(?:CM|IN)\b|\s+\d", re.I)
 
 
 def extract_case_qty_from_desc(desc: str | None) -> int | None:
@@ -193,13 +199,22 @@ def extract_case_qty_from_desc(desc: str | None) -> int | None:
     text description. Confirmed by the user 2026-10-27 with real examples:
     "SURGILUBE STERILE FLIP CAP 12X4.25OZ" at $39.82/case -> divide by 12
     for the per-each price; "SIMILAC NEOSURE RTF BOTL LIQ RETL 6X32OZ" at
-    $85.54/case -> divide by 6."""
+    $85.54/case -> divide by 6.
+
+    Multi-level chains ("4X6X8OZ", "6X20X2CT") use their FIRST number --
+    the outer count of the unit the UPC identifies (4 six-packs). The old
+    regex re-matched inside such chains and returned junk (6X20X2CT -> 0,
+    7X4.25X13.5 -> 25). Chains that are dimensions (bags, CM sizes) return
+    None so the row is skipped rather than divided by a made-up number."""
     if not desc:
         return None
-    matches = _CASE_QTY_RE.findall(desc)
+    matches = list(_CASE_QTY_RE.finditer(desc))
     if not matches:
         return None
-    n = int(matches[-1])
+    m = matches[-1]
+    if _DIMENSION_TAIL_RE.match(desc, m.end()):
+        return None
+    n = int(m.group(1))
     return n if n > 0 else None
 
 
