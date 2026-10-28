@@ -93,7 +93,8 @@ def _row_count(blob: bytes) -> int:
 def _alert_for_vendor(vendor: str) -> None:
     try:
         winning = vo_export.winning_upcs_for_vendor(vendor)
-        upcs = [u for u in winning if u in _asin_having_upcs(winning)]
+        have_asin = _asin_having_upcs(winning)
+        upcs = [u for u in winning if u in have_asin]
         if not upcs:
             log.info("[vendor_offers_auto_alert] %s: no cheapest/unique/ASIN-having UPCs, skipping", vendor)
             return
