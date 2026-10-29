@@ -464,9 +464,10 @@ async def assign_bulk(body: dict = Body(...)) -> dict:
 @router.post("/vendor-offers/unassign")
 async def unassign(body: dict = Body(...)) -> dict:
     """Remove a wrong ASIN pairing from the Price Desk (and its Pair Library
-    mirror). Body: {asin}."""
+    mirror, for that UPC only) and blacklist the pair. Body: {asin, upc?} --
+    without upc, every desk UPC currently paired to the ASIN is unpaired."""
     try:
-        return await run_in_threadpool(vo.unassign_asin, body.get("asin"))
+        return await run_in_threadpool(vo.unassign_asin, body.get("asin"), body.get("upc"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

@@ -746,22 +746,48 @@ def assign_asin(upc: str, asin: str, amazon_pack_size=None) -> dict:
     return {"upc": upc, "asin": asin, "amazon_pack_size": pack, "library_upserts": mirrored}
 
 
-def unassign_asin(asin: str) -> dict:
-    """Remove a wrong UPC<->ASIN pair: drops the Price Desk assignment
-    (`vo_asin_listings`, keyed by ASIN) AND its Pair Library mirror (asin +
-    every identifier + any 'Pair Library Import' verified_items row it
-    seeded) via `database.delete_library_pair`. This is the delete path the
-    Price Desk itself has never had (only the Pair Manager's own entries
-    could be removed before). Does not touch other, independently-verified
-    pairs for the same ASIN (e.g. a real Offer-Analysis UPC match)."""
+def _barcode_key(s) -> str:
+    return re.sub(r"\D", "", str(s or "")).lstrip("0")
+
+
+def unassign_asin(asin: str, upc: str | None = None) -> dict:
+    """Remove a wrong UPC<->ASIN pair from the Price Desk.
+
+    Targeted to that one UPC (2026-10-28; it used to wipe the ASIN's WHOLE
+    Pair Library entry -- found when the user asked to unpair 071662087036 /
+    B0015IN0XK, whose library entry held a different, correct UPC,
+    071662081461, that the old call would have deleted too):
+      1. drops the `vo_asin_listings` row (only if it's for `upc`, when given);
+      2. drops just the Pair Library identifiers for this ASIN that are the
+         same barcode (leading zeros ignored), via delete_library_pair's
+         single-identifier path -- other UPCs on the ASIN are kept;
+      3. blacklists (upc, asin), so the export doesn't re-pair them through
+         Keepa's barcode list (an Amazon listing can carry several UPCs --
+         Keepa lists B0015IN0XK under both). Unlockable in the Pair Manager."""
     asin = (asin or "").strip().upper()
     if not re.match(r"^B0[A-Z0-9]{8}$", asin):
         raise ValueError("A valid ASIN (B0XXXXXXXX) is required.")
+    want = _barcode_key(upc) if upc else None
     with database._LOCK, database._connect() as conn:
-        cur = conn.execute("DELETE FROM vo_asin_listings WHERE asin=?", (asin,))
-        removed_listing = cur.rowcount
-    library = database.delete_library_pair(asin)
-    return {"asin": asin, "removed_listing": bool(removed_listing), **library}
+        rows = conn.execute("SELECT upc FROM vo_asin_listings WHERE asin=?", (asin,)).fetchall()
+        upcs = [r[0] for r in rows if want is None or _barcode_key(r[0]) == want]
+        for u in upcs:
+            conn.execute("DELETE FROM vo_asin_listings WHERE asin=? AND upc=?", (asin, u))
+        removed_listing = len(upcs)
+        if upc and not upcs:
+            upcs = [norm_upc(upc) or str(upc).strip()]   # not on the desk, but still unpair it
+        lib_ids = conn.execute(
+            "SELECT id_type, identifier FROM pair_library_ids "
+            "WHERE asin=? AND id_type IN ('upc','ean')", (asin,)).fetchall()
+    keys = {_barcode_key(u) for u in upcs}
+    library = {"deleted_ids": 0, "deleted_asin": 0, "verified_cleared": 0}
+    for id_type, ident in lib_ids:
+        if _barcode_key(ident) in keys:
+            for k, v in database.delete_library_pair(asin, id_type, ident).items():
+                library[k] += v
+    for u in upcs:
+        database.add_to_blacklist(u, asin, None, ["price_desk_unpair"])
+    return {"asin": asin, "removed_listing": removed_listing, "unpaired_upcs": upcs, **library}
 
 
 def parse_pasted_pairs(text: str):

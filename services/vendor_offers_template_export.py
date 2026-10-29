@@ -739,9 +739,15 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     keys = {_bkey(u) for u in upc_list if _bkey(u)}
     bmap = _barcode_to_asins(keys)
     assigned = _assigned_asins_by_upc()
+    # Blacklisted (UPC, ASIN) pairs are never exported -- this is how a Price
+    # Desk unpair (vendor_offers.unassign_asin) keeps Keepa's barcode list from
+    # re-pairing them. load_blacklist_set already ignores library-confirmed pairs.
+    blocked = {(_bkey(u), a.upper()) for u, a in database.load_blacklist_set() if _bkey(u)}
 
     def asins_for(upc):
-        return list(dict.fromkeys(list(assigned.get(upc, [])) + list(bmap.get(_bkey(upc), []))))
+        k = _bkey(upc)
+        both = dict.fromkeys(list(assigned.get(upc, [])) + list(bmap.get(k, [])))
+        return [a for a in both if (k, a.upper()) not in blocked]
 
     chosen = {u: asins_for(u) for u in upc_list}                 # upc -> [asin, ...]
     chosen_asins = sorted({a for lst in chosen.values() for a in lst})
