@@ -34,7 +34,7 @@ from services import vendor_offers_mailbox_sync as vo_mail_sync
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 from services.spapi import reports as sp_reports
-from services import job_persistence
+from services import job_persistence, job_results
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -124,6 +124,8 @@ def _get_ajob(job_id: str) -> dict:
             _ANALYTICS_JOBS.pop(jid, None)
         job = _ANALYTICS_JOBS.get(job_id)
     if not job:
+        job = job_results.stub_job(job_id)        # finished earlier; file kept on disk
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found (or expired).")
     return job
 
@@ -196,7 +198,8 @@ def _launch_export(params: dict) -> tuple[str, str]:
     live = bool(params.get("live", True))
     email_to = params.get("email_to") or []
 
-    job_id = uuid.uuid4().hex[:12]
+    # The relauncher passes the original id back so an open page keeps polling it.
+    job_id = params.get("_job_id") or uuid.uuid4().hex[:12]
     filename = vo_tpl.export_filename(focus)              # increment the per-vendor/day seq once
     job = {"status": "running", "phase": "pulling Amazon data", "done": 0,
            "total": 0, "blob": None, "error": None, "started": time.time(),
@@ -204,7 +207,7 @@ def _launch_export(params: dict) -> tuple[str, str]:
            "phase_started": time.time(), "filename": filename, "cancel": False}
     with _AJOBS_LOCK:
         _ANALYTICS_JOBS[job_id] = job
-    job_persistence.save_job(job_id, "offer_export", params)
+    job_persistence.save_job(job_id, "offer_export", {**params, "_job_id": job_id})
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -218,6 +221,7 @@ def _launch_export(params: dict) -> tuple[str, str]:
                 only_available=only_available, live=live, apply_filters=apply_filters,
                 populate_keepa=populate_keepa,
                 on_progress=_progress, should_cancel=lambda: job["cancel"])
+            job_results.save(job_id, "offer_export", "Vendor Offers Export", filename, job["blob"])
             job["phase"], job["status"] = "done", "complete"
             if email_to:
                 # Email failure must never undo an already-successful export —
@@ -303,9 +307,10 @@ async def analytics_export_status(job_id: str) -> dict:
 @router.get("/vendor-offers/analytics-export/jobs/{job_id}/download")
 async def analytics_export_download(job_id: str) -> StreamingResponse:
     job = _get_ajob(job_id)
-    if job["status"] != "complete" or not job["blob"]:
+    blob = job["blob"] or (job_results.load_blob(job_id) if job["status"] == "complete" else None)
+    if job["status"] != "complete" or not blob:
         raise HTTPException(status_code=409, detail=f"Not ready ({job['status']}).")
-    return _xlsx_response(job["blob"], job.get("filename") or "offer_analytics.xlsx")
+    return _xlsx_response(blob, job.get("filename") or "offer_analytics.xlsx")
 
 
 @router.post("/vendor-offers/lookup-export")

@@ -18,7 +18,7 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 
 from services import seller_analytics as sa
-from services import job_persistence
+from services import job_persistence, job_results
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,6 +36,8 @@ def _get_job(job_id: str) -> dict:
                     and now - jb["completed_at"] > _JOB_TTL]:
             _JOBS.pop(jid, None)
         job = _JOBS.get(job_id)
+    if not job:
+        job = job_results.stub_job(job_id)        # finished earlier; file kept on disk
     if not job:
         raise HTTPException(status_code=404, detail="Job not found (or expired).")
     return job
@@ -95,17 +97,20 @@ async def seller_analytics_start(body: dict = Body(...)) -> dict:
     return {"job_id": job_id, "seller_id": seller_id, "roi_pct": roi_pct}
 
 
-def _launch_seller_analytics(seller_id: str, roi_pct: float, live: bool) -> str:
+def _launch_seller_analytics(seller_id: str, roi_pct: float, live: bool,
+                             job_id: str | None = None) -> str:
     """The actual job-launch logic, shared by the live POST endpoint and the
-    startup relauncher (job_persistence.resume_orphaned_jobs)."""
-    job_id = uuid.uuid4().hex[:12]
+    startup relauncher (job_persistence.resume_orphaned_jobs). The relauncher
+    passes the original job_id so an open page keeps polling the same id."""
+    job_id = job_id or uuid.uuid4().hex[:12]
     job = {"status": "running", "phase": "looking up seller on Keepa", "done": 0,
            "total": 0, "blob": None, "error": None, "filename": None,
            "completed_at": None, "started": time.time(), "phase_started": time.time()}
     with _JOBS_LOCK:
         _JOBS[job_id] = job
     job_persistence.save_job(job_id, "seller_analytics",
-                              {"seller_id": seller_id, "roi_pct": roi_pct, "live": live})
+                              {"seller_id": seller_id, "roi_pct": roi_pct, "live": live,
+                               "_job_id": job_id})
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -119,6 +124,7 @@ def _launch_seller_analytics(seller_id: str, roi_pct: float, live: bool) -> str:
                 should_cancel=lambda: job.get("cancel"))
             job["filename"] = sa.seller_filename(seller_id, info.get("seller_name"))
             job["blob"] = blob
+            job_results.save(job_id, "seller_analytics", "Seller Analytics", job["filename"], blob)
             job["phase"], job["status"] = "done", "complete"
         except Exception as exc:  # noqa: BLE001
             log.exception("[seller-analytics] failed")
@@ -137,7 +143,7 @@ def _relaunch(params: dict) -> None:
         return
     roi_pct = params.get("roi_pct") or sa.DEFAULT_ROI_PCT
     live = bool(params.get("live", True))
-    _launch_seller_analytics(seller_id, roi_pct, live)
+    _launch_seller_analytics(seller_id, roi_pct, live, job_id=params.get("_job_id"))
 
 
 job_persistence.register_relauncher("seller_analytics", _relaunch)
@@ -160,6 +166,7 @@ async def seller_analytics_status(job_id: str) -> dict:
 @router.get("/seller-analytics/jobs/{job_id}/download")
 async def seller_analytics_download(job_id: str) -> StreamingResponse:
     job = _get_job(job_id)
-    if job["status"] != "complete" or not job["blob"]:
+    blob = job["blob"] or (job_results.load_blob(job_id) if job["status"] == "complete" else None)
+    if job["status"] != "complete" or not blob:
         raise HTTPException(status_code=409, detail=f"Job is {job['status']!r}, not ready.")
-    return _xlsx_response(job["blob"], job["filename"] or "seller_analytics.xlsx")
+    return _xlsx_response(blob, job["filename"] or "seller_analytics.xlsx")

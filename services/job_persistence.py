@@ -97,13 +97,20 @@ def resume_orphaned_jobs() -> dict:
     """Call once at app startup, after every router module has been imported
     (so every relauncher is registered). Any row still 'running' means the
     previous process died (or was restarted) mid-job -- a clean finish always
-    deletes its own row first. Relaunches each one fresh, then clears the
-    whole table (a relaunch failure is logged + skipped, not retried forever)."""
+    deletes its own row first. Clears those rows, then relaunches each one from
+    scratch under its original job_id, where the relauncher supports it (a
+    relaunch failure is logged + skipped, not retried forever)."""
     init()
     with _connect() as conn:
         rows = conn.execute(
             "SELECT job_id, job_type, params_json FROM background_jobs WHERE status='running'"
         ).fetchall()
+    # Clear the orphaned rows BEFORE relaunching (2026-10-29). The delete used
+    # to run after the loop, so it also wiped the fresh row each relaunch had
+    # just saved -- a relaunched job then wasn't persisted and a second restart
+    # lost it; relaunches now also reuse their original job_id.
+    with _LOCK, _connect() as conn:
+        conn.executemany("DELETE FROM background_jobs WHERE job_id=?", [(r["job_id"],) for r in rows])
     resumed: list[dict] = []
     skipped: list[dict] = []
     for r in rows:
@@ -122,8 +129,6 @@ def resume_orphaned_jobs() -> dict:
         except Exception as exc:  # noqa: BLE001
             log.exception("[job_persistence] relaunch failed for job_type=%s", job_type)
             skipped.append({"job_type": job_type, "reason": str(exc)[:200]})
-    with _LOCK, _connect() as conn:
-        conn.execute("DELETE FROM background_jobs WHERE status='running'")
     if resumed or skipped:
         log.info("[job_persistence] startup resume: %d resumed, %d skipped (%s)",
                   len(resumed), len(skipped), skipped)

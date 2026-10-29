@@ -127,6 +127,7 @@ catalog-verifier/
 │   ├── vendor_offers_mailbox_sync.py  Vendor Offers: direct-from-email sync for the same 5 vendors (bypasses FBI/Azure entirely)
 │   ├── vendor_offers_template_export.py  Vendor Offers formatted Excel export + enrichment
 │   ├── eligibility_warmer.py        Idle-time scheduler filling eligibility_cache for every Price Desk ASIN
+│   ├── job_results.py               Finished export files on disk (data/job_results, 14 days) — Seller/PO/Vendor Offers exports
 │   ├── health_check.py              Pair Library weekly health-check job
 │   ├── generic_check.py             Toolbox Generic/DOG ASIN classification
 │   ├── storage_fees.py              Toolbox FBA storage fee computation + cache

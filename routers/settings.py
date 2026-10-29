@@ -189,3 +189,24 @@ async def tasks_running() -> dict:
             pass
 
     return {"jobs": jobs, "runs": runs, "schedulers": schedulers}
+
+
+# Finished export files kept on disk (services/job_results.py, 2026-10-29) --
+# downloadable here even after the job left memory or the server restarted.
+@router.get("/settings/saved-results")
+async def saved_results() -> dict:
+    from services import job_results
+    return {"results": job_results.list_recent(), "keep_days": job_results.KEEP_DAYS}
+
+
+@router.get("/settings/saved-results/{job_id}/download")
+async def saved_result_download(job_id: str):
+    from fastapi.responses import Response
+    from services import job_results
+    m = job_results.meta(job_id)
+    blob = job_results.load_blob(job_id) if m else None
+    if not blob:
+        raise HTTPException(status_code=404, detail="Saved file not found (or older than "
+                                                    f"{job_results.KEEP_DAYS} days).")
+    return Response(blob, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{m.get("filename") or job_id + ".xlsx"}"'})

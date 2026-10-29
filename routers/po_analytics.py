@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.analytics import po_analytics as poa
-from services import job_persistence
+from services import job_persistence, job_results
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -41,6 +41,8 @@ def _get_job(job_id: str) -> dict:
                    and now - jb["completed_at"] > _JOB_TTL]:
             _JOBS.pop(jid, None)
         job = _JOBS.get(job_id)
+    if not job:
+        job = job_results.stub_job(job_id)        # finished earlier; file kept on disk
     if not job:
         raise HTTPException(status_code=404, detail="Job not found (or expired).")
     return job
@@ -85,17 +87,18 @@ async def po_analytics_start(body: dict = Body(...)) -> dict:
     return {"job_id": job_id, "po_numbers": po_numbers}
 
 
-def _launch_po_analytics(po_numbers: list) -> str:
+def _launch_po_analytics(po_numbers: list, job_id: str | None = None) -> str:
     """The actual job-launch logic, shared by the live POST endpoint and the
-    startup relauncher (job_persistence.resume_orphaned_jobs)."""
-    job_id = uuid.uuid4().hex[:12]
+    startup relauncher (job_persistence.resume_orphaned_jobs). The relauncher
+    passes the original job_id so an open page keeps polling the same id."""
+    job_id = job_id or uuid.uuid4().hex[:12]
     job = {"status": "running", "phase": "pulling SellerCloud PO data", "done": 0,
            "total": 0, "blob": None, "error": None, "filename": None,
            "skipped_pos": [], "used_ordered_qty": False, "completed_at": None,
            "started": time.time(), "phase_started": time.time()}
     with _JOBS_LOCK:
         _JOBS[job_id] = job
-    job_persistence.save_job(job_id, "po_export", {"po_numbers": po_numbers})
+    job_persistence.save_job(job_id, "po_export", {"po_numbers": po_numbers, "_job_id": job_id})
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -131,6 +134,7 @@ def _launch_po_analytics(po_numbers: list) -> str:
             filename_pos = gathered.get("resolved_po_numbers") or po_numbers
             job["filename"] = poa.po_analytics_filename(filename_pos, gathered["brand_label"])
             job["blob"] = poa.enrich_and_build(gathered, on_progress=_progress)
+            job_results.save(job_id, "po_export", "PO Analytics Export", job["filename"], job["blob"])
             job["phase"], job["status"] = "done", "complete"
         except Exception as exc:  # noqa: BLE001
             log.exception("[po-analytics] failed")
@@ -147,7 +151,7 @@ def _relaunch(params: dict) -> None:
     po_numbers = params.get("po_numbers") or []
     if not po_numbers:
         return
-    _launch_po_analytics(po_numbers)
+    _launch_po_analytics(po_numbers, job_id=params.get("_job_id"))
 
 
 job_persistence.register_relauncher("po_export", _relaunch)
@@ -169,9 +173,10 @@ async def po_analytics_status(job_id: str) -> dict:
 @router.get("/po-analytics/jobs/{job_id}/download")
 async def po_analytics_download(job_id: str) -> StreamingResponse:
     job = _get_job(job_id)
-    if job["status"] != "complete" or not job["blob"]:
+    blob = job["blob"] or (job_results.load_blob(job_id) if job["status"] == "complete" else None)
+    if job["status"] != "complete" or not blob:
         raise HTTPException(status_code=409, detail=f"Not ready ({job['status']}).")
-    return _xlsx_response(job["blob"], job.get("filename") or "po_analytics.xlsx")
+    return _xlsx_response(blob, job.get("filename") or "po_analytics.xlsx")
 
 
 # --------------------------------------------------------------------------- #

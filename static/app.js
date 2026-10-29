@@ -559,7 +559,9 @@
           msg = String(j.detail);
         }
       } catch {}
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = resp.status;   // lets pollers tell "job gone" (404) from a blip
+      throw err;
     }
     const ct = resp.headers.get("content-type") || "";
     return ct.includes("application/json") ? resp.json() : resp.blob();
@@ -3430,8 +3432,31 @@
         ? data.schedulers.map(_schedulerCardHtml).join("")
         : `<div class="text-xs" style="color:#9aa1ab;">No scheduler data.</div>`;
     }
+    _loadSavedResults();
   }
   $("#tasks-refresh-btn")?.addEventListener("click", _loadTasksRunning);
+
+  // Finished export files kept on disk for 14 days (services/job_results.py) --
+  // still downloadable after the job left memory or the server restarted.
+  async function _loadSavedResults() {
+    const el = $("#tasks-saved-list");
+    if (!el) return;
+    let data;
+    try { data = await api("/api/settings/saved-results"); } catch { return; }
+    const rows = data.results || [];
+    el.innerHTML = rows.length
+      ? rows.map(r => {
+          const mb = r.size ? ` · ${(r.size / 1048576).toFixed(1)} MB` : "";
+          return `<div style="border:1px solid #e2e6ec;border-radius:8px;padding:10px 12px;">
+                    <div class="flex items-center justify-between" style="gap:8px;">
+                      <div class="text-sm font-semibold" style="color:var(--navy-800);word-break:break-all;">${escapeHtml(r.filename || r.job_id)}</div>
+                      <a class="text-xs" style="font-weight:600;white-space:nowrap;" href="/api/settings/saved-results/${encodeURIComponent(r.job_id)}/download">Download</a>
+                    </div>
+                    <div class="text-xs" style="color:#9aa1ab;margin-top:3px;">${escapeHtml(`${r.feature || ""} · Finished ${_fmtTimestamp(r.completed_at)}${mb}`)}</div>
+                  </div>`;
+        }).join("")
+      : `<div class="text-xs" style="color:#9aa1ab;">No saved files yet.</div>`;
+  }
 
   $("#open-settings-btn").addEventListener("click", () => { _openPanel("settings-panel"); loadPrepFee(); });
   $("#settings-close").addEventListener("click", () => _closeActivePanel());
@@ -9606,12 +9631,16 @@
     return false;
   }
 
+  const _POA_GONE = { status: "error", error: "This PO analysis is no longer on the server. If it "
+    + "finished, download it from Settings → Tasks Running → Saved files; otherwise run it again." };
+
   function _pollPoAnalytics(jobId) {
     const tick = async () => {
       let j;
       try {
         j = await api(`/api/po-analytics/jobs/${jobId}`);
       } catch (e) {
+        if (e.status === 404) { _applyPoaStatus(_POA_GONE, jobId); return; }   // gone -- stop polling
         _poaPoll = setTimeout(tick, 2000);
         return;
       }
@@ -9630,7 +9659,9 @@
     try {
       const j = await api(`/api/po-analytics/jobs/${_poaActiveJobId}`);
       _applyPoaStatus(j, _poaActiveJobId);
-    } catch (e) { /* job may have expired — leave the panel as-is */ }
+    } catch (e) {
+      if (e.status === 404) _applyPoaStatus(_POA_GONE, _poaActiveJobId);
+    }
   }
 
   async function _downloadPoAnalytics(jobId, filename) {
@@ -9733,6 +9764,17 @@
       try {
         j = await api(`/api/seller-analytics/jobs/${jobId}`);
       } catch (e) {
+        if (e.status === 404) {
+          // Gone for good -- stop instead of silently retrying forever with
+          // the last progress text still showing (2026-10-29: a finished
+          // result sat unseen in a frozen tab, then this looked "stuck").
+          if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+          progress?.classList.add("hidden");
+          errEl?.classList.remove("hidden");
+          if (errEl) errEl.textContent = "This run is no longer on the server. If it finished, "
+            + "download it from Settings → Tasks Running → Saved files; otherwise run it again.";
+          return;
+        }
         _saPoll = setTimeout(tick, 2000);
         return;
       }
