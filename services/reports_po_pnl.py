@@ -203,16 +203,27 @@ def _build_lock(key: str) -> threading.Lock:
         return _build_locks.setdefault(key, threading.Lock())
 
 
-def _build_unlocked(purchaser: str, key: str) -> list[dict]:
-    """Caller must hold _build_lock(key)."""
+def _build_unlocked(purchaser: str, key: str, wait_for_catalog: bool = True) -> list[dict]:
+    """Caller must hold _build_lock(key). With wait_for_catalog=False and the
+    shared Azure catalog not loaded yet (the first minutes after a restart),
+    skips the brand/ASIN enrichment instead of blocking on that ~3-min cold
+    pull, and caches the result as already-stale so the next request
+    refreshes it in the background with brands filled in."""
     po_numbers = monday_eta.pos_for_purchaser(purchaser) if purchaser else None
+    built_at = time.time()
     if po_numbers is not None and not po_numbers:
         lines: list[dict] = []
     else:
         lines = _line_items(po_numbers)
-        _enrich_brand_asin(lines)
+        if wait_for_catalog or azure_sql.is_warm():
+            _enrich_brand_asin(lines)
+        else:
+            for it in lines:
+                it.setdefault("brand", "")
+                it.setdefault("asins", [])
+            built_at = 0.0
     with _cache_lock:
-        _cache[key] = (time.time(), lines)
+        _cache[key] = (built_at, lines)
     return lines
 
 
@@ -257,7 +268,12 @@ def _enriched_lines_for(purchaser: str, force: bool = False) -> list[dict]:
             hit = _cache.get(key)
         if hit:
             return hit[1]
-        return _build_unlocked(purchaser, key)
+        lines = _build_unlocked(purchaser, key, wait_for_catalog=False)
+    with _cache_lock:
+        partial = _cache.get(key, (1, None))[0] == 0.0
+    if partial:                          # brands skipped (catalog cold) -> fill them in
+        _refresh_in_background(purchaser, key)
+    return lines
 
 
 def prewarm(purchaser: str = "Avi Schoemann") -> None:

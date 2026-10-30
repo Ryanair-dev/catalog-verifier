@@ -76,6 +76,7 @@ def _rows_for_company(rows: list[dict], company: str) -> list[dict]:
 _CACHE_TTL = 1800.0   # seconds; re-pull the view at most this often
 _LOCK = threading.Lock()
 _CACHE: dict = {"at": 0.0, "rows": None}
+_PULL_LOCK = threading.Lock()   # serializes the expensive view pull itself (fetch_rows)
 
 _ENV_KEYS = ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
              "AZURE_SQL_SERVER_HOST", "AZURE_SQL_SERVER_DATABASE")
@@ -117,7 +118,25 @@ def fetch_rows(force: bool = False) -> list[dict]:
         cached = _CACHE["rows"]
         if not force and cached is not None and (time.time() - _CACHE["at"]) < _CACHE_TTL:
             return cached
+    # One pull at a time (2026-10-30): _LOCK only guards the cache read, so
+    # every caller arriving during the ~165s cold pull at startup used to start
+    # its OWN full pull in parallel (a PO P&L load right after a restart took
+    # 240s). Now they wait for the pull in flight and reuse it.
+    with _PULL_LOCK:
+        if not force:
+            with _LOCK:
+                cached = _CACHE["rows"]
+                if cached is not None and (time.time() - _CACHE["at"]) < _CACHE_TTL:
+                    return cached
+        return _pull_rows()
 
+
+def is_warm() -> bool:
+    """True once the catalog view has been pulled at least once (any age)."""
+    return _CACHE["rows"] is not None
+
+
+def _pull_rows() -> list[dict]:
     def _pull(cols: list[str]) -> list[dict]:
         conn = _connect()
         try:
