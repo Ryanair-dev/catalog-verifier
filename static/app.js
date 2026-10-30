@@ -8461,10 +8461,14 @@
       </table>`;
   }
 
+  let _rptPos = [];   // last list response -- an older server still embeds each PO's items
+
   async function _rptLoadPoItems(detailRow) {
     const wrap = detailRow?.querySelector(".rpt-detail-wrap");
     if (!wrap || detailRow.dataset.loaded) return;
     detailRow.dataset.loaded = "1";
+    const embedded = _rptPos[Number(detailRow.dataset.idx)]?.items;
+    if (Array.isArray(embedded)) { wrap.innerHTML = _rptItemsTableHtml(embedded); return; }
     wrap.innerHTML = `<div class="text-xs" style="color:#9aa1ab;padding:10px 14px;">Loading items…</div>`;
     const params = new URLSearchParams({
       po_number: detailRow.dataset.po,
@@ -8500,6 +8504,7 @@
     try {
       const j = await api(`/api/reports/po-pnl?${params.toString()}`);
       const pos = j.pos || [];
+      _rptPos = pos;
       const s = j.summary || {};
       if ($("#rpt-po-pnl-sum-count")) $("#rpt-po-pnl-sum-count").textContent = _fmtInt(s.po_count);
       if ($("#rpt-po-pnl-sum-bought")) $("#rpt-po-pnl-sum-bought").textContent = _fmtUsd0(s.bought_cost);
