@@ -442,9 +442,18 @@ def _run_brand_check(brand: str, sample_size: int, sample_pct: float | None) -> 
         summary = (f"{len(checked)}/{len(checked)} checked ASINs for "
                    f"'{brand}'{resolved_note} are {STATUS_LABEL.get(verdict, verdict)}.")
     else:
-        verdict = "MIXED"
+        # Majority wins (2026-10-30, per user): 299 needs-approval + 1 restricted
+        # is "needs approval", not MIXED; 286 open + 14 needs-approval is "can
+        # sell". MIXED only when no status covers more than half the sample.
         parts = ", ".join(f"{n} {STATUS_LABEL.get(s, s)}" for s, n in statuses.most_common())
-        summary = f"Mixed results for '{brand}'{resolved_note}: {parts} (of {len(checked)} checked)."
+        top, top_n = statuses.most_common(1)[0]
+        if top_n * 2 > len(checked):
+            verdict = top
+            summary = (f"Mostly {STATUS_LABEL.get(top, top)} for '{brand}'{resolved_note} "
+                       f"({top_n}/{len(checked)}): {parts}.")
+        else:
+            verdict = "MIXED"
+            summary = f"Mixed results for '{brand}'{resolved_note}: {parts} (of {len(checked)} checked)."
 
     return {
         "brand":                  brand,

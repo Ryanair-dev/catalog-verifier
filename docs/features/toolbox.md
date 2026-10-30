@@ -20,6 +20,12 @@ A slide-in sidebar panel (`#tools-panel`) holding a set of smaller, ASIN/brand/M
 
 ## Changelog
 
+**2026-10-30b** — Check Brand verdict: majority wins instead of MIXED.
+- User, after the 192-brand run (97 MIXED): "if 299 are needs approval and 1 is restricted then its needs approval -- Weber on this brand. Wedgwood this one as well. ... Ralph Lauren Bedding only 14 out of 300 need approval which means its can sell."
+- `_run_brand_check`: when the sampled statuses disagree, the verdict is the status covering MORE than half the checked ASINs; MIXED only when none does (e.g. 50/50, or 148/132/20). Summary keeps the full breakdown: "Mostly needs approval for 'Weber' (299/300): 299 needs approval, 1 restricted / not accepting applications." Verdict values unchanged (CAN_SELL / NEEDS_APPROVAL / RESTRICTED / MIXED / ALL_DOG / ERROR), so the UI needed no change.
+- Unit-tested with a fake catalog/restrictions client: 299 NA + 1 R -> NEEDS_APPROVAL; 286 CS + 14 NA -> CAN_SELL; 10/10 CS -> CAN_SELL; 5/5 -> MIXED; 4/3/3 -> MIXED.
+- Re-applied to the day's 192-brand results (per-ASIN statuses were saved, no re-run): MIXED 97 -> 6; totals 61 can sell / 114 needs approval / 8 restricted / 6 mixed / 3 not found. Weber and Wedgwood -> Needs approval, Ralph Lauren Bedding -> Approved.
+
 **2026-10-30** — Toolbox job TTL now counts from when a job finished, not when it started (Eligibility/Check Brand, Storage, Generic).
 - User asked for a Check Brand on 192 brands at 30%. Before starting it, found that `routers/eligibility.py`, `storage_fees.py` and `generic_check.py` `_get_job` evicted any non-running job whose `started_at` was >1h ago -- so a run longer than an hour (a 192-brand Check Brand easily is) was deleted the moment it completed, before the page could read its results. Same class of bug already fixed for the Vendor Offers / PO / Seller exports (`completed_at`-based TTL).
 - Fix: `_get_job` stamps `finished_seen_at` the first time it sees a job no longer running, and evicts 1h after that. Unit-tested on all three routers (2h run just finished -> kept; finished >1h ago -> 404; running -> never evicted).
