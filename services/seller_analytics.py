@@ -37,6 +37,7 @@ import datetime as dt
 import io
 import logging
 import re
+import threading
 
 from openpyxl import load_workbook
 from openpyxl.formatting.formatting import ConditionalFormattingList
@@ -47,17 +48,25 @@ from openpyxl.utils import get_column_letter
 
 from services import database
 from services import keepa as keepa_api
+from services.cancellation import JobCancelled
+from services.spapi import pricing as sp_pricing
 from services.spapi import reports as sp_reports
 from services.vendor_offers_template_export import (
     _TEMPLATE, TEMPLATE_COLS, COL, L, _NEW_HEADER_COLS, _ROBOTO, _BOLD, _CENTER,
-    _HYPERLINK_FONT, _HDR_GREY, _HDR_ALIGN, _FILLS, _f, _storage_est,
+    _HYPERLINK_FONT, _HDR_GREY, _HDR_ALIGN, _FILLS, _ACCT, _f, _storage_est,
     _sku_data_by_asin, _fba_total_by_asin, _last_po_by_sku,
-    _sellersnap_30d_by_asin, enrich_asins, ExportCancelled,
+    _sellersnap_30d_by_asin, _units_30d, enrich_asins, ExportCancelled,
 )
 
 log = logging.getLogger(__name__)
 
 DEFAULT_ROI_PCT = 30.0
+
+# The analyzed seller's own live offer per ASIN (services/spapi/pricing.py,
+# 2026-10-30) -- appended after the shared template columns so no existing
+# column or formula reference moves.
+SELLER_COLS = ("Seller price", "Seller shipping", "Seller price vs BB",
+               "Seller FBA/FBM", "Seller has Buy Box", "Number of offers")
 
 
 def seller_lookup(seller_id: str) -> dict:
@@ -100,6 +109,23 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
             f"Seller {seller_id!r} has no ASINs in their current Keepa storefront snapshot.")
     seller_label = info.get("seller_name") or seller_id
 
+    # The seller's own prices come from a separate SP-API allowance (~10 s per
+    # 20 ASINs), so they're fetched in parallel with Keepa rather than after it.
+    offers_box: dict = {"result": {}, "done": 0, "total": len(asins), "error": None}
+
+    def _run_offers() -> None:
+        def _op(d, t):
+            offers_box["done"], offers_box["total"] = d, t
+        try:
+            offers_box["result"] = sp_pricing.seller_offers(asins, seller_id, _op, should_cancel)
+        except Exception as exc:  # noqa: BLE001 -- the report still builds, just without these columns
+            offers_box["error"] = exc
+            log.warning("[seller-analytics] seller offers failed: %s", str(exc)[:200])
+
+    t_offers = threading.Thread(target=_run_offers, name="seller-offers", daemon=True)
+    if live:
+        t_offers.start()
+
     _kp = (lambda d, t: on_progress(d, t, "Keepa live prices")) if on_progress else None
     keepa = keepa_api.fetch_products(asins, on_progress=_kp, should_cancel=should_cancel)
 
@@ -116,6 +142,15 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
         # enrich_asins now also returns a peak-storage dict (2026-10-19, shared
         # cache fix) -- not used here yet, this report has no peak-storage column.
         live_elig, live_storage, live_generic, _live_storage_peak = enrich_asins(asins, _ep, should_cancel)
+        while t_offers.is_alive():
+            if should_cancel and should_cancel():
+                raise ExportCancelled()
+            if on_progress:
+                on_progress(offers_box["done"], offers_box["total"], "seller prices")
+            t_offers.join(timeout=2)
+        if isinstance(offers_box["error"], JobCancelled):
+            raise ExportCancelled()
+    seller_offer = offers_box["result"]
 
     def z(v):
         fv = _f(v)
@@ -196,9 +231,7 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
             "Available qty": None,
             "OR33": sku.get("or33"), "On order": sku.get("on_order"),
             "FBA total": fba_total.get(asin.strip().upper()),
-            "30d sales": (report30.get(asin.strip().upper())
-                          if report30.get(asin.strip().upper()) is not None
-                          else snap30.get(asin.strip().upper())),
+            "30d sales": _units_30d(asin, report30, snap30),
             "Estimated Monthly Units Sold": d["monthly"], "amz pack": pack,
             "Last cost": d["prod_cost"] if d["has_main"] else None,
             "Vendor": d["vendor_label"],
@@ -237,6 +270,21 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
                 cell.font = _HYPERLINK_FONT
             if center:
                 cell.alignment = _CENTER
+        so = seller_offer.get(asin.strip().upper())
+        c0 = len(TEMPLATE_COLS) + 1
+        if so and so.get("found"):
+            price_l, ship_l = get_column_letter(c0), get_column_letter(c0 + 1)
+            vals = [so["price"], so["shipping"],
+                    f'=IFERROR({price_l}{r}+{ship_l}{r}-{L("Buy Box Price current")}{r},"")',
+                    "FBA" if so["fba"] else "FBM", "Yes" if so["buybox"] else "No", so.get("offers_total")]
+        elif so:
+            vals = [None, None, None, "Not in Amazon's top-20 offers", None, so.get("offers_total")]
+        else:
+            vals = [None] * len(SELLER_COLS)       # not checked (live off, or the lookup failed)
+        for j, v in enumerate(vals):
+            cell = ws.cell(row=r, column=c0 + j, value=v)
+            if j in (0, 1, 2):
+                cell.number_format = _ACCT
         r += 1
 
     last = r - 1
@@ -256,7 +304,12 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
                 f"{col}2:{col}{last}",
                 Rule(type="cellIs", operator=operator, formula=[formula], dxf=dxf),
             )
-    ws.auto_filter.ref = f"A1:{L(TEMPLATE_COLS[-1][0])}{max(last, 1)}"
+    for j, name in enumerate(SELLER_COLS):
+        c = len(TEMPLATE_COLS) + 1 + j
+        hc = ws.cell(row=1, column=c, value=name)
+        hc.fill, hc.font, hc.alignment = _HDR_GREY, _ROBOTO, _HDR_ALIGN
+        ws.column_dimensions[get_column_letter(c)].width = 16
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(TEMPLATE_COLS) + len(SELLER_COLS))}{max(last, 1)}"
 
     buf = io.BytesIO()
     wb.save(buf)

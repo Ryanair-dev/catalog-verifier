@@ -17,6 +17,8 @@ Amazon Selling Partner API client used across the whole app for catalog search (
 
 ## Changelog
 
+**2026-10-30 — New `services/spapi/pricing.py` (Product Pricing v0 `getItemOffersBatch`):** `seller_offers(asins, seller_id)` returns one seller's live New offer per ASIN (price, shipping, FBA, Buy Box winner, total offers) from Amazon's up-to-20 returned offers; new `rate_limiter` op `getItemOffersBatch` (0.1/s, burst 1). Pricing role confirmed live on the default store. Used by Seller Analytics -- see `docs/features/seller_analytics.md` 2026-10-30.
+
 **2026-10-28c — SP-API calls reuse one HTTPS session per thread (big CPU fix):**
 - Found while watching the live server after deploying the eligibility warmer: it checked ~0.57 ASINs/s instead of 3/s and the process burned ~0.75 CPU-s per check. cProfile of 10 `getListingsRestrictions` calls: 12.7s wall / 6.8s CPU, 6.9s of it in `ssl.SSLContext.load_verify_locations` -- plain `requests.get()` opened a new connection (and re-loaded the CA bundle) on every call.
 - New `services/spapi/http.py thread_session()` (a `requests.Session` per thread -- per-thread because export pipelines call from worker pools); `RestrictionsAPI._get`, `CatalogAPI._get` and `generic_check._validation_preview` now use it. Same 10 calls: **2.9s wall / 0.05s CPU**. Affects every caller: exports, Toolbox eligibility/storage/generic, Offer Analysis catalog search, health check.

@@ -68,6 +68,7 @@ _RATE_SPECS: dict[str, tuple[float, int]] = {
     "searchCatalogItems":      (2, 2),
     "getCatalogItem":          (2, 2),
     "getListingsRestrictions": (5, 10),
+    "getItemOffersBatch":      (0.1, 1),   # 20 ASINs per request (services/spapi/pricing.py)
 }
 
 
