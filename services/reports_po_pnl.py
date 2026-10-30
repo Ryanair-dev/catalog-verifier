@@ -190,15 +190,21 @@ def _enrich_brand_asin(items: list[dict], company: str = "Ford Medical") -> None
 _CACHE_TTL = 300.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, list[dict]]] = {}
+# One build at a time per purchaser (2026-10-30): the page fires /po-pnl and
+# /po-pnl/filters together, and on a cold cache both used to run the full
+# Azure build in parallel. Also lets a stale cache be served instantly while a
+# single background thread refreshes it (stale-while-revalidate).
+_build_locks: dict[str, threading.Lock] = {}
+_refreshing: set[str] = set()
 
 
-def _enriched_lines_for(purchaser: str, force: bool = False) -> list[dict]:
-    key = (purchaser or "").strip().lower()
-    now = time.time()
+def _build_lock(key: str) -> threading.Lock:
     with _cache_lock:
-        hit = _cache.get(key)
-        if hit and not force and (now - hit[0]) < _CACHE_TTL:
-            return hit[1]
+        return _build_locks.setdefault(key, threading.Lock())
+
+
+def _build_unlocked(purchaser: str, key: str) -> list[dict]:
+    """Caller must hold _build_lock(key)."""
     po_numbers = monday_eta.pos_for_purchaser(purchaser) if purchaser else None
     if po_numbers is not None and not po_numbers:
         lines: list[dict] = []
@@ -206,8 +212,61 @@ def _enriched_lines_for(purchaser: str, force: bool = False) -> list[dict]:
         lines = _line_items(po_numbers)
         _enrich_brand_asin(lines)
     with _cache_lock:
-        _cache[key] = (now, lines)
+        _cache[key] = (time.time(), lines)
     return lines
+
+
+def _build(purchaser: str, key: str) -> list[dict]:
+    with _build_lock(key):
+        return _build_unlocked(purchaser, key)
+
+
+def _refresh_in_background(purchaser: str, key: str) -> None:
+    with _cache_lock:
+        if key in _refreshing:
+            return
+        _refreshing.add(key)
+
+    def run():
+        try:
+            _build(purchaser, key)
+        except Exception:  # noqa: BLE001
+            log.exception("[reports_po_pnl] background refresh failed")
+        finally:
+            with _cache_lock:
+                _refreshing.discard(key)
+    threading.Thread(target=run, name=f"po-pnl-refresh-{key[:20]}", daemon=True).start()
+
+
+def _enriched_lines_for(purchaser: str, force: bool = False) -> list[dict]:
+    """Fresh (<5 min) cache -> returned as-is. Stale cache -> returned
+    instantly while one background thread rebuilds it. No cache, or the UI's
+    Refresh button (force) -> build now; a concurrent caller waits on the same
+    build instead of starting its own."""
+    key = (purchaser or "").strip().lower()
+    with _cache_lock:
+        hit = _cache.get(key)
+    if hit and not force:
+        if time.time() - hit[0] >= _CACHE_TTL:
+            _refresh_in_background(purchaser, key)
+        return hit[1]
+    if force:
+        return _build(purchaser, key)
+    with _build_lock(key):               # a build already in flight? wait for it and reuse
+        with _cache_lock:
+            hit = _cache.get(key)
+        if hit:
+            return hit[1]
+        return _build_unlocked(purchaser, key)
+
+
+def prewarm(purchaser: str = "Avi Schoemann") -> None:
+    """Build the default dashboard's cache once after startup, so the first
+    visit doesn't pay the cold Azure build."""
+    try:
+        _enriched_lines_for(purchaser)
+    except Exception:  # noqa: BLE001
+        log.exception("[reports_po_pnl] prewarm failed")
 
 
 _PO_SUM_FIELDS = (

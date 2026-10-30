@@ -201,6 +201,13 @@ async def _lifespan(app: FastAPI):
         _delayed_start(630, eligibility_warmer.start_scheduler)
     except Exception:
         pass
+    # Reports > PO P&L: build the default dashboard's cache once (+720s, after
+    # azure_sql's catalog index is warm), so the first visit isn't a cold build.
+    try:
+        from services import reports_po_pnl
+        _delayed_start(720, reports_po_pnl.prewarm)
+    except Exception:
+        pass
     yield
     try:
         from services import health_check

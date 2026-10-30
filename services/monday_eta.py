@@ -140,11 +140,33 @@ def pos_for_purchaser(name: str) -> set[int]:
     silently papered over -- a PO P&L dashboard built on this will undercount
     if archived-board POs are expected to still appear."""
     name_l = (name or "").strip().lower()
-    if not name_l:
+    if not name_l or not azure_sql.is_configured():
         return set()
-    out: set[int] = set()
-    for item in fetch_inbound_items():
-        p = (item.get("purchaser") or "").lower()
-        if name_l in p and item.get("po_number"):
-            out.add(item["po_number"])
-    return out
+    # Only the PO + Purchaser columns, filtered in SQL (2026-10-30): pivoting
+    # all 8 columns of every board item via fetch_inbound_items() took ~5.6s
+    # per PO P&L load; this returns the identical set (438 POs for Avi,
+    # checked live) in ~0.3s.
+    try:
+        conn = azure_sql._connect()
+    except Exception:  # noqa: BLE001
+        log.exception("[monday_eta] Azure connection failed")
+        return set()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT po.link_text_value
+            FROM monday.items i
+            JOIN monday.column_values po ON po.item_id = i.id AND po.column_id = %s
+            JOIN monday.column_values pu ON pu.item_id = i.id AND pu.column_id = %s
+            WHERE i.board_id = %s AND i.state = 'active' AND LOWER(pu.text) LIKE %s
+            """,
+            (_col_id(_FIELDS["po_number"]), _col_id(_FIELDS["purchaser"]),
+             INBOUND_BOARD_ID, f"%{name_l}%"),
+        )
+        return {int(r[0].strip()) for r in cur.fetchall() if r[0] and r[0].strip().isdigit()}
+    except Exception:  # noqa: BLE001
+        log.exception("[monday_eta] purchaser query failed")
+        return set()
+    finally:
+        conn.close()
