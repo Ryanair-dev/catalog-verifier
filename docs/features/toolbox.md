@@ -20,6 +20,11 @@ A slide-in sidebar panel (`#tools-panel`) holding a set of smaller, ASIN/brand/M
 
 ## Changelog
 
+**2026-10-30** — Toolbox job TTL now counts from when a job finished, not when it started (Eligibility/Check Brand, Storage, Generic).
+- User asked for a Check Brand on 192 brands at 30%. Before starting it, found that `routers/eligibility.py`, `storage_fees.py` and `generic_check.py` `_get_job` evicted any non-running job whose `started_at` was >1h ago -- so a run longer than an hour (a 192-brand Check Brand easily is) was deleted the moment it completed, before the page could read its results. Same class of bug already fixed for the Vendor Offers / PO / Seller exports (`completed_at`-based TTL).
+- Fix: `_get_job` stamps `finished_seen_at` the first time it sees a job no longer running, and evicts 1h after that. Unit-tested on all three routers (2h run just finished -> kept; finished >1h ago -> 404; running -> never evicted).
+- The live 192-brand run was started on the old code with a watcher that snapshots its results to disk every 15s, so it doesn't depend on the TTL. Fix mirrored to live; takes effect on the next restart (not restarted -- that run is in the live server).
+
 **2026-10-28** — Storage-fee cache TTL 90 -> 150 days (user: "we can even go out and cache it for 4-5 months"). The cache is shared, so the Toolbox storage check now also re-uses results up to ~5 months old. Tradeoff: cached rows hold computed fees, not just dimensions, so an Amazon storage-rate change is only picked up as rows expire. Toolbox Eligibility Check unchanged (still always live). Context in `docs/features/vendor_offers.md`'s 2026-10-28c entry.
 
 **2026-10-27** — Check Brand converted from a fully synchronous request into a real server-tracked background job (start/poll/cancel), so it now shows up in the new Settings > Tasks Running tab. Full architecture/verification details live in `docs/infra/job_persistence.md`'s 2026-10-27c entry (this was found and fixed while building that tab). Frontend behavior (single-brand card, bulk table, Cancel/export buttons) is unchanged — only how progress is tracked changed, from a client-side-only loop to real backend job state via new `POST /eligibility/check-brand/start` / `GET .../jobs/{id}` / `POST .../jobs/{id}/cancel` endpoints.

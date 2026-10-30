@@ -41,9 +41,14 @@ MAX_ASINS = 5_000
 def _get_job(job_id: str) -> dict:
     now = time.time()
     with _JOBS_LOCK:
+        # TTL from when the job was first seen finished, not its start (see
+        # routers/eligibility.py _get_job, 2026-10-30).
+        for j in _JOBS.values():
+            if j.get("status") != "running":
+                j.setdefault("finished_seen_at", now)
         stale = [
             jid for jid, j in _JOBS.items()
-            if j.get("status") != "running" and now - j.get("started_at", now) > _JOB_TTL
+            if j.get("status") != "running" and now - j["finished_seen_at"] > _JOB_TTL
         ]
         for jid in stale:
             _JOBS.pop(jid, None)
