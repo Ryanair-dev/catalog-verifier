@@ -151,7 +151,9 @@ catalog-verifier/
 │   │   ├── catalog.py               SearchCatalogItems wrapper
 │   │   ├── config.py                Marketplace + multi-store config
 │   │   ├── rate_limiter.py          Token-bucket rate limiter (per-store)
-│   │   └── reports.py               Reports API (GET_SALES_AND_TRAFFIC_REPORT)
+│   │   ├── reports.py               Reports API (GET_SALES_AND_TRAFFIC_REPORT)
+│   │   ├── pricing.py               getItemOffersBatch — one seller's live offer per ASIN (Seller Analytics)
+│   │   └── http.py                  Per-thread requests.Session for SP-API calls
 │   └── sellercloud/                 SellerCloud REST client (Delta API, server fml) — Create PO
 │       ├── client.py                Token + Catalog reads + PO reads/writes + custom-export/queued-jobs
 │       ├── catalog_index.py         Per-brand index: existence, prefix (mode+conf), collision ladder
