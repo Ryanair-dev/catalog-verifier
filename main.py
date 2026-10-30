@@ -201,11 +201,12 @@ async def _lifespan(app: FastAPI):
         _delayed_start(630, eligibility_warmer.start_scheduler)
     except Exception:
         pass
-    # Reports > PO P&L: build the default dashboard's cache once (+720s, after
-    # azure_sql's catalog index is warm), so the first visit isn't a cold build.
+    # Reports > PO P&L: keep the default dashboard (Avi + Victoria) pre-built,
+    # rebuilt every 30 min. First build at +240s -- after azure_sql's ~165s
+    # cold catalog pull, so brands/ASINs come out filled in.
     try:
         from services import reports_po_pnl
-        _delayed_start(720, reports_po_pnl.prewarm)
+        _delayed_start(240, reports_po_pnl.start_scheduler)
     except Exception:
         pass
     yield
@@ -237,6 +238,11 @@ async def _lifespan(app: FastAPI):
     try:
         from services import eligibility_warmer
         eligibility_warmer.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import reports_po_pnl
+        reports_po_pnl.stop_scheduler()
     except Exception:
         pass
 

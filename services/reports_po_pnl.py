@@ -187,7 +187,10 @@ def _enrich_brand_asin(items: list[dict], company: str = "Ford Medical") -> None
 # relies on), but so retyping a filter box doesn't re-pay the Monday lookup +
 # cash-cycle query + enrich pass (a few seconds, not huge, but noticeable on
 # every keystroke of a live dashboard) more than once every few minutes.
-_CACHE_TTL = 300.0
+# 35 min since 2026-10-30: the 30-min background scheduler below is what keeps
+# the default dashboard fresh; this only catches a missed/failed scheduled run
+# (and covers any non-default purchaser key).
+_CACHE_TTL = 2100.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, list[dict]]] = {}
 # One build at a time per purchaser (2026-10-30): the page fires /po-pnl and
@@ -276,13 +279,54 @@ def _enriched_lines_for(purchaser: str, force: bool = False) -> list[dict]:
     return lines
 
 
-def prewarm(purchaser: str = "Avi Schoemann") -> None:
-    """Build the default dashboard's cache once after startup, so the first
-    visit doesn't pay the cold Azure build."""
-    try:
-        _enriched_lines_for(purchaser)
-    except Exception:  # noqa: BLE001
-        log.exception("[reports_po_pnl] prewarm failed")
+# Dashboard scope (2026-10-30, per user: "lets leave only Avi's and Victoria's").
+DEFAULT_PURCHASERS = "Avi Schoemann, Victoria Romanoff"
+
+# Keep the default dashboard pre-built (2026-10-30, user: "maybe we should cache
+# it every morning"): rebuilt in the background every 30 min from startup, so a
+# visit never waits on a build and the numbers are never more than ~30 min old
+# (a once-a-morning build would be a day stale by the afternoon).
+REFRESH_SECONDS = 1800
+_sched_thread: threading.Thread | None = None
+_sched_stop = threading.Event()
+_last_refresh: dict = {"at": None, "error": None, "pos": None}
+
+
+def _sched_loop() -> None:
+    key = DEFAULT_PURCHASERS.strip().lower()
+    while not _sched_stop.is_set():
+        try:
+            lines = _build(DEFAULT_PURCHASERS, key)
+            _last_refresh.update(at=time.time(), error=None, pos=len({l["po_number"] for l in lines}))
+        except Exception as exc:  # noqa: BLE001
+            _last_refresh["error"] = str(exc)[:300]
+            log.exception("[reports_po_pnl] scheduled refresh failed")
+        if _sched_stop.wait(REFRESH_SECONDS):
+            return
+
+
+def start_scheduler() -> None:
+    global _sched_thread
+    if _sched_thread and _sched_thread.is_alive():
+        return
+    _sched_stop.clear()
+    _sched_thread = threading.Thread(target=_sched_loop, name="po-pnl-refresh", daemon=True)
+    _sched_thread.start()
+
+
+def stop_scheduler() -> None:
+    _sched_stop.set()
+
+
+def scheduler_status() -> dict:
+    at = _last_refresh["at"]
+    summary = (f"{_last_refresh['pos']} POs, last built {time.strftime('%H:%M', time.localtime(at))}"
+               if at else "not built yet")
+    if _last_refresh["error"]:
+        summary += f" — last error: {_last_refresh['error'][:120]}"
+    return {"running_now": False, "scheduler_alive": bool(_sched_thread and _sched_thread.is_alive()),
+            "interval_seconds": REFRESH_SECONDS, "summary": summary,
+            "next_run": (at + REFRESH_SECONDS) * 1000 if at else None}
 
 
 _PO_SUM_FIELDS = (
@@ -339,9 +383,9 @@ def _summarize(pos: list[dict]) -> dict:
     }
 
 
-def get_po_pnl(purchaser: str = "Avi Schoemann", vendor: str = "", po_number: str = "",
+def get_po_pnl(purchaser: str = DEFAULT_PURCHASERS, vendor: str = "", po_number: str = "",
                brand: str = "", item: str = "", bucket: str = "active",
-               refresh: bool = False) -> dict:
+               refresh: bool = False, include_items: bool = True) -> dict:
     """Returns {"pos": [...], "summary": {...}}. `bucket` is 'active' (not
     yet fully sold through) or 'archive' (100% sold out), per the user's own
     rule: a PO that's completely sold stops being "live" and moves to an
@@ -371,10 +415,34 @@ def get_po_pnl(purchaser: str = "Avi Schoemann", vendor: str = "", po_number: st
     else:
         pos = [p for p in pos if not p["fully_sold"]]
 
-    return {"pos": pos, "summary": _summarize(pos)}
+    summary = _summarize(pos)
+    if not include_items:
+        # The dashboard list only needs PO-level totals; a PO's item lines are
+        # fetched when its row is expanded (get_po_items) -- the full payload
+        # was ~0.9 MB for Avi alone and the page built every hidden item table.
+        pos = [{**{k: v for k, v in p.items() if k != "items"}, "item_count": len(p["items"])}
+               for p in pos]
+    return {"pos": pos, "summary": summary}
 
 
-def get_filter_options(purchaser: str = "Avi Schoemann") -> dict:
+def get_po_items(purchaser: str = DEFAULT_PURCHASERS, po_number: str = "",
+                 brand: str = "", item: str = "") -> list[dict]:
+    """One PO's item lines, from the same cache (same brand/item filters as the list)."""
+    try:
+        wanted = int(str(po_number).strip())
+    except ValueError:
+        return []
+    lines = [l for l in _enriched_lines_for(purchaser) if l["po_number"] == wanted]
+    brand_l, item_l = brand.strip().lower(), item.strip().lower()
+    if brand_l:
+        lines = [l for l in lines if brand_l in l.get("brand", "").lower()]
+    if item_l:
+        lines = [l for l in lines
+                 if item_l in l["product_id"].lower() or any(item_l in a.lower() for a in l.get("asins", []))]
+    return lines
+
+
+def get_filter_options(purchaser: str = DEFAULT_PURCHASERS) -> dict:
     """Distinct vendors/brands within this purchaser's PO scope, for
     populating the dashboard's filter dropdowns without a second round-trip
     per keystroke."""

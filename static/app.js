@@ -8420,40 +8420,64 @@
         <td style="text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
         <td style="text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
       </tr>
-      <tr class="rpt-po-detail hidden" data-idx="${idx}">
-        <td colspan="13" style="padding:0;">
-          <div class="rpt-detail-wrap">
-            <table class="rpt-detail-table">
-              <thead>
-                <tr>
-                  <th>SKU</th><th>Brand</th>
-                  <th>ASIN</th>
-                  <th style="text-align:right;">Qty Bought</th>
-                  <th style="text-align:right;">Qty Sold</th>
-                  <th style="text-align:right;">Qty Left</th>
-                  <th style="text-align:right;">Bought $</th>
-                  <th style="text-align:right;">Sold $</th>
-                  <th style="text-align:right;">Left $</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${(po.items || []).map(it => `
-                  <tr>
-                    <td style="font-family:monospace;">${escapeHtml(it.product_id)}</td>
-                    <td>${escapeHtml(it.brand || "—")}</td>
-                    <td style="font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
-                    <td style="text-align:right;">${_fmtInt(it.qty_received)}</td>
-                    <td style="text-align:right;">${_fmtInt(it.sold_qty)}</td>
-                    <td style="text-align:right;">${_fmtInt(it.left_qty)}</td>
-                    <td style="text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
-                    <td style="text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
-                    <td style="text-align:right;">${_fmtUsd2(it.left_value)}</td>
-                  </tr>`).join("")}
-              </tbody>
-            </table>
-          </div>
-        </td>
+      <tr class="rpt-po-detail hidden" data-idx="${idx}" data-po="${po.po_number}">
+        <td colspan="13" style="padding:0;"><div class="rpt-detail-wrap"></div></td>
       </tr>`;
+  }
+
+  // A PO's item lines are fetched and built only when its row is first
+  // expanded (2026-10-30) -- building every hidden item table up front (~2.5k
+  // rows for Avi alone, more with Victoria) is what made the page slow.
+  function _rptItemsTableHtml(items) {
+    if (!items.length) return `<div class="text-xs" style="color:#9aa1ab;padding:10px 14px;">No item lines.</div>`;
+    return `
+      <table class="rpt-detail-table">
+        <thead>
+          <tr>
+            <th>SKU</th><th>Brand</th>
+            <th>ASIN</th>
+            <th style="text-align:right;">Qty Bought</th>
+            <th style="text-align:right;">Qty Sold</th>
+            <th style="text-align:right;">Qty Left</th>
+            <th style="text-align:right;">Bought $</th>
+            <th style="text-align:right;">Sold $</th>
+            <th style="text-align:right;">Left $</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(it => `
+            <tr>
+              <td style="font-family:monospace;">${escapeHtml(it.product_id)}</td>
+              <td>${escapeHtml(it.brand || "—")}</td>
+              <td style="font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
+              <td style="text-align:right;">${_fmtInt(it.qty_received)}</td>
+              <td style="text-align:right;">${_fmtInt(it.sold_qty)}</td>
+              <td style="text-align:right;">${_fmtInt(it.left_qty)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.left_value)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+  }
+
+  async function _rptLoadPoItems(detailRow) {
+    const wrap = detailRow?.querySelector(".rpt-detail-wrap");
+    if (!wrap || detailRow.dataset.loaded) return;
+    detailRow.dataset.loaded = "1";
+    wrap.innerHTML = `<div class="text-xs" style="color:#9aa1ab;padding:10px 14px;">Loading items…</div>`;
+    const params = new URLSearchParams({
+      po_number: detailRow.dataset.po,
+      brand: $("#rpt-po-pnl-brand")?.value || "",
+      item: $("#rpt-po-pnl-item")?.value.trim() || "",
+    });
+    try {
+      const j = await api(`/api/reports/po-pnl/items?${params.toString()}`);
+      wrap.innerHTML = _rptItemsTableHtml(j.items || []);
+    } catch (e) {
+      delete detailRow.dataset.loaded;   // let a later click retry
+      wrap.innerHTML = `<div class="text-xs" style="color:#dc2626;padding:10px 14px;">Couldn't load items: ${escapeHtml(e.message || String(e))}</div>`;
+    }
   }
 
   async function _loadReportsPoPnl(refresh) {
@@ -8498,6 +8522,7 @@
             const nowHidden = detail?.classList.toggle("hidden");
             row.classList.toggle("rpt-row-open", !nowHidden);
             if (caret) caret.style.transform = nowHidden ? "" : "rotate(90deg)";
+            if (!nowHidden) _rptLoadPoItems(detail);
           });
         });
       }

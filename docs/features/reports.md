@@ -24,6 +24,14 @@ A new top-level sidebar section — a **full page** (`#view-reports`, same `swit
 
 ## Changelog
 
+**2026-10-30b** — Scope is now Avi + Victoria; dashboard kept pre-built every 30 min; items loaded per PO on expand.
+- User: "yea lets leave only Avi's and Victoria's. But its just super slow right now the report itself, maybe we should cache it every morning or smth?"
+- **Checked where the time went first**: the server answered in 0.2 s (0.7 s via the Cloudflare tunnel) after the 2026-10-30 fixes; the remaining slowness was the page itself -- `_rptPoPnlRowHtml` built every PO's hidden item table up front (~2.5k item rows for Avi alone) from a ~0.9 MB payload, on every load and filter change.
+- **Scope**: `monday_eta.pos_for_purchaser` accepts comma-separated names (OR of LIKEs in one query); `reports_po_pnl.DEFAULT_PURCHASERS = "Avi Schoemann, Victoria Romanoff"` is the router/service default. Live: Avi 438 + Victoria 944 board POs -> 978 union (404 overlap), identical to the two separate lookups; 526 active POs with cash-cycle data, 46 vendors. `index.html` scope label updated.
+- **Pre-built**: instead of a once-a-morning build (a day stale by afternoon), `reports_po_pnl.start_scheduler()` rebuilds the default dashboard every 30 min, first run at +240 s in `main.py`'s stagger (after the azure_sql catalog's cold pull, so brands come out filled in); `_CACHE_TTL` raised 5 -> 35 min (now just a safety net). Listed in Settings -> Tasks Running ("Reports: PO P&L refresh (Avi + Victoria)").
+- **Lighter page**: `GET /api/reports/po-pnl` now returns PO totals only (`include_items=False` default, each PO gets `item_count`) -- 166 KB vs 1,525 KB with items for the new scope. New `GET /api/reports/po-pnl/items?po_number=` returns one PO's lines (same brand/item filters); the page fetches and builds a PO's item table only when its row is first expanded (`_rptLoadPoItems`). `app.js` cache-bust v70 -> v71 (old cached JS would expect items in the list).
+- Verified against real Azure data via TestClient: list 166 KB, cached repeat 0.05 s, PO 52403 items sum to its qty (112,000), combined purchaser query == union of the two.
+
 **2026-10-30** — PO P&L load time: 12-20 s cold -> faster Monday lookup, stale-while-revalidate cache, one build at a time, startup prewarm. Plus why some vendors' POs never appear.
 - User: "the po report takes so long to load and nothing loads from the vendors."
 - **Measured live first**: a cold load (cache older than 5 min) took 12.2-20.4 s. Breakdown in a fresh process: Monday `pos_for_purchaser` 5.6 s (it pivoted all 8 columns of all 4,317 board items via `fetch_inbound_items()` just to find Avi's 438 POs), cash-cycle query 4.8 s (2,468 lines), brand/ASIN enrich fast when the shared `catalog_index` is warm (it is in the live server). Warm requests: ~100-150 ms.

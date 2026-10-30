@@ -139,8 +139,10 @@ def pos_for_purchaser(name: str) -> set[int]:
     here even if they're still sitting in the cash-cycle data. Flagged, not
     silently papered over -- a PO P&L dashboard built on this will undercount
     if archived-board POs are expected to still appear."""
-    name_l = (name or "").strip().lower()
-    if not name_l or not azure_sql.is_configured():
+    # Several purchasers, comma-separated ("Avi Schoemann, Victoria Romanoff")
+    # -> union of their POs (2026-10-30, PO P&L scope = Avi + Victoria).
+    names = [n.strip().lower() for n in (name or "").split(",") if n.strip()]
+    if not names or not azure_sql.is_configured():
         return set()
     # Only the PO + Purchaser columns, filtered in SQL (2026-10-30): pivoting
     # all 8 columns of every board item via fetch_inbound_items() took ~5.6s
@@ -153,16 +155,17 @@ def pos_for_purchaser(name: str) -> set[int]:
         return set()
     try:
         cur = conn.cursor()
+        likes = " OR ".join(["LOWER(pu.text) LIKE %s"] * len(names))
         cur.execute(
-            """
+            f"""
             SELECT po.link_text_value
             FROM monday.items i
             JOIN monday.column_values po ON po.item_id = i.id AND po.column_id = %s
             JOIN monday.column_values pu ON pu.item_id = i.id AND pu.column_id = %s
-            WHERE i.board_id = %s AND i.state = 'active' AND LOWER(pu.text) LIKE %s
+            WHERE i.board_id = %s AND i.state = 'active' AND ({likes})
             """,
             (_col_id(_FIELDS["po_number"]), _col_id(_FIELDS["purchaser"]),
-             INBOUND_BOARD_ID, f"%{name_l}%"),
+             INBOUND_BOARD_ID, *[f"%{n}%" for n in names]),
         )
         return {int(r[0].strip()) for r in cur.fetchall() if r[0] and r[0].strip().isdigit()}
     except Exception:  # noqa: BLE001
