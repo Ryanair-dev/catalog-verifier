@@ -466,6 +466,12 @@ async def assign_bulk(body: dict = Body(...)) -> dict:
         vo.assign_bulk, body.get("text") or "", bool(body.get("dry")))
 
 
+@router.get("/vendor-offers/asins")
+async def asins_for_upc(upc: str) -> dict:
+    """Every ASIN paired to a UPC (drawer's Unpair list)."""
+    return {"upc": upc, "asins": await run_in_threadpool(vo.asins_for_upc, upc)}
+
+
 @router.post("/vendor-offers/unassign")
 async def unassign(body: dict = Body(...)) -> dict:
     """Remove a wrong ASIN pairing from the Price Desk (and its Pair Library

@@ -221,6 +221,16 @@ body {
 .assign button:hover { background: var(--purple-800, #3f2a8c); box-shadow: var(--shadow-lg); }
 .assign button[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
 .assign .hint { font-size: 11px; color: var(--ink-faint); margin-top: 8px; }
+/* per-ASIN listings in the drawer, each with an Unpair button (2026-11-02) */
+.lst-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--rule-soft); }
+.lst-row .num { font-family: var(--mono); font-size: 12.5px; }
+.lst-row .lst-meta { font-size: 11px; color: var(--ink-faint); flex: 1; }
+.lst-row button {
+  font-size: 10.5px; font-weight: 600; padding: 4px 10px; cursor: pointer; border-radius: 7px;
+  background: transparent; color: #b42318; border: 1px solid #f3c2bd;
+}
+.lst-row button:hover { background: #fef3f2; }
+.lst-row button[disabled] { opacity: .55; cursor: progress; }
 
 /* -- import modal ------------------------------------------------------- */
 .modal {
@@ -995,6 +1005,7 @@ function openDrawer(vi) {
       ${it.pack ? `<div><span class="lbl">Amz pack</span><span class="num">${it.pack}</span></div>` : ""}
       ${it.status ? `<div><span class="lbl">Listing</span><span class="num">${esc(it.status)}</span></div>` : ""}
     </div>
+    <div id="asinList"></div>
     <div class="d-sum">
       <div>
         <div class="big">${money(it.best)}</div>
@@ -1073,10 +1084,57 @@ function openDrawer(vi) {
       btn.disabled = false; btn.textContent = "Assign";
     }
   });
+  loadAsinList(it, vi);
   scrim.classList.add("open"); drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
   document.getElementById("drawerX").focus();
   render(true);
+}
+
+// Every ASIN paired to this UPC, each with an Unpair button -> the targeted
+// /unassign (removes only this UPC from the ASIN, blacklists the pair so the
+// export can't re-pair it via Keepa barcodes). Hidden if the endpoint isn't
+// there (server not restarted yet) or the UPC has no ASINs.
+async function loadAsinList(it, vi) {
+  const box = document.getElementById("asinList");
+  if (!box) return;
+  let list = [];
+  try {
+    const res = await fetch(`/api/vendor-offers/asins?upc=${encodeURIComponent(it.upc)}`);
+    if (!res.ok) return;
+    list = (await res.json()).asins || [];
+  } catch { return; }
+  if (!list.length || document.getElementById("asinList") !== box) return;
+  box.innerHTML = `<div class="sect">Amazon listings for this UPC</div>` + list.map(a => `
+    <div class="lst-row" data-asin="${esc(a.asin)}">
+      <span class="num">${esc(a.asin)}</span>
+      <span class="lst-meta">pack ${a.pack ?? 1} &middot; ${a.source === "manual" ? "assigned here" : "from Pair Library"}</span>
+      <button type="button">Unpair</button>
+    </div>`).join("");
+  box.querySelectorAll(".lst-row button").forEach(btn => btn.addEventListener("click", async () => {
+    const asin = btn.closest(".lst-row").dataset.asin;
+    if (!confirm(`Unpair ${asin} from UPC ${it.upc}?\n\nIt's removed from the Price Desk and this UPC is `
+        + `removed from the ASIN's Pair Library entry (its other UPCs stay). The pair is blacklisted so `
+        + `exports don't re-add it; you can undo that in the Pair Manager.`)) return;
+    btn.disabled = true; btn.textContent = "Unpairing...";
+    try {
+      const res = await fetch("/api/vendor-offers/unassign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asin, upc: it.upc }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.detail || res.statusText);
+      toast(`${asin} unpaired from ${it.upc}.`);
+      if (it.asin === asin) {
+        const left = list.filter(a => a.asin !== asin);
+        it.asin = left.length ? left[0].asin : "";
+      }
+      openDrawer(vi);
+    } catch (err) {
+      toast("Couldn't unpair: " + err.message, true);
+      btn.disabled = false; btn.textContent = "Unpair";
+    }
+  }));
 }
 function closeDrawer() {
   scrim.classList.remove("open"); drawer.classList.remove("open");

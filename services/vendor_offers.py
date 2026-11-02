@@ -750,6 +750,17 @@ def _barcode_key(s) -> str:
     return re.sub(r"\D", "", str(s or "")).lstrip("0")
 
 
+def asins_for_upc(upc: str) -> list[dict]:
+    """Every ASIN paired to `upc` on the Price Desk (manual + Pair Library),
+    for the item drawer's per-ASIN Unpair buttons (2026-11-02)."""
+    nupc = norm_upc(upc) or str(upc or "").strip()
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT asin, amazon_pack_size, source FROM vo_asin_by_upc WHERE upc=? ORDER BY asin",
+            (nupc,)).fetchall()
+    return [{"asin": r[0], "pack": r[1], "source": r[2]} for r in rows]
+
+
 def unassign_asin(asin: str, upc: str | None = None) -> dict:
     """Remove a wrong UPC<->ASIN pair from the Price Desk.
 
