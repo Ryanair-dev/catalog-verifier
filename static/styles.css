@@ -52,10 +52,11 @@
   --blue-100:  #dbeafe;
   --blue-500:  #2563eb;
   --blue-600:  #1d4ed8;
-  /* Shadows removed */
-  --shadow-card: none;
-  --shadow-lg:   none;
-  --shadow-xl:   none;
+  /* Soft "floating card" shadows (Ringku/Octom-style dashboard reference,
+     2026-09-30) — three tiers by how far off the page an element sits. */
+  --shadow-card: 0 1px 2px rgba(17, 24, 39, 0.04), 0 2px 8px rgba(17, 24, 39, 0.06);
+  --shadow-lg:   0 4px 16px rgba(17, 24, 39, 0.08), 0 2px 6px rgba(17, 24, 39, 0.05);
+  --shadow-xl:   0 12px 32px rgba(17, 24, 39, 0.12), 0 4px 12px rgba(17, 24, 39, 0.06);
 }
 
 * { box-sizing: border-box; }
@@ -72,40 +73,62 @@ html, body {
 /* ---------- Sidebar ------------------------------------------------------ */
 
 .sidebar {
-  background: var(--purple-900);
-  color: #e3dcfb;
-  width: 240px;
-  min-height: 100vh;
+  background: #fff;
+  color: var(--grey-700);
+  border-right: 1px solid var(--grey-100);
+  width: 272px;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
   display: flex;
   flex-direction: column;
 }
+/* Wraps every section-label/nav-item between the logo and the footer so the
+   nav list scrolls on its own (logo stays pinned at top, status footer stays
+   pinned at bottom) instead of the whole sidebar overflowing the viewport as
+   more nav items accumulate. */
+.sidebar-nav-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+.sidebar-nav-scroll::-webkit-scrollbar { width: 6px; }
+.sidebar-nav-scroll::-webkit-scrollbar-thumb {
+  background: var(--grey-100); border-radius: 999px;
+  transition: background-color 150ms ease;
+}
+.sidebar-nav-scroll::-webkit-scrollbar-thumb:hover { background: var(--purple-300, #c4b5fd); }
 .brand-mark {
-  width: 32px; height: 32px;
-  border-radius: 8px;
+  width: 34px; height: 34px;
+  border-radius: 10px;
   background: linear-gradient(135deg, var(--purple-500), var(--purple-400));
+  box-shadow: var(--shadow-card);
   display: flex; align-items: center; justify-content: center;
 }
 .sidebar .nav-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px; border-radius: 8px;
-  font-size: 14px; color: #c7bff0;
+  padding: 10px 14px; border-radius: 10px;
+  font-size: 14px; color: var(--grey-500); font-weight: 500;
   cursor: pointer; transition: background 120ms, color 120ms;
   margin-bottom: 2px;
   user-select: none;
 }
-.sidebar .nav-item:hover { background: var(--purple-800); color: #fff; }
+.sidebar .nav-item:hover { background: var(--purple-50); color: var(--purple-700); }
 .sidebar .nav-item.active {
-  background: var(--purple-700); color: #fff;
-  box-shadow: inset 3px 0 0 var(--purple-400);
+  background: var(--purple-500); color: #fff;
+  box-shadow: var(--shadow-card);
 }
 .sidebar .nav-item.disabled {
   opacity: 0.45; cursor: not-allowed;
 }
-.sidebar .nav-item.disabled:hover { background: transparent; }
+.sidebar .nav-item.disabled:hover { background: transparent; color: var(--grey-500); }
 .sidebar .section-label {
-  font-size: 11px; letter-spacing: 0.08em; color: #8f85bf;
+  font-size: 11px; letter-spacing: 0.08em; color: var(--grey-500);
   text-transform: uppercase; margin: 18px 14px 6px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* ---------- View header -------------------------------------------------- */
@@ -130,8 +153,9 @@ html, body {
 
 .card {
   background: #fff;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid var(--grey-100);
+  box-shadow: var(--shadow-card);
 }
 .card-header {
   padding: 16px 20px;
@@ -145,11 +169,16 @@ html, body {
 .stat-card {
   background: #fff;
   border: 1px solid var(--grey-100);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 18px 20px;
-  transition: transform 150ms, border-color 150ms;
+  box-shadow: var(--shadow-card);
+  transition: transform 150ms, border-color 150ms, box-shadow 150ms;
 }
-.stat-card:hover { transform: translateY(-1px); border-color: var(--purple-100); }
+.stat-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--purple-100);
+  box-shadow: var(--shadow-lg);
+}
 .stat-label {
   font-size: 11px; letter-spacing: 0.08em;
   text-transform: uppercase; color: var(--grey-500);
@@ -165,7 +194,7 @@ html, body {
 
 .btn {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 16px; border-radius: 8px;
+  padding: 8px 16px; border-radius: 10px;
   font-weight: 500; font-size: 14px;
   transition: all 120ms ease-in-out;
   cursor: pointer; border: 1px solid transparent;
@@ -177,7 +206,7 @@ html, body {
   outline-offset: 2px;
 }
 .btn-sm {
-  padding: 5px 11px; font-size: 12.5px; border-radius: 7px; gap: 6px;
+  padding: 5px 11px; font-size: 12.5px; border-radius: 9px; gap: 6px;
 }
 .btn:active { transform: scale(0.97); }
 .btn-warning:focus-visible { outline-color: rgba(217, 119, 6, 0.45); }
@@ -185,10 +214,13 @@ html, body {
 .btn-success:focus-visible { outline-color: rgba(31, 157, 85, 0.45); }
 .btn-primary {
   background: var(--purple-500); color: #fff;
+  border-radius: 999px;
+  box-shadow: var(--shadow-card);
 }
-.btn-primary:hover { background: var(--purple-800); }
+.btn-primary:hover { background: var(--purple-800); box-shadow: var(--shadow-lg); }
 .btn-primary:disabled {
   background: var(--grey-200); color: var(--grey-500); cursor: not-allowed;
+  box-shadow: none;
 }
 .btn-secondary {
   background: #fff; color: var(--grey-700);
@@ -219,7 +251,7 @@ html, body {
 
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 8px;
+  width: 32px; height: 32px; border-radius: 10px;
   background: transparent; color: var(--grey-500);
   border: 1px solid transparent; cursor: pointer;
   transition: all 120ms;
@@ -230,23 +262,24 @@ html, body {
 
 .toggle {
   display: inline-flex; background: var(--grey-100);
-  padding: 4px; border-radius: 8px;
+  padding: 4px; border-radius: 10px;
   font-size: 13px; font-weight: 500;
 }
 .toggle button {
-  padding: 6px 14px; border-radius: 6px;
+  padding: 6px 14px; border-radius: 8px;
   color: var(--grey-500); transition: all 120ms;
   cursor: pointer;
 }
 .toggle button.active {
   background: #fff; color: var(--navy-800);
+  box-shadow: var(--shadow-card);
 }
 
 /* ---------- Upload drop zones ------------------------------------------- */
 
 .drop-zone {
   border: 2px dashed var(--grey-200);
-  border-radius: 10px;
+  border-radius: 14px;
   padding: 32px 20px;
   text-align: center;
   transition: all 150ms;
@@ -266,7 +299,7 @@ html, body {
 
 .drop-zone-lg {
   border: 2px dashed var(--grey-300);
-  border-radius: 14px;
+  border-radius: 18px;
   padding: 48px 24px;
   text-align: center;
   transition: all 180ms ease-out;
@@ -405,7 +438,7 @@ html, body {
 .history-actions { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
 .history-actions button {
   padding: 5px 10px; font-size: 12px; font-weight: 500;
-  border-radius: 6px; cursor: pointer;
+  border-radius: 8px; cursor: pointer;
   border: 1px solid transparent;
   transition: all 120ms;
   background: transparent; color: var(--grey-700);
@@ -512,6 +545,7 @@ html, body {
   position: fixed; right: 0; top: 0; bottom: 0;
   width: 420px; background: #fff;
   border-left: 1px solid var(--grey-100);
+  box-shadow: var(--shadow-xl);
   transform: translateX(100%);
   transition: transform 250ms ease-in-out;
   z-index: 40; display: flex; flex-direction: column;
@@ -521,6 +555,244 @@ html, body {
 .side-panel-header {
   padding: 18px 20px; border-bottom: 1px solid var(--grey-100);
   display: flex; align-items: center; justify-content: space-between;
+}
+
+/* ---------- Toolbox panel — dedicated look (scoped to #tools-panel so the --
+   Library/Settings panels, which share .side-panel, are unaffected) --------- */
+
+/* A touch of spring in the slide-in, just for this one panel. */
+.tools-panel.open { transition: transform 320ms cubic-bezier(0.34, 1.15, 0.64, 1); }
+
+.tools-panel-header {
+  background: linear-gradient(135deg, var(--purple-50, #f4f0ff) 0%, #fff 65%);
+  border-bottom: 1px solid var(--purple-100, #ece6fb);
+  padding: 19px 20px;
+}
+.tools-panel-header-icon {
+  width: 38px; height: 38px; border-radius: 11px; flex: none;
+  background: linear-gradient(135deg, var(--purple-500), var(--purple-400));
+  box-shadow: var(--shadow-card);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+}
+.tools-panel-title {
+  font-weight: 700; font-size: 15px; color: var(--navy-800); letter-spacing: -0.01em;
+}
+.tools-panel-subtitle {
+  font-size: 11.5px; color: #8089a0; margin-top: 2px; line-height: 1.4;
+}
+
+/* Icon + label pill tabs, replacing the plain underline style for the
+   Toolbox's sub-tabs — scoped via .tools-tab-bar so .lib-type-tab's base
+   (shared with the Library panel's Abbreviations/Brands/Manufacturers tabs)
+   stays untouched elsewhere. Extended 2026-10-19 to also cover
+   .reports-tab-bar (the Reports panel's own sub-tab bar — PO P&L today,
+   more dashboards later) so every panel with its own sub-tabs shares one
+   consistent pill-tab look instead of each inventing its own. */
+/* Compound selector (not just .tools-tab-bar alone) — .lib-type-tabs' own
+   base rule appears later in this file and shares the same specificity, so
+   a same-specificity override must out-rank it structurally, not rely on
+   coming after it in source order. */
+.tools-tab-bar.lib-type-tabs, .reports-tab-bar.lib-type-tabs {
+  gap: 7px;
+  padding: 12px 16px;
+  background: #fbfaff;
+  border-bottom: 1px solid var(--grey-100);
+}
+.tools-tab-bar .lib-type-tab, .reports-tab-bar .lib-type-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--grey-100);
+  background: #fff;
+  color: var(--grey-500);
+  margin-bottom: 0;
+  transition: background 150ms, color 150ms, border-color 150ms, box-shadow 150ms, transform 100ms;
+}
+.tools-tab-bar .lib-type-tab:hover, .reports-tab-bar .lib-type-tab:hover {
+  background: var(--purple-50, #f4f0ff);
+  color: var(--purple-700);
+  border-color: var(--purple-100, #ece6fb);
+}
+.tools-tab-bar .lib-type-tab:active, .reports-tab-bar .lib-type-tab:active { transform: scale(0.97); }
+.tools-tab-bar .lib-type-tab.active, .reports-tab-bar .lib-type-tab.active {
+  background: linear-gradient(135deg, var(--purple-600, #5b3dd1), var(--purple-500));
+  color: #fff;
+  border-color: transparent;
+  box-shadow: 0 4px 10px rgba(91, 61, 209, 0.28);
+}
+.tools-tab-bar .lib-type-tab svg, .reports-tab-bar .lib-type-tab svg { flex: none; }
+
+/* ---------- Reports / PO P&L dashboard (2026-10-19, UI/UX pass) ---------- */
+
+.rpt-scope-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--purple-50, #f4f0ff); border: 1px solid var(--purple-100, #ece6fb);
+  color: var(--navy-800); font-size: 12px; padding: 8px 14px; border-radius: 999px;
+}
+.rpt-scope-chip b { color: var(--purple-700, #5b3dd1); font-weight: 700; }
+.rpt-scope-chip svg { flex: none; color: var(--purple-500); }
+
+.rpt-filter-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  padding: 16px 18px;
+}
+.rpt-field { flex: 1; min-width: 150px; position: relative; }
+.rpt-field label {
+  display: block; font-size: 11px; font-weight: 700; color: var(--grey-500);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px;
+}
+.rpt-field .rpt-field-icon {
+  position: absolute; left: 10px; top: 32px; color: var(--grey-400, #a3aab8); pointer-events: none;
+}
+.rpt-field input, .rpt-field select {
+  width: 100%; box-sizing: border-box; font-size: 13px; padding: 9px 10px 9px 32px;
+  border: 1.5px solid var(--grey-100); border-radius: 10px; outline: none; color: var(--navy-800);
+  background: #fff; transition: border-color 150ms, box-shadow 150ms;
+}
+.rpt-field input:focus, .rpt-field select:focus {
+  border-color: var(--purple-400, #8b76e5); box-shadow: 0 0 0 3px var(--purple-50, #f4f0ff);
+}
+.rpt-field input::placeholder { color: var(--grey-400, #a3aab8); }
+
+.rpt-refresh-btn {
+  width: 38px; height: 38px; border-radius: 10px; flex: none;
+  background: var(--purple-50, #f4f0ff); color: var(--purple-600, #5b3dd1);
+  border: 1.5px solid var(--purple-100, #ece6fb);
+}
+.rpt-refresh-btn:hover { background: var(--purple-100, #ece6fb); color: var(--purple-700); }
+.rpt-refresh-btn.spinning svg { animation: spin 0.9s linear infinite; }
+
+/* Active / Archive — a real segmented view switch (two distinct views), not
+   a feature on/off toggle, so it gets the same pill-segment treatment as
+   the app's other mode switches (.seg-radio) rather than .toggle-pill. */
+.rpt-seg {
+  display: inline-flex; background: var(--grey-100); padding: 4px; border-radius: 12px;
+  font-size: 12.5px; font-weight: 600;
+}
+.rpt-seg button {
+  padding: 7px 16px; border-radius: 9px; color: var(--grey-500);
+  transition: all 150ms; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; border: none;
+}
+.rpt-seg button.active {
+  background: #fff; color: var(--navy-800); box-shadow: var(--shadow-card);
+}
+.rpt-seg button .rpt-seg-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--grey-400, #a3aab8);
+}
+.rpt-seg button.active .rpt-seg-dot { background: var(--teal-500); }
+.rpt-seg button[data-bucket="archive"].active .rpt-seg-dot { background: var(--purple-500); }
+
+.rpt-loading {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--grey-500); margin-left: auto;
+}
+.rpt-loading svg { animation: spin 0.9s linear infinite; }
+
+/* Summary stat tiles — small colored icon badge above the existing
+   .stat-label/.stat-value typography, reusing that component rather than
+   inventing new type scales. */
+.rpt-stat-icon {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-bottom: 10px;
+}
+.rpt-stat-icon.rpt-i-count  { background: var(--grey-100); color: var(--grey-500); }
+.rpt-stat-icon.rpt-i-bought { background: #eef2ff; color: #4f46e5; }
+.rpt-stat-icon.rpt-i-sold   { background: var(--teal-100, #d9f6f4); color: var(--teal-600, #0f8a8d); }
+.rpt-stat-icon.rpt-i-profit { background: var(--purple-50, #f4f0ff); color: var(--purple-600, #5b3dd1); }
+.rpt-stat-icon.rpt-i-left   { background: #fef3e2; color: #b45309; }
+
+/* Table card */
+.rpt-table-card {
+  border: 1px solid var(--grey-100); border-radius: 16px; overflow: hidden;
+  box-shadow: var(--shadow-card); background: #fff;
+}
+.rpt-table-scroll { overflow-x: auto; }
+.rpt-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rpt-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; color: var(--grey-500); font-weight: 700; font-size: 11px;
+  text-transform: uppercase; letter-spacing: .03em;
+  background: #fbfaff; border-bottom: 1px solid var(--grey-100);
+  padding: 11px 10px; white-space: nowrap;
+}
+.rpt-table tbody tr.rpt-po-row {
+  border-bottom: 1px solid var(--grey-100); cursor: pointer; transition: background 120ms;
+}
+.rpt-table tbody tr.rpt-po-row:hover { background: var(--purple-50, #f4f0ff); }
+.rpt-table tbody tr.rpt-po-row.rpt-row-open { background: #fbfaff; }
+.rpt-table td { padding: 10px; vertical-align: middle; }
+.rpt-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 6px; color: var(--grey-400, #a3aab8);
+  transition: transform 160ms, background 120ms, color 120ms;
+}
+.rpt-po-row:hover .rpt-caret { background: #fff; color: var(--purple-600, #5b3dd1); }
+
+.rpt-brand-pill {
+  display: inline-block; font-size: 10.5px; font-weight: 600; padding: 2px 8px;
+  border-radius: 999px; background: var(--grey-100); color: var(--grey-600, #4b5563);
+  margin: 1px 3px 1px 0; white-space: nowrap;
+}
+
+.rpt-pct-wrap { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.rpt-pct-track {
+  width: 46px; height: 6px; border-radius: 999px; background: var(--grey-100); overflow: hidden; flex: none;
+}
+.rpt-pct-fill { height: 100%; border-radius: 999px; background: var(--teal-500); transition: width 300ms ease; }
+.rpt-pct-text { font-variant-numeric: tabular-nums; min-width: 32px; text-align: right; }
+
+.rpt-detail-wrap { padding: 4px 20px 18px 46px; background: #fbfaff; }
+.rpt-detail-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.rpt-detail-table th {
+  text-align: left; color: var(--grey-500); font-weight: 700; font-size: 10px;
+  text-transform: uppercase; letter-spacing: .03em; padding: 4px 8px;
+}
+.rpt-detail-table td { padding: 5px 8px; color: var(--navy-800); }
+.rpt-detail-table tr:nth-child(odd) td { background: #fff; }
+.rpt-detail-table tr:nth-child(even) td { background: #f8fafc; }
+.rpt-detail-table tr td:first-child, .rpt-detail-table tr th:first-child { border-radius: 8px 0 0 8px; }
+.rpt-detail-table tr td:last-child, .rpt-detail-table tr th:last-child { border-radius: 0 8px 8px 0; }
+
+/* Dribbble-style "scrollbar tucked inside a dropdown" look for the Toolbox's
+   own horizontal tab scroller specifically — NOT the dropdown/popup
+   component, just borrowing that same inset-pill scrollbar treatment for
+   this scroller. A touch of bottom padding gives the thumb room to sit
+   below the pills rather than hugging them, and the thumb itself is a
+   short, softly-rounded capsule inset from both the top/bottom (via the
+   border + background-clip trick) and the left/right ends (via the
+   scrollbar-track's own margin) so it reads as floating inside the strip
+   rather than spanning it edge-to-edge. Scoped to .tools-tab-bar via a
+   compound selector so the Library panel's own tab-bar scrollbar (still
+   plain .lib-type-tabs) is untouched.
+*/
+.tools-tab-bar.lib-type-tabs { padding-bottom: 16px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar { height: 8px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-track { background: transparent; margin: 0 16px; }
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-thumb {
+  background-color: var(--purple-200, #d4c5fa);
+  border-radius: 999px;
+  border: 2.5px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 150ms ease;
+}
+.tools-tab-bar.lib-type-tabs::-webkit-scrollbar-thumb:hover { background-color: var(--purple-400, #8b76e5); }
+.tools-tab-bar.lib-type-tabs { scrollbar-color: var(--purple-200, #d4c5fa) transparent; }
+
+/* Edge fade: a tab scrolling toward the left/right edge of the strip now
+   gradually loses opacity as it approaches the clip boundary, instead of
+   being fully visible right up until it's hard-cut by the panel's edge.
+   A CSS mask is the right tool for this (not a per-tab JS/scroll-position
+   opacity calculation) -- it fades whatever is CURRENTLY rendered at that
+   pixel position as content scrolls underneath it, so the fade is always
+   exactly at the visible edge regardless of how many tabs there are or how
+   far the strip has been scrolled. -webkit- prefix for Chrome/Edge/Safari;
+   the unprefixed property covers Firefox. */
+.tools-tab-bar.lib-type-tabs {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
 }
 
 /* ---------- Abbreviation library rework ----------------------------- */
@@ -746,7 +1018,8 @@ html, body {
   to   { opacity: 1; }
 }
 .modal-shell {
-  background: #fff; border-radius: 14px; flex: 1;
+  background: #fff; border-radius: 18px; flex: 1;
+  box-shadow: var(--shadow-xl);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .modal-tabs {
@@ -767,7 +1040,8 @@ html, body {
 
 .wizard-shell {
   background: #fff;
-  border-radius: 16px;
+  border-radius: 20px;
+  box-shadow: var(--shadow-xl);
   width: min(880px, 100%);
   max-height: calc(100vh - 48px);
   margin: auto;
@@ -1245,9 +1519,30 @@ html, body {
 
 /* ---------- Scrollbars ---------------------------------------------- */
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--grey-200); border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: var(--grey-500); }
+/* Smooth-animates any scripted/anchor scroll (scrollIntoView, scrollTo, an
+   in-page jump) on every scrolling box in the app, not just the document --
+   `scroll-behavior` only applies to the element that's actually scrolling,
+   so a single `html` rule wouldn't reach the many nested overflow:auto
+   panels used throughout (most of them styled inline, not via a class, so a
+   universal selector is the only selector that reliably covers all of
+   them). Note: direct mousewheel/trackpad input is still instant in Chrome/
+   Edge regardless of this setting -- that's a real spec/browser difference
+   (only Firefox also smooths wheel-driven scrolling), not something this
+   stylesheet can change.
+*/
+* { scroll-behavior: smooth; }
+html { scrollbar-width: thin; scrollbar-color: var(--grey-200) transparent; }
+
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background-color: var(--grey-200);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 150ms ease;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--purple-300, #c4b5fd); }
 
 /* ---------- Animations ---------------------------------------------- */
 
@@ -1429,6 +1724,7 @@ html, body {
   background: #fff;
   border: 1px solid rgba(200, 195, 230, 0.6);
   border-radius: 12px;
+  box-shadow: var(--shadow-lg);
   padding: 6px;
   z-index: 40;
   max-height: 280px;
@@ -2177,7 +2473,16 @@ html, body {
   border-bottom: 2px solid var(--grey-100);
   background: #fff;
   padding: 0 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
+.lib-type-tabs::-webkit-scrollbar { height: 5px; }
+.lib-type-tabs::-webkit-scrollbar-thumb {
+  background: var(--grey-100); border-radius: 999px;
+  transition: background-color 150ms ease;
+}
+.lib-type-tabs::-webkit-scrollbar-thumb:hover { background: var(--purple-300, #c4b5fd); }
 .lib-type-tab {
   padding: 10px 16px;
   font-size: 13px; font-weight: 600;
@@ -2188,6 +2493,7 @@ html, body {
   cursor: pointer;
   transition: color 150ms, border-color 150ms;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .lib-type-tab:hover { color: var(--navy-800); }
 .lib-type-tab.active { color: #4f46e5; border-bottom-color: #4f46e5; }
@@ -2399,22 +2705,26 @@ html, body {
   bottom: calc(100% + 6px);
   left: 50%;
   transform: translateX(-50%);
-  white-space: normal;
+  /* pre-line: a literal newline in data-tooltip renders as a real line break
+     (used for multi-field popovers, e.g. the Awaiting Analysis row detail —
+     a plain single-line tooltip, like the ASIN-conflict badge, is unaffected
+     since it has no newlines to begin with). */
+  white-space: pre-line;
   min-width: 180px;
-  max-width: 280px;
+  max-width: 300px;
   background: #1e293b;
   color: #f1f5f9;
   font-size: 11.5px;
   font-weight: 500;
-  line-height: 1.45;
-  padding: 7px 10px;
+  line-height: 1.5;
+  padding: 8px 11px;
   border-radius: 7px;
   box-shadow: 0 4px 14px rgba(0,0,0,.25);
   pointer-events: none;
   opacity: 0;
   transition: opacity 130ms ease, transform 130ms ease;
   z-index: 9999;
-  text-align: center;
+  text-align: left;
 }
 .has-tooltip:hover::after {
   opacity: 1;

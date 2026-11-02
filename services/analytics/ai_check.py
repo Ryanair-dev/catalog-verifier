@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -120,32 +121,18 @@ _SYSTEM = (
     "- Size must match within 10% (8 oz ≠ 16 oz; 8 oz ≈ 236 ml is fine). "
     "When the Amazon title lists a size alongside a pack count (e.g. '3.25 oz (2 Pack)'), "
     "the size is PER UNIT — compare it directly to the vendor size, do NOT multiply by pack count.\n"
-    "- Pack / bundle differences are NEVER a mismatch, but a DIFFERING per-unit count IS a "
-    "mismatch — telling these two apart is the most common mistake, so apply this test "
-    "CAREFULLY and INDEPENDENTLY for every candidate, even within the same batch:\n"
-    "  STEP 1 — find the TRUE per-unit count on each side. If a title states a bundle-"
-    "multiplier phrase ('Pack of N', 'Case of N', 'N-Pack', 'N Boxes', or 'M Packs of K') "
-    "ON TOP OF a count, the true per-unit is the SMALLER, more specific number (K in "
-    "'M Packs of K'), never the bigger headline total (do not use the '100' in '100 Count, "
-    "2 Packs of 50' — the true per-unit is 50). A bare 'wholesale case' quantity with no "
-    "retail-count meaning (e.g. 'case of 144' shipping cartons) is not a per-unit count at "
-    "all and should be set aside.\n"
-    "  STEP 2 — compare the TRUE per-unit counts from step 1. If brand, product type, and "
-    "the true per-unit counts match (or one side has no stated count at all) → the "
-    "difference is just bundle/shipping packaging → 'approve'. Examples that MUST approve: "
-    "vendor 'single box, 25 Count' vs Amazon '25 ct. Box (4 Pack)' (both true per-unit 25 — "
-    "Amazon just bundles four boxes); vendor 'case of 144' vs Amazon '3 Count' (144 is a "
-    "wholesale case, not a per-unit count); a 4-stick gum pack vs a '3-Pack' of the same "
-    "4-stick gum (both true per-unit 4).\n"
-    "  If instead the TRUE per-unit counts genuinely differ → 'reject', regardless of how "
-    "many pack/multiplier words are present on either side. Examples that MUST reject even "
-    "though brand and product type otherwise match perfectly: vendor '36 Count' vs Amazon "
-    "'50 Count' (two plain per-unit counts, no bundle language on either side — a real SKU "
-    "difference, do NOT call this 'just a bundle variation'); vendor '36 Count' vs Amazon "
-    "'100 Count, 2 Packs of 50' (true per-unit is 50, which still differs from 36 — the "
-    "presence of a 'Packs of' phrase does not make a genuinely different per-unit count "
-    "safe to approve); '80 Count' wipes vs '110 Count' wipes; a 25-count box vs a 144-count "
-    "box.\n"
+    "- Pack / bundle differences are NEVER a mismatch — this is the most common false "
+    "reject; do not make it. When the brand, product type, and PER-UNIT spec (per-unit "
+    "size AND per-unit count) match, ANY difference in the number of packs / boxes / "
+    "cases / bundles is just how many units the seller ships — answer 'approve', never "
+    "'reject' or 'uncertain' on that basis. Examples that MUST approve: vendor 'single "
+    "box, 25 Count' vs Amazon '25 ct. Box (4 Pack)' (identical 25-count box — Amazon just "
+    "bundles four); vendor 'case of 144' vs Amazon '3 Count'; a 4-stick gum pack vs a "
+    "'3-Pack' of the same 4-stick gum. The vendor being a SINGLE unit while Amazon is a "
+    "multipack is EXPECTED and fine — the seller simply ships several. The ONLY count that "
+    "rejects is a differing PER-UNIT count that defines the SKU when there is no per-unit "
+    "size (e.g. '80 Count' wipes vs '110 Count' wipes, or a 25-count box vs a 144-count "
+    "box) — the SAME per-unit count in different bundle sizes is NOT that.\n"
     "- SHADE / COLOR-VARIANT differences are a HARD reject: for hair colour, cosmetics, and "
     "similar shade-keyed products the brand/size/type are identical across the whole line and "
     "only the shade is the SKU. If the shade codes differ (Bigen '#46' vs '#48', 'No. 7' vs "
@@ -240,6 +227,22 @@ from services.ai_recheck import _extract_json  # noqa: E402
 # Single-batch AI calls
 # --------------------------------------------------------------------------- #
 
+class PermanentAIError(Exception):
+    """Wraps an API error that retrying won't fix -- bad/expired credentials,
+    a malformed request, or (the case that prompted this, 2026-10-21) an
+    account-level usage-limit lockout ("You have reached your specified API
+    usage limits. You will regain access on 2026-11-01..."). Both Anthropic's
+    and OpenAI's SDK exceptions expose `.status_code` on their common
+    APIStatusError base, so this check works for either provider. Raised
+    instead of exhausting the normal retry loop so _pipeline's live failover
+    (Claude -> OpenAI) can kick in immediately instead of wasting ~6s of
+    doomed retries per batch for the rest of a multi-day outage."""
+
+
+def _is_permanent_ai_error(exc: Exception) -> bool:
+    return getattr(exc, "status_code", None) in (400, 401, 403)
+
+
 def _call_claude(client, source: dict, batch: list[dict]) -> list[dict]:
     msg     = _build_user_msg(source, batch)
     retries = 3
@@ -268,6 +271,10 @@ def _call_claude(client, source: dict, batch: list[dict]) -> list[dict]:
                 for j in range(len(batch))
             ]
         except Exception as exc:
+            if _is_permanent_ai_error(exc):
+                log.warning("[ai_check] claude batch failed permanently (%s) — "
+                            "won't recover from retrying", exc)
+                raise PermanentAIError(str(exc)) from exc
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -306,6 +313,10 @@ def _call_openai(client, source: dict, batch: list[dict]) -> list[dict]:
                 for j in range(len(batch))
             ]
         except Exception as exc:
+            if _is_permanent_ai_error(exc):
+                log.warning("[ai_check] openai batch failed permanently (%s) — "
+                            "won't recover from retrying", exc)
+                raise PermanentAIError(str(exc)) from exc
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
             else:
@@ -366,11 +377,9 @@ def stop_ai_check(run_id: int) -> None:
     """Signal the running AI check for this run to stop immediately."""
     with _RUNNING_LOCK:
         ev = _STOP_EVENTS.get(run_id)
-    log.warning("[ai_check] stop_ai_check called for run %s — ev=%s is_set=%s _RUNNING=%s",
-                run_id, ev, ev.is_set() if ev else "N/A", _RUNNING.get(run_id))
     if ev:
         ev.set()
-        log.warning("[ai_check] stop event SET for run %s", run_id)
+        log.info("[ai_check] stop requested for run %s", run_id)
 
 
 def is_running(run_id: int) -> bool:
@@ -391,7 +400,51 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
             return
 
         use_claude = _is_anthropic(client)
-        _call_batch = _call_claude if use_claude else _call_openai
+
+        # Live Claude -> OpenAI failover for THIS run (added 2026-10-21, after
+        # a real account-level Anthropic usage-cap lockout: "You have reached
+        # your specified API usage limits. You will regain access on
+        # 2026-11-01..."). Before this, a non-retryable Claude error (bad
+        # credentials, or exactly this kind of lockout) made EVERY batch for
+        # the rest of the run waste 3 retries and come back "uncertain /
+        # review manually" -- for a multi-day outage like this one, that's
+        # every candidate in every run until the lockout clears. Scoped to
+        # this run only (not a global/sticky flag) so it self-heals the
+        # moment Claude starts working again, with no expiry timer needed.
+        _fallback_lock = threading.Lock()
+        _fallback = {"claude_dead": False, "openai_client": None, "openai_tried": False}
+
+        def _get_openai_fallback():
+            with _fallback_lock:
+                if not _fallback["openai_tried"]:
+                    _fallback["openai_tried"] = True
+                    key = os.getenv("OPENAI_API_KEY")
+                    if key:
+                        try:
+                            from openai import OpenAI
+                            _fallback["openai_client"] = OpenAI(api_key=key)
+                        except Exception:  # noqa: BLE001
+                            pass
+                return _fallback["openai_client"]
+
+        def _call_batch(client_, src: dict, batch: list[dict]) -> list[dict]:
+            if not use_claude:
+                return _call_openai(client_, src, batch)
+            if _fallback["claude_dead"]:
+                oa = _get_openai_fallback()
+                return _call_openai(oa, src, batch) if oa else _error_batch(batch)
+            try:
+                return _call_claude(client_, src, batch)
+            except PermanentAIError as exc:
+                oa = _get_openai_fallback()
+                with _fallback_lock:
+                    was_dead = _fallback["claude_dead"]
+                    _fallback["claude_dead"] = True
+                if not was_dead:
+                    log.warning("[ai_check] run %s: Claude unavailable (%s) — "
+                               "switching this run to OpenAI fallback%s",
+                               run_id, exc, "" if oa else " (not configured — results will be marked uncertain)")
+                return _call_openai(oa, src, batch) if oa else _error_batch(batch)
 
         # ---- load data -------------------------------------------------- #
         with database._connect() as conn:
@@ -462,10 +515,14 @@ def _pipeline(run_id: int, verdict_filter: str) -> None:
 
         with _RUNNING_LOCK:
             stop_ev = _STOP_EVENTS.get(run_id)
-        log.warning("[ai_check] pipeline got stop_ev=%s for run %s (id=%s)", stop_ev, run_id, id(stop_ev) if stop_ev else None)
         if stop_ev is None:
-            stop_ev = threading.Event()   # fallback; shouldn't happen
-            log.warning("[ai_check] WARNING: no stop event found for run %s — created fallback", run_id)
+            # start_ai_check() always populates _STOP_EVENTS[run_id] before
+            # launching this pipeline, so this should never happen -- if it
+            # does, it's worth knowing about (the stop button would silently
+            # do nothing for this run), hence log.error rather than silence.
+            stop_ev = threading.Event()   # fallback so the pipeline can still run
+            log.error("[ai_check] no stop event found for run %s — created fallback "
+                      "(the Stop button will not work for this run)", run_id)
 
         def _run_batch(src: dict, batch: list[dict]) -> list[dict]:
             # Each worker checks the stop event before spending an API call.

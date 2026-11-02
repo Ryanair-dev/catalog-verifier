@@ -33,8 +33,14 @@
   --v1: #2563eb;  /* Cencora      — blue */
   --v2: #f59e0b;  /* Diamond      — amber */
   --v3: #1f9d55;  /* Quality King — green */
-  --shadow: none;          /* app is flat */
-  --drawer-shadow: -18px 0 60px -20px rgba(14,42,71,.22);
+  /* The app's second visual pass (after this page's own retheme) restored
+     real soft shadows + 16-20px card radii + pill-shaped primary buttons
+     everywhere else -- this page never got that follow-up, which is why it
+     reads as "a different app." Three-tier system matches static/styles.css
+     exactly (same rgba values), so elevation now looks consistent site-wide. */
+  --shadow-card: 0 1px 2px rgba(17,24,39,.04), 0 2px 8px rgba(17,24,39,.06);
+  --shadow-lg:   0 4px 16px rgba(17,24,39,.08), 0 2px 6px rgba(17,24,39,.05);
+  --shadow-xl:   0 12px 32px rgba(17,24,39,.12), 0 4px 12px rgba(17,24,39,.06);
 
   --display: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --body:    'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -103,18 +109,32 @@ body {
   border-right: 1px solid var(--rule-soft);
   display: flex; flex-direction: column; gap: 1px;
   border-left: 3px solid var(--vc);
+  border-radius: 0 10px 10px 0;
+  transition: background-color 150ms ease;
 }
+.cad:hover { background: var(--paper); }
 .cad b { font-family: var(--display); text-transform: uppercase; letter-spacing: .06em; font-size: 13px; font-weight: 600; }
 .cad span { font-size: 10.5px; color: var(--ink-soft); }
 .cad .num { font-size: 11px; }
 
 /* -- stats -------------------------------------------------------------- */
+/* Was a seamless hairline-divided strip (1px gap, shared background) -- now
+   discrete floating cards with the app's own .stat-card treatment (16px
+   radius, soft shadow, hover-lift), sitting on the page's own grey-50
+   background so they read as "floating" the same way the rest of the app's
+   stat cards do. */
 .stats {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
-  gap: 1px; background: var(--rule-soft);
-  border-bottom: 1px solid var(--rule);
+  gap: 12px; background: transparent;
+  padding: 16px clamp(14px, 2.4vw, 26px);
 }
-.stat { background: var(--paper); padding: 16px clamp(14px, 2.4vw, 26px) 18px; }
+.stat {
+  background: var(--card); border: 1px solid var(--rule-soft);
+  border-radius: 16px; padding: 16px clamp(14px, 2.4vw, 26px) 18px;
+  box-shadow: var(--shadow-card);
+  transition: transform 150ms, border-color 150ms, box-shadow 150ms;
+}
+.stat:hover { transform: translateY(-2px); border-color: var(--accent-soft); box-shadow: var(--shadow-lg); }
 .stat .lbl { font-size: 10px; color: var(--ink-faint); }
 .stat .v {
   font-family: var(--mono); font-variant-numeric: tabular-nums;
@@ -138,7 +158,7 @@ body {
   width: 100%; padding: 9px 12px 9px 30px;
   font-family: var(--mono); font-size: 12.5px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px;
+  border: 1px solid var(--rule); border-radius: 8px;
 }
 .search input::placeholder { color: var(--ink-faint); }
 .search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; stroke: var(--ink-faint); fill: none; stroke-width: 2; }
@@ -147,30 +167,33 @@ body {
 .chip {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11px; font-weight: 600;
-  padding: 6px 11px; border-radius: 2px; cursor: pointer;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer;
   background: var(--paper); color: var(--ink-soft);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--vc, var(--rule));
-  transition: background .16s, color .16s, transform .16s;
+  transition: background .16s, color .16s, transform .16s, box-shadow .16s;
 }
-.chip:hover { transform: translateY(-1px); }
-.chip[aria-pressed="true"] { background: var(--vc, var(--accent)); color: var(--card); border-color: var(--vc, var(--accent)); }
+.chip:hover { transform: translateY(-1px); box-shadow: var(--shadow-card); }
+.chip[aria-pressed="true"] { background: var(--vc, var(--accent)); color: var(--card); border-color: var(--vc, var(--accent)); box-shadow: var(--shadow-card); }
 .chip.plain { border-left-width: 1px; }
 .chip.plain[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
 /* an action, not a filter -- the stamp colour marks it as the thing that does
-   something rather than the things that narrow the list */
+   something rather than the things that narrow the list. Same pill shape as
+   .chip generally, but these are this page's primary actions, so they get
+   the app's primary-button elevation (shadow-card at rest, shadow-lg hover). */
 .chip.act {
   border-left-width: 1px; border-color: var(--stamp); color: var(--stamp);
   background: var(--stamp-soft);
+  box-shadow: var(--shadow-card);
 }
-.chip.act:hover { background: var(--stamp); color: var(--card); }
-.chip.act[disabled] { opacity: .55; cursor: progress; }
+.chip.act:hover { background: var(--stamp); color: var(--card); box-shadow: var(--shadow-lg); }
+.chip.act[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
 
 .toast {
   position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 16px);
   background: var(--ink); color: var(--paper);
   font-family: var(--mono); font-size: 12.5px;
-  padding: 11px 18px; border-radius: 2px; box-shadow: var(--shadow);
+  padding: 11px 18px; border-radius: 12px; box-shadow: var(--shadow-xl);
   max-width: min(560px, 92vw); z-index: 60;
   opacity: 0; pointer-events: none; transition: opacity .22s, transform .22s;
 }
@@ -185,45 +208,58 @@ body {
 .assign input {
   font-family: var(--mono); font-size: 13px; padding: 7px 9px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; width: 130px;
+  border: 1px solid var(--rule); border-radius: 8px; width: 130px;
 }
 .assign input.pack { width: 62px; }
 .assign button {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
-  font-size: 11px; font-weight: 600; padding: 8px 13px; cursor: pointer;
+  font-size: 11px; font-weight: 600; padding: 8px 15px; cursor: pointer;
   background: var(--accent); color: var(--card);
-  border: 1px solid var(--accent); border-radius: 2px;
+  border: 1px solid var(--accent); border-radius: 999px;
+  box-shadow: var(--shadow-card); transition: background-color 150ms, box-shadow 150ms;
 }
-.assign button[disabled] { opacity: .55; cursor: progress; }
+.assign button:hover { background: var(--purple-800, #3f2a8c); box-shadow: var(--shadow-lg); }
+.assign button[disabled] { opacity: .55; cursor: progress; box-shadow: none; }
 .assign .hint { font-size: 11px; color: var(--ink-faint); margin-top: 8px; }
+/* per-ASIN listings in the drawer, each with an Unpair button (2026-11-02) */
+.lst-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--rule-soft); }
+.lst-row .num { font-family: var(--mono); font-size: 12.5px; }
+.lst-row .lst-meta { font-size: 11px; color: var(--ink-faint); flex: 1; }
+.lst-row button {
+  font-size: 10.5px; font-weight: 600; padding: 4px 10px; cursor: pointer; border-radius: 7px;
+  background: transparent; color: #b42318; border: 1px solid #f3c2bd;
+}
+.lst-row button:hover { background: #fef3f2; }
+.lst-row button[disabled] { opacity: .55; cursor: progress; }
 
 /* -- import modal ------------------------------------------------------- */
 .modal {
   position: fixed; z-index: 41; left: 50%; top: 50%;
   transform: translate(-50%, -46%) scale(.985);
   width: min(680px, 94vw); max-height: 88vh; overflow-y: auto;
-  background: var(--card); border: 2px solid var(--ink); border-radius: 3px;
-  box-shadow: 0 24px 70px -24px rgba(0,0,0,.6);
+  background: var(--card); border: 1px solid var(--rule-soft); border-radius: 18px;
+  box-shadow: var(--shadow-xl);
   padding: 22px clamp(16px, 3vw, 28px) 0;
   opacity: 0; pointer-events: none;
   transition: opacity .2s, transform .24s cubic-bezier(.22,1,.36,1);
 }
 .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
 .m-title { font-size: 24px; margin: 3px 40px 14px 0; line-height: 1.15; }
-.m-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--ink); }
+.m-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--rule); }
 .m-tab {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11.5px; font-weight: 600; padding: 9px 15px; cursor: pointer;
   background: none; border: 1px solid var(--rule); border-bottom: none;
-  color: var(--ink-soft); border-radius: 2px 2px 0 0; margin-bottom: -1px;
+  color: var(--ink-soft); border-radius: 8px 8px 0 0; margin-bottom: -2px;
+  transition: background-color 150ms, color 150ms, border-color 150ms;
 }
-.m-tab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.m-tab[aria-selected="true"] { background: var(--accent); color: var(--card); border-color: var(--accent); }
 .m-pane { padding: 16px 0 4px; }
 .m-help { font-size: 12.5px; color: var(--ink-soft); margin: 0 0 12px; max-width: 62ch; }
-#pairsText {
+#pairsText, #lookupText {
   width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.5;
   padding: 10px; background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; resize: vertical;
+  border: 1px solid var(--rule); border-radius: 8px; resize: vertical;
 }
 .m-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-top: 11px; }
 .m-field { display: flex; flex-direction: column; gap: 3px; }
@@ -232,23 +268,27 @@ body {
 .filebtn {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
   font-size: 10.5px; font-weight: 600; padding: 8px 12px; cursor: pointer;
-  border: 1px dashed var(--rule); border-radius: 2px; color: var(--ink-soft);
-  background: var(--paper);
+  border: 1px dashed var(--rule); border-radius: 10px; color: var(--ink-soft);
+  background: var(--paper); transition: border-color 150ms, color 150ms;
 }
 .filebtn:hover { border-color: var(--accent); color: var(--accent); }
 .filebtn input { display: none; }
 .m-file { font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); align-self: center; }
+/* .m-go = this app's .btn-primary (pill + elevation); .m-ghost = .btn-secondary
+   (10px radius, no elevation at rest) -- same primary/secondary distinction
+   used everywhere else in the app. */
 .m-go, .m-ghost {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
-  font-size: 11px; font-weight: 600; padding: 9px 14px; cursor: pointer;
-  border-radius: 2px;
+  font-size: 11px; font-weight: 600; padding: 9px 16px; cursor: pointer;
+  transition: background-color 150ms, color 150ms, border-color 150ms, box-shadow 150ms;
 }
-.m-go { background: var(--accent); color: var(--card); border: 1px solid var(--accent); }
-.m-ghost { background: var(--paper); color: var(--ink-soft); border: 1px solid var(--rule); }
-.m-ghost:hover { color: var(--accent); border-color: var(--accent); }
-.m-go[disabled], .m-ghost[disabled] { opacity: .5; cursor: not-allowed; }
+.m-go { background: var(--accent); color: var(--card); border: 1px solid var(--accent); border-radius: 999px; box-shadow: var(--shadow-card); }
+.m-go:hover { background: var(--purple-800, #3f2a8c); box-shadow: var(--shadow-lg); }
+.m-ghost { background: var(--paper); color: var(--ink-soft); border: 1px solid var(--rule); border-radius: 10px; }
+.m-ghost:hover { color: var(--accent); border-color: var(--accent); background: var(--card); }
+.m-go[disabled], .m-ghost[disabled] { opacity: .5; cursor: not-allowed; box-shadow: none; }
 .m-out {
-  margin: 14px 0 4px; padding: 12px 14px; border-radius: 2px;
+  margin: 14px 0 4px; padding: 12px 14px; border-radius: 10px;
   background: var(--paper); border: 1px solid var(--rule);
   border-left: 3px solid var(--accent);
   font-size: 12.5px; max-height: 220px; overflow-y: auto;
@@ -272,7 +312,7 @@ select {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .07em;
   font-size: 11px; font-weight: 600; padding: 6px 8px;
   background: var(--paper); color: var(--ink);
-  border: 1px solid var(--rule); border-radius: 2px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: 8px; cursor: pointer;
 }
 .count { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft); white-space: nowrap; }
 .count b { color: var(--ink); font-size: 13px; }
@@ -314,7 +354,7 @@ select {
 .item-sub .num { font-size: 10.5px; color: var(--ink-faint); }
 .flag {
   font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
-  font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 1px;
+  font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
   background: var(--stale-soft); color: var(--stale);
 }
 .flag.none { background: var(--accent-soft); color: var(--accent); }
@@ -383,20 +423,25 @@ select {
   opacity: 0; pointer-events: none; transition: opacity .28s; z-index: 40;
 }
 .scrim.open { opacity: 1; pointer-events: auto; }
+/* Edge-to-edge sliding panel, same convention as the app's own .side-panel --
+   no border-radius (it's flush against the viewport edge top-to-bottom),
+   just a thin rule-colored border instead of a heavy 2px black one, and the
+   app's own shadow-xl instead of a bespoke directional shadow. */
 .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(470px, 94vw);
-  background: var(--card); border-left: 2px solid var(--ink);
-  box-shadow: var(--drawer-shadow);
+  background: var(--card); border-left: 1px solid var(--rule);
+  box-shadow: var(--shadow-xl);
   transform: translateX(101%); transition: transform .34s cubic-bezier(.22,1,.36,1);
   z-index: 41; overflow-y: auto; padding: 22px clamp(16px, 3vw, 26px) 40px;
 }
 .drawer.open { transform: none; }
 .drawer-x {
-  position: absolute; top: 14px; right: 16px; background: none; border: 1px solid var(--rule);
-  color: var(--ink-soft); width: 26px; height: 26px; border-radius: 2px; cursor: pointer;
+  position: absolute; top: 14px; right: 16px; background: none; border: none;
+  color: var(--ink-soft); width: 30px; height: 30px; border-radius: 10px; cursor: pointer;
   font-family: var(--mono); font-size: 13px; line-height: 1;
+  transition: background-color 120ms, color 120ms;
 }
-.drawer-x:hover { color: var(--stamp); border-color: var(--stamp); }
+.drawer-x:hover { color: var(--ink); background: var(--rule-soft); }
 .d-title { font-size: 20px; line-height: 1.2; margin: 4px 40px 6px 0; }
 .d-ids { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
 .d-ids div .lbl { font-size: 9px; color: var(--ink-faint); display: block; }
@@ -489,7 +534,7 @@ select {
     <button class="chip plain" id="fNoAsin" type="button" aria-pressed="false">Needs ASIN</button>
   </div>
   <button class="chip act" id="btnImport" type="button">Import</button>
-  <button class="chip act" id="btnSyncDB" type="button" title="Pull the latest offers for Quality King, Cencora, Diamond, BILO and Victory straight from the database">Sync from Database</button>
+  <button class="chip act" id="btnSyncDB" type="button" title="Pull the latest offers for Quality King, Cencora, Diamond, BILO and Victory straight from their catalog emails">Sync from Email</button>
   <button class="chip act" id="btnExport" type="button">Export to Excel</button>
   <select id="sort" aria-label="Sort by">
     <option value="save">Sort: biggest saving</option>
@@ -559,8 +604,8 @@ select {
       <div class="m-row" style="margin:0">
         <button class="m-ghost" id="btnSyncDBModal" type="button">Sync now</button>
         <span class="m-help" style="margin:0" id="dbSyncStatus">Quality King, Cencora, Diamond, BILO
-          and Victory pull straight from the database (hourly, automatic) &mdash; upload below is only
-          for other vendors.</span>
+          and Victory pull straight from their catalog emails (every 30 min, automatic) &mdash; upload
+          below is only for other vendors.</span>
       </div>
       <div class="m-out" id="dbSyncOut" hidden></div>
     </div>
@@ -639,6 +684,18 @@ select {
       <b>&ge;50 units sold/mo</b>, where Amazon holds <b>&lt;90%</b> of the 30-day Buy Box, and
       excludes <b>Restricted</b>, <b>Generic</b> and <b>DOG</b> ASINs (Generic adds one more
       SP-API call per ASIN, so this takes a little longer).</span>
+  </div>
+
+  <div class="m-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:14px">
+    <span class="lbl" style="font-size:10px;color:var(--ink-faint)">Email it when done?</span>
+    <div class="chips">
+      <button class="chip plain" id="optEmailYes" type="button" aria-pressed="false">Yes</button>
+      <button class="chip plain" id="optEmailNo" type="button" aria-pressed="true">No</button>
+    </div>
+    <input id="optEmailAddr" type="text" placeholder="name@fordmed.com" disabled
+      style="margin-top:2px;width:100%;box-sizing:border-box;font-size:12px;padding:7px 9px;
+             border:1px solid var(--rule,#e2e6ec);border-radius:6px;outline:none;color:var(--ink,#1e293b);" />
+    <span class="m-help" style="margin:0">Sends the finished workbook as an email attachment once it's ready — comma-separate multiple addresses.</span>
   </div>
 
   <div class="m-row" style="margin-top:18px">
@@ -948,6 +1005,7 @@ function openDrawer(vi) {
       ${it.pack ? `<div><span class="lbl">Amz pack</span><span class="num">${it.pack}</span></div>` : ""}
       ${it.status ? `<div><span class="lbl">Listing</span><span class="num">${esc(it.status)}</span></div>` : ""}
     </div>
+    <div id="asinList"></div>
     <div class="d-sum">
       <div>
         <div class="big">${money(it.best)}</div>
@@ -1026,10 +1084,57 @@ function openDrawer(vi) {
       btn.disabled = false; btn.textContent = "Assign";
     }
   });
+  loadAsinList(it, vi);
   scrim.classList.add("open"); drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
   document.getElementById("drawerX").focus();
   render(true);
+}
+
+// Every ASIN paired to this UPC, each with an Unpair button -> the targeted
+// /unassign (removes only this UPC from the ASIN, blacklists the pair so the
+// export can't re-pair it via Keepa barcodes). Hidden if the endpoint isn't
+// there (server not restarted yet) or the UPC has no ASINs.
+async function loadAsinList(it, vi) {
+  const box = document.getElementById("asinList");
+  if (!box) return;
+  let list = [];
+  try {
+    const res = await fetch(`/api/vendor-offers/asins?upc=${encodeURIComponent(it.upc)}`);
+    if (!res.ok) return;
+    list = (await res.json()).asins || [];
+  } catch { return; }
+  if (!list.length || document.getElementById("asinList") !== box) return;
+  box.innerHTML = `<div class="sect">Amazon listings for this UPC</div>` + list.map(a => `
+    <div class="lst-row" data-asin="${esc(a.asin)}">
+      <span class="num">${esc(a.asin)}</span>
+      <span class="lst-meta">pack ${a.pack ?? 1} &middot; ${a.source === "manual" ? "assigned here" : "from Pair Library"}</span>
+      <button type="button">Unpair</button>
+    </div>`).join("");
+  box.querySelectorAll(".lst-row button").forEach(btn => btn.addEventListener("click", async () => {
+    const asin = btn.closest(".lst-row").dataset.asin;
+    if (!confirm(`Unpair ${asin} from UPC ${it.upc}?\n\nIt's removed from the Price Desk and this UPC is `
+        + `removed from the ASIN's Pair Library entry (its other UPCs stay). The pair is blacklisted so `
+        + `exports don't re-add it; you can undo that in the Pair Manager.`)) return;
+    btn.disabled = true; btn.textContent = "Unpairing...";
+    try {
+      const res = await fetch("/api/vendor-offers/unassign", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asin, upc: it.upc }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.detail || res.statusText);
+      toast(`${asin} unpaired from ${it.upc}.`);
+      if (it.asin === asin) {
+        const left = list.filter(a => a.asin !== asin);
+        it.asin = left.length ? left[0].asin : "";
+      }
+      openDrawer(vi);
+    } catch (err) {
+      toast("Couldn't unpair: " + err.message, true);
+      btn.disabled = false; btn.textContent = "Unpair";
+    }
+  }));
 }
 function closeDrawer() {
   scrim.classList.remove("open"); drawer.classList.remove("open");
@@ -1096,8 +1201,33 @@ function focusVendorName() {
 const btnExport = document.getElementById("btnExport");
 const expModal = document.getElementById("expModal");
 const expScrim = document.getElementById("expScrim");
-let exportJob = null;                       // {id, cancelled} while a job is running
+let exportJob = null;                       // {id, cancelled} while a job is running (standalone path only)
 const EXPORT_LABEL = btnExport ? btnExport.textContent : "Export to Excel";
+
+// Embedded in the app's sidebar, this page sits in an iframe the SPA hides
+// (display:none) whenever another section is opened — and browsers throttle
+// or freeze JS timers in frames that aren't being rendered, which used to
+// stall the poll loop below the instant you switched tabs (the export itself
+// kept running fine server-side; nothing was left to notice it finished and
+// grab the file). When embedded, delegate the whole start/poll/download to
+// the parent (top) document instead, which is never hidden. Opening this
+// page standalone (visiting /api/vendor-offers/page directly) still uses the
+// original self-contained logic below unchanged.
+const _voEmbedded = !!(window.parent && window.parent !== window
+  && typeof window.parent._voStartExport === "function");
+
+function runExport(onlyAvailable, applyFilters, populateKeepa, emailTo) {
+  if (_voEmbedded) {
+    window.parent._voStartExport({
+      upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
+      has_asin: !!state.asin, only_available: !!onlyAvailable,
+      apply_filters: !!applyFilters, populate_keepa: populateKeepa !== false,
+      email_to: emailTo || "",
+    });
+    return;
+  }
+  startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa, emailTo);
+}
 
 // One consolidated export-options modal: scope / Keepa / filters, each a
 // mutually-exclusive chip pair, plus a single "Start export" button.
@@ -1117,6 +1247,17 @@ function _expResetOptions() {
   _expSetPressed("optKeepaYes", true); _expSetPressed("optKeepaNo", false);
   _expSetPressed("optFilterYes", false); _expSetPressed("optFilterNo", true);
   _expSetFiltersEnabled(true);
+  _expSetPressed("optEmailYes", false); _expSetPressed("optEmailNo", true);
+  _expSetEmailEnabled(false);
+  const addr = document.getElementById("optEmailAddr");
+  if (addr) addr.value = "";
+}
+function _expSetEmailEnabled(on) {
+  const addr = document.getElementById("optEmailAddr");
+  if (!addr) return;
+  addr.disabled = !on;
+  addr.style.background = on ? "" : "var(--card2,#f8fafc)";
+  if (on) addr.focus();
 }
 function _expSetFiltersEnabled(on) {
   const grp = document.getElementById("filtersGroup");
@@ -1140,7 +1281,7 @@ function closeExportScope() {
 }
 
 // Start the export job with the chosen options, then poll → download.
-async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) {
+async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa, emailTo) {
   btnExport.textContent = "Starting…";
   try {
     const start = await fetch("/api/vendor-offers/analytics-export/start", {
@@ -1148,11 +1289,13 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
       body: JSON.stringify({ upcs: view.map(it => it.upc), focus_vendor: focusVendorName(),
                              has_asin: !!state.asin, only_available: !!onlyAvailable,
                              apply_filters: !!applyFilters,
-                             populate_keepa: populateKeepa !== false }),
+                             populate_keepa: populateKeepa !== false,
+                             email_to: emailTo || "" }),
     });
     const sj = await start.json().catch(() => ({}));
     if (!start.ok) throw new Error(sj.detail || start.statusText);
     exportJob = { id: sj.job_id, cancelled: false };
+    let finalJob = null;
     for (;;) {
       await new Promise(r => setTimeout(r, 1500));
       const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}`);
@@ -1160,7 +1303,7 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
       if (!ps.ok) throw new Error(pj.detail || ps.statusText);
       if (pj.status === "cancelled") { toast("Export cancelled."); return; }
       if (pj.status === "error") throw new Error(pj.error || "export failed");
-      if (pj.status === "complete") break;
+      if (pj.status === "complete") { finalJob = pj; break; }
       // second click cancels; show phase, %, and ETA
       if (pj.total) {
         const pct = Math.round(pj.done / pj.total * 100);
@@ -1174,6 +1317,10 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
     const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/download`);
     await downloadFromResponse(dl, "offer_analytics.xlsx");
     toast("Offer Analytics export downloaded.");
+    if (finalJob && finalJob.email_to && finalJob.email_to.length) {
+      if (finalJob.email_sent) toast(`Also emailed to ${finalJob.email_to.join(", ")}.`);
+      else if (finalJob.email_error) toast(`Email failed: ${finalJob.email_error}`, false);
+    }
   } catch (err) {
     toast("Export failed: " + err.message, false);
   } finally {
@@ -1184,7 +1331,9 @@ async function startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa) 
 if (btnExport) {
   btnExport.title = "Export the Offer Analytics workbook (filter to one vendor to scope it). Click again to cancel.";
   btnExport.addEventListener("click", async () => {
-    if (exportJob) {                                        // second click → cancel
+    const running = _voEmbedded ? window.parent._voIsExportRunning() : !!exportJob;
+    if (running) {                                          // second click → cancel
+      if (_voEmbedded) { window.parent._voCancelExport(); btnExport.textContent = "Cancelling…"; return; }
       exportJob.cancelled = true;
       btnExport.textContent = "Cancelling…";
       try { await fetch(`/api/vendor-offers/analytics-export/jobs/${exportJob.id}/cancel`, { method: "POST" }); } catch (e) {}
@@ -1195,7 +1344,7 @@ if (btnExport) {
       expModal.classList.add("open"); expScrim.classList.add("open");
       expModal.setAttribute("aria-hidden", "false");
     } else {
-      startAnalyticsExport(false, false, true);
+      runExport(false, false, true);
     }
   });
   if (expModal) {
@@ -1204,13 +1353,20 @@ if (btnExport) {
     _expGroup("optScopeAll", "optScopeAvail");
     _expGroup("optKeepaYes", "optKeepaNo", (keepaOn) => _expSetFiltersEnabled(keepaOn));
     _expGroup("optFilterYes", "optFilterNo");
+    _expGroup("optEmailYes", "optEmailNo", (on) => _expSetEmailEnabled(on));
     document.getElementById("expStart").addEventListener("click", () => {
       const onlyAvailable = document.getElementById("optScopeAvail").getAttribute("aria-pressed") === "true";
       const populateKeepa = document.getElementById("optKeepaYes").getAttribute("aria-pressed") === "true";
       const applyFilters = populateKeepa
         && document.getElementById("optFilterYes").getAttribute("aria-pressed") === "true";
+      const emailOn = document.getElementById("optEmailYes").getAttribute("aria-pressed") === "true";
+      const emailTo = emailOn ? document.getElementById("optEmailAddr").value.trim() : "";
+      if (emailOn && !emailTo) {
+        toast("Enter at least one recipient, or switch \"Email it when done\" back to No.", false);
+        return;
+      }
       closeExportScope();
-      startAnalyticsExport(onlyAvailable, applyFilters, populateKeepa);
+      runExport(onlyAvailable, applyFilters, populateKeepa, emailTo);
     });
   }
 }
@@ -1389,22 +1545,22 @@ $("btnLookupExport").addEventListener("click", async () => {
   }
 });
 
-// ---- pull matches from the Pair Library (by UPC) ----------------------
+// ---- pull the 5 mailbox-synced vendors' latest catalog emails ----------
 async function _runDbSync(btn, out) {
   const label = btn.textContent;
   btn.disabled = true; btn.textContent = "Syncing\u2026 (~1 min)";
-  if (out) { out.hidden = false; out.textContent = "Pulling the latest offers from the database\u2026"; }
+  if (out) { out.hidden = false; out.textContent = "Pulling the latest offers from each vendor's catalog email\u2026"; }
   try {
-    const res = await fetch("/api/vendor-offers/db-sync/run", { method: "POST" });
+    const res = await fetch("/api/vendor-offers/mailbox-sync/run", { method: "POST" });
     const j = await res.json();
     if (!res.ok) throw new Error(j.detail || ("HTTP " + res.status));
     const lines = Object.entries(j.results || {}).map(([v, r]) =>
-      `${v}: ${r.total} offers (${r.added} new)`);
+      r.status ? `${v}: ${r.status}` : `${v}: ${r.total} offers (${r.added} new)`);
     const errLines = Object.entries(j.errors || {}).map(([v, e]) => `${v}: FAILED \u2014 ${e}`);
     const summary = [...lines, ...errLines].join("\n") || "Done.";
     if (out) out.textContent = summary;
     toast(errLines.length ? `Synced with ${errLines.length} error(s) \u2014 see Import for details.`
-                           : "Synced from database. Refresh to see the new offers.", !!errLines.length);
+                           : "Synced from email. Refresh to see the new offers.", !!errLines.length);
     _refreshDbSyncStatus();
   } catch (err) {
     if (out) out.textContent = "Sync failed: " + err.message;
@@ -1417,15 +1573,15 @@ async function _refreshDbSyncStatus() {
   const el = $("dbSyncStatus");
   if (!el) return;
   try {
-    const j = await (await fetch("/api/vendor-offers/db-sync/status")).json();
+    const j = await (await fetch("/api/vendor-offers/mailbox-sync/status")).json();
     const last = j.last;
     if (last && last.finished_at) {
       const when = new Date(last.finished_at + "Z").toLocaleString();
       const errCount = Object.keys(last.errors || {}).length;
-      el.textContent = `Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour `
+      el.textContent = `Quality King, Cencora, Diamond, BILO and Victory sync automatically every 30 min `
         + `\u2014 last sync ${when}${errCount ? ` (${errCount} vendor(s) failed)` : ""}.`;
     } else {
-      el.textContent = "Quality King, Cencora, Diamond, BILO and Victory sync automatically every hour "
+      el.textContent = "Quality King, Cencora, Diamond, BILO and Victory sync automatically every 30 min "
         + "\u2014 no sync has run yet, click Sync now.";
     }
   } catch (err) { /* best-effort */ }

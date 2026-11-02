@@ -97,3 +97,8 @@ logs/
 *.bak
 *.tmp
 *.orig
+
+# Tunnel tooling (binary, config, logs) -- never commit
+cloudflared*
+*cloudflare*
+.cloudflared/

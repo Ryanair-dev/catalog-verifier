@@ -33,7 +33,7 @@ _VIEW = "[analytics].[sku_data_extended_view]"
 _COLS = [
     "ProductID", "UPC", "ManufacturerSKU", "Manufacturer", "BrandName", "ASIN",
     "ShadowOf", "QtyPerCase", "CostPerCase", "FulfilledBy", "ProductGroupName",
-    "Purchaser", "SOURCE_LEAD", "CompanyName",
+    "Purchaser", "SOURCE_LEAD", "CompanyName", "Status",
 ]
 # Columns that MAY exist in the view — pulled when present, skipped via a graceful
 # retry when the SELECT rejects them, so a wrong column name can never break the pull.
@@ -44,12 +44,30 @@ _OPTIONAL_COLS = ["ProductName"]
 # label maps to the CompanyName stored in the view.
 _COMPANY_NAME = {"Ford Medical": "Ford Medical, LLC", "Turba": "Turba"}
 
+# Turba's catalog is mostly an ADDITIVE OVERLAY on top of Ford Medical's, not a fully
+# separate one: confirmed live (2026-10-08) that most of a shared product's real MAIN
+# SKU lives under CompanyName='Ford Medical, LLC', while only Turba's OWN listings --
+# notably its '-FBATRB'/'-FBMTRB' shadows -- are tagged CompanyName='Turba' (only 33 of
+# Turba's 1,417 rows are genuinely standalone Turba-only mains). A Turba batch scoped
+# to 'Turba' alone therefore can't see either its own shared main (wrongly flagged
+# "new") or, if scoped to 'Ford Medical' alone instead, its own already-existing
+# -FBATRB/-FBMTRB shadows (the actual bug found: the collision-avoidance ladder
+# silently minted FBA SKU names that were already assigned to a DIFFERENT ASIN,
+# because that existing shadow lives under CompanyName='Turba', invisible to a
+# Ford-Medical-only pull). A Turba batch needs the UNION of both scopes. Ford Medical
+# itself stays scoped to its own company only, by the original design intent (a
+# brand that lives only under Turba should still be "new" for a Ford Medical batch).
+_COMPANY_UNION = {"Turba": ("Ford Medical, LLC", "Turba")}
+
 
 def _co_key(s) -> str:
     return "".join(c for c in str(s or "").lower() if c.isalnum())
 
 
 def _rows_for_company(rows: list[dict], company: str) -> list[dict]:
+    if company in _COMPANY_UNION:
+        targets = {_co_key(c) for c in _COMPANY_UNION[company]}
+        return [r for r in rows if _co_key(r.get("CompanyName")) in targets]
     target = _co_key(_COMPANY_NAME.get(company, company))
     if not target:
         return rows
@@ -58,6 +76,7 @@ def _rows_for_company(rows: list[dict], company: str) -> list[dict]:
 _CACHE_TTL = 1800.0   # seconds; re-pull the view at most this often
 _LOCK = threading.Lock()
 _CACHE: dict = {"at": 0.0, "rows": None}
+_PULL_LOCK = threading.Lock()   # serializes the expensive view pull itself (fetch_rows)
 
 _ENV_KEYS = ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
              "AZURE_SQL_SERVER_HOST", "AZURE_SQL_SERVER_DATABASE")
@@ -99,7 +118,25 @@ def fetch_rows(force: bool = False) -> list[dict]:
         cached = _CACHE["rows"]
         if not force and cached is not None and (time.time() - _CACHE["at"]) < _CACHE_TTL:
             return cached
+    # One pull at a time (2026-10-30): _LOCK only guards the cache read, so
+    # every caller arriving during the ~165s cold pull at startup used to start
+    # its OWN full pull in parallel (a PO P&L load right after a restart took
+    # 240s). Now they wait for the pull in flight and reuse it.
+    with _PULL_LOCK:
+        if not force:
+            with _LOCK:
+                cached = _CACHE["rows"]
+                if cached is not None and (time.time() - _CACHE["at"]) < _CACHE_TTL:
+                    return cached
+        return _pull_rows()
 
+
+def is_warm() -> bool:
+    """True once the catalog view has been pulled at least once (any age)."""
+    return _CACHE["rows"] is not None
+
+
+def _pull_rows() -> list[dict]:
     def _pull(cols: list[str]) -> list[dict]:
         conn = _connect()
         try:
@@ -121,6 +158,9 @@ def fetch_rows(force: bool = False) -> list[dict]:
                 "ProductGroupName": _s(g(r, "ProductGroupName")),
                 "ProductName": _s(g(r, "ProductName")),   # "" when the column isn't pulled
                 "CompanyName": _s(g(r, "CompanyName")),
+                "Status": _s(g(r, "Status")),   # "Active" / "Disabled" -- a Disabled row
+                                                 # is never a real reference match (2026-10-07)
+
                 "_purchaser": _s(g(r, "Purchaser")), "_sourcer": _s(g(r, "SOURCE_LEAD")),
             } for r in cur.fetchall()]
         finally:
@@ -136,6 +176,74 @@ def fetch_rows(force: bool = False) -> list[dict]:
     with _LOCK:
         _CACHE["rows"], _CACHE["at"] = rows, time.time()
     return rows
+
+
+# ── hourly background refresh ────────────────────────────────────────────────
+# The 30-min _CACHE_TTL above only refreshes WHEN something happens to call
+# fetch_rows() after the TTL has expired -- between calls (e.g. the hours
+# between two on-demand PO Analytics runs) the cache can sit stale well past
+# 30 min with nothing proactively refreshing it. This forces a real pull once
+# an hour regardless of demand, so any caller (PO Analytics, Create SKUs,
+# sc_reference) almost always finds an already-warm cache instead of paying
+# the ~165s pull cost inline. Mirrors services/vendor_offers_db_sync.py's
+# exact hourly-scheduler shape.
+INTERVAL_SECONDS = 3600
+_sched_thread: threading.Thread | None = None
+_sched_stop = threading.Event()
+_sched_running = threading.Event()
+_last_refresh: dict = {"at": None, "rows": None, "error": None}
+
+
+def _sched_loop() -> None:
+    while not _sched_stop.is_set():
+        _sched_running.set()
+        try:
+            rows = fetch_rows(force=True)
+            _last_refresh["at"], _last_refresh["rows"], _last_refresh["error"] = time.time(), len(rows), None
+            # Keep the brand-prefix/manufacturer reference tables (Create SKUs,
+            # PO Analytics' brand-label resolution) current too -- force=False
+            # here reuses the rows just pulled above rather than a 2nd full pull.
+            try:
+                from services import sc_reference
+                sc_reference.build_reference(force=False)
+            except Exception:  # noqa: BLE001
+                log.exception("[azure_sql] sc_reference refresh failed")
+        except Exception as exc:  # noqa: BLE001
+            _last_refresh["error"] = str(exc)[:300]
+            log.exception("[azure_sql] scheduled catalog refresh failed")
+        finally:
+            _sched_running.clear()
+        if _sched_stop.wait(INTERVAL_SECONDS):
+            return
+
+
+def start_scheduler() -> None:
+    """Start the hourly Azure catalog refresh thread (idempotent)."""
+    global _sched_thread
+    if _sched_thread is not None and _sched_thread.is_alive():
+        return
+    _sched_stop.clear()
+    _sched_thread = threading.Thread(target=_sched_loop, name="azure-sql-refresh", daemon=True)
+    _sched_thread.start()
+    log.info("[azure_sql] hourly catalog refresh scheduler started")
+
+
+def stop_scheduler() -> None:
+    _sched_stop.set()
+
+
+def scheduler_status() -> dict:
+    next_run = (_last_refresh["at"] + INTERVAL_SECONDS) if _last_refresh["at"] else None
+    return {
+        "running_now": _sched_running.is_set(),
+        "scheduler_alive": bool(_sched_thread and _sched_thread.is_alive()),
+        "interval_seconds": INTERVAL_SECONDS,
+        "last_refresh_at": _last_refresh["at"],
+        "last_refresh_rows": _last_refresh["rows"],
+        "last_refresh_error": _last_refresh["error"],
+        "next_run": next_run,
+        "cache_age_seconds": (time.time() - _CACHE["at"]) if _CACHE["at"] else None,
+    }
 
 
 def catalog_index(company: str = "Ford Medical") -> CatalogIndex:
@@ -178,3 +286,26 @@ def catalog_source(company: str = "Ford Medical") -> tuple[CatalogIndex, dict]:
     callers can fall back."""
     fetch_rows()   # prime the cache (one pull; all companies, filtered per call)
     return catalog_index(company), brand_map(company)
+
+
+def find_split_pos(po_id: int) -> list[int]:
+    """PO IDs that were split off FROM `po_id` -- i.e. every row in the live
+    `sellercloud.Purchase` mirror whose `SplittedFromPOId` equals it. Confirmed
+    live (2026-10-08, user-identified table): a cancelled "main" PO's real
+    replacement/split PO records this parent link in `SplittedFromPOId` -- it's
+    NOT exposed anywhere in the SellerCloud REST API's PO payload (checked:
+    `RelatedItems`/`RelatedFbaId`/`RelatedPOFBAPlanningId` are all empty/zero
+    even on a confirmed real split pair), so this direct SQL table is the only
+    way to discover it. A small, uncached, on-demand query (not the big
+    sku_data_extended_view pull) -- never raises; callers should catch and
+    degrade (e.g. treat as "no splits found") on any connection problem, same
+    as `catalog_source`."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ID FROM sellercloud.Purchase WHERE SplittedFromPOId = %s", (int(po_id),)
+        )
+        return [int(r[0]) for r in cur.fetchall()]
+    finally:
+        conn.close()

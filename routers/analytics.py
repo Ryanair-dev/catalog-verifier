@@ -28,6 +28,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.cell import WriteOnlyCell
@@ -51,7 +52,7 @@ from services.analytics.eligibility_check import (
     start_eligibility_check, stop_eligibility_check,
     is_running as elig_check_running, approved_review_asins,
 )
-from services.spapi import sp_api_configured, get_catalog_api
+from services.spapi import sp_api_configured, get_multi_store_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
 
 router = APIRouter(prefix="/analytics")
@@ -345,91 +346,15 @@ def get_run_detail(
     }
 
     # ASIN conflicts are surfaced to the user as an informational "⚠ Conflict"
-    # badge (via `asin_conflicts` in the response). A blanket "any conflict
-    # downgrades the verdict" rule was tried and explicitly reverted on
-    # 2026-06-08 (it stranded solid 90%+ matches in Review whenever the same
-    # ASIN legitimately matched >1 catalog row — common when the vendor
-    # catalog has duplicate SKUs for one product).
-    #
-    # ASIN EXCLUSIVITY for a 100%-confidence ("definitive") match — narrower
-    # rule added 2026-09-29 per the user: "if there is a 100% correct asin for
-    # an mpn it cant be assigned for another mpn." A confidence of exactly 100
-    # only ever comes from the matcher's "definitive" floors (UPC+brand,
-    # UPC+attribute, brand+all-attributes — see calculate_confidence), so it's
-    # a much stronger claim than the generic >=90 auto-approve threshold the
-    # 2026-06-08 rule protects. When one catalog row hits that definitive 100
-    # for an ASIN, it is that ASIN's sole rightful owner; every OTHER row
-    # matched to the SAME ASIN (at any confidence, verified or not) is
-    # soft-capped to Review — not silently deleted, not hard-rejected — so a
-    # human reassigns it rather than two different products both claiming to
-    # be "the" match. Confirmed live on a real run ("Pedifix Sales 52 Week")
-    # where one ASIN was verified at 100% for up to 9 genuinely different
-    # products before this rule + a matcher bug fix (see _apparel_size_match /
-    # _colour_match) that was independently found and fixed the same day.
-    _to_conflict_cap: list[tuple[int, str]] = []
-    with database._connect() as conn:
-        conn.row_factory = sqlite3.Row
-        _hundred_rows = conn.execute(
-            "SELECT row_idx, asin, "
-            "json_extract(data_json,'$.scores.product_type_similarity') AS title_sim "
-            "FROM analytics_candidates WHERE run_id=? AND confidence=100",
-            (run_id,),
-        ).fetchall()
-    _asin_100_owners: dict[str, list[tuple[int, float]]] = {}
-    for r in _hundred_rows:
-        _asin_100_owners.setdefault(r["asin"], []).append((r["row_idx"], float(r["title_sim"] or 0)))
-    # Deterministic winner per ASIN even among several genuine 100% ties:
-    # highest title similarity first, then lowest row_idx for full stability.
-    _asin_owner: dict[str, int] = {
-        asin: sorted(pairs, key=lambda p: (-p[1], p[0]))[0][0]
-        for asin, pairs in _asin_100_owners.items()
-    }
-    if _asin_owner:
-        with database._connect() as conn:
-            conn.row_factory = sqlite3.Row
-            _placeholders = ",".join("?" * len(_asin_owner))
-            _owned_asin_rows = conn.execute(
-                f"SELECT row_idx, asin, verdict, review_status FROM analytics_candidates "
-                f"WHERE run_id=? AND asin IN ({_placeholders})",
-                (run_id, *_asin_owner.keys()),
-            ).fetchall()
-        for r in _owned_asin_rows:
-            if r["row_idx"] == _asin_owner[r["asin"]]:
-                continue  # the winner keeps its verdict untouched
-            if (r["review_status"] or "").strip():
-                continue  # a manual/AI decision on this candidate is respected
-            if r["verdict"] == "verified":
-                _to_conflict_cap.append((r["row_idx"], r["asin"]))
-
-        if _to_conflict_cap:
-            # review_status is set (not left blank) so the high-confidence
-            # auto-promotion block further below — "any Review candidate with
-            # confidence >= 90 gets auto-verified" — does NOT immediately
-            # reverse this decision. A capped row's confidence is still 100,
-            # so without this it would bounce straight back to 'verified' a
-            # few lines later in this SAME request (caught by an idempotency
-            # test: a second call kept finding more to cap, because the first
-            # call's caps were being silently undone before the response even
-            # went out). Same guard pattern already used for ai-accepted /
-            # Manually Rejected / Pair Blacklisted elsewhere in this file.
-            with database._LOCK, database._connect() as conn:
-                conn.executemany(
-                    "UPDATE analytics_candidates SET verdict='review', review_status='ASIN Exclusivity' "
-                    "WHERE run_id=? AND row_idx=? AND asin=? AND verdict='verified' "
-                    "AND (review_status IS NULL OR review_status='')",
-                    [(run_id, row_idx, asin) for row_idx, asin in _to_conflict_cap],
-                )
-            _capped_keys = set(_to_conflict_cap)
-            for c in candidates:
-                if (c.get("row_idx"), c.get("asin")) in _capped_keys \
-                   and c.get("verdict") == "verified" \
-                   and not (c.get("review_status") or "").strip():
-                    c["verdict"] = "review"
-                    c["review_status"] = "ASIN Exclusivity"
-                    c["asin_exclusivity_capped"] = True
-            with database._LOCK, database._connect() as conn:
-                updated = _recompute_run_counts(conn, run_id)
-            run_d.update(updated)
+    # badge (via `asin_conflicts` in the response) but no longer downgrade the
+    # verdict.  Per the user's rule, a candidate scoring >= the auto-approve
+    # threshold is a confirmed match and belongs in Approved even when the same
+    # ASIN was matched to more than one catalog row — which in this catalog is
+    # almost always a vendor-side duplicate (same product, two SKUs/UPCs).  The
+    # badge still lets the user spot and manually discard a genuine ambiguous
+    # match.  (Previously this loop capped conflicted verified items to Review
+    # and persisted that downgrade, stranding 90%+ matches on the Review tab.)
+    _to_conflict_cap: list[tuple[int, str]] = []  # retained for the refresh guard; cap disabled
 
     # Defensive promotion: a candidate stored as "not_approved" with confidence
     # >= REVIEW_FLOOR but no hard-reject flag and no valid BSR cap is in an
@@ -1336,6 +1261,93 @@ def apply_ai_decisions(run_id: int) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# GET /runs/{run_id}/brands + POST /runs/{run_id}/filter-brands
+# Post-search brand removal — mirrors Brand Analytics' "Filter Categories"
+# (routers/brand_analytics.py get_run_categories/filter_run_categories)
+# exactly, scoped to analytics_candidates' Amazon brand instead of
+# brand_analytics_items' bsr_category.
+# --------------------------------------------------------------------------- #
+
+_AMZ_BRAND_EXPR = (
+    "COALESCE(json_extract(data_json,'$.amazon.brand'), "
+    "json_extract(data_json,'$.amazon.manufacturer'))"
+)
+
+
+@router.get("/runs/{run_id}/brands")
+def get_run_brands(run_id: int) -> dict[str, Any]:
+    """Distinct Amazon brand values present among this run's candidates, with
+    counts, for the "Remove Brands" picker. NULL/blank -> '(Blanks)'."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        rows = conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF({_AMZ_BRAND_EXPR}, ''), '(Blanks)') AS brand,
+                   COUNT(*) AS count
+            FROM analytics_candidates
+            WHERE run_id=?
+            GROUP BY brand
+            ORDER BY count DESC
+            """,
+            (run_id,),
+        ).fetchall()
+    return {"brands": [dict(r) for r in rows]}
+
+
+class FilterBrandsBody(BaseModel):
+    remove_brands: list[str]
+
+
+@router.post("/runs/{run_id}/filter-brands")
+def filter_run_brands(run_id: int, body: FilterBrandsBody) -> dict[str, Any]:
+    """Permanently delete candidates whose Amazon brand is in remove_brands.
+    '(Blanks)' removes both NULL and empty-string brand rows."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if not body.remove_brands:
+        return {"deleted": 0, "remaining": 0}
+
+    remove_set = [b for b in body.remove_brands if b != "(Blanks)"]
+    remove_blank = "(Blanks)" in body.remove_brands
+
+    with database._LOCK, database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        deleted = 0
+        if remove_set:
+            placeholders = ",".join("?" * len(remove_set))
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? AND {_AMZ_BRAND_EXPR} IN ({placeholders})",
+                [run_id] + remove_set,
+            )
+            deleted += cur.rowcount
+        if remove_blank:
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? "
+                f"AND ({_AMZ_BRAND_EXPR} IS NULL OR {_AMZ_BRAND_EXPR} = '')",
+                (run_id,),
+            )
+            deleted += cur.rowcount
+
+        # Keep the run's cached tab-badge counts (Approved/Review/Not Approved)
+        # in sync — the same guard every other bulk candidate mutation in this
+        # file already applies (_recompute_run_counts).
+        counts = _recompute_run_counts(conn, run_id)
+        remaining_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM analytics_candidates WHERE run_id=?", (run_id,)
+        ).fetchone()
+        remaining = remaining_row["n"] if remaining_row else 0
+
+    return {"deleted": deleted, "remaining": remaining, "counts": counts}
+
+
+# --------------------------------------------------------------------------- #
 # GET /runs/{run_id}/export — multi-sheet Excel download
 # --------------------------------------------------------------------------- #
 
@@ -1577,7 +1589,11 @@ def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
 
     row = _SourceRow(row_idx=0, upc=upc, itemid=itemid, title=title, brand=brand)
     source_dict = row.as_source_dict()
-    api = get_catalog_api()
+    # Round-robins UPC/ItemID/Title search across every configured SP-API store
+    # (same public catalog data either way — just doubles sustained throughput
+    # via two independent per-store rate-limit buckets); see runner.py's
+    # _run_pipeline for the same change on the full Offer Analysis pipeline.
+    api = get_multi_store_catalog_api()
 
     # Collect (normalized_item, source_label) from all tiers.
     raw_candidates: list[tuple[dict, str]] = []

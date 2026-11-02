@@ -222,18 +222,20 @@
   // Export history (shown on the upload screen).
   function historyCard() {
     const h = S.history || [];
-    const head = `<div style="display:grid;grid-template-columns:104px 84px 1.4fr 1.2fr 62px;gap:10px;padding:9px 16px;background:var(--panel-inset);font-size:10px;font-weight:800;letter-spacing:.07em;color:var(--ink-soft)"><div>DATE</div><div>ID</div><div>BRAND · TYPE</div><div>SKUS</div><div style="text-align:right">FILES</div></div>`;
-    const body = h.length ? h.map(e => `<div style="display:grid;grid-template-columns:104px 84px 1.4fr 1.2fr 62px;gap:10px;align-items:center;padding:10px 16px;border-top:1px solid var(--border);font-size:12px">
+    const cols = "104px 84px 1.3fr 1.1fr 50px 76px";
+    const head = `<div style="display:grid;grid-template-columns:${cols};gap:10px;padding:9px 16px;background:var(--panel-inset);font-size:10px;font-weight:800;letter-spacing:.07em;color:var(--ink-soft)"><div>DATE</div><div>ID</div><div>BRAND · TYPE</div><div>SKUS</div><div style="text-align:right">FILES</div><div></div></div>`;
+    const body = h.length ? h.map(e => `<div style="display:grid;grid-template-columns:${cols};gap:10px;align-items:center;padding:10px 16px;border-top:1px solid var(--border);font-size:12px">
         <div style="color:var(--ink-soft)">${esc(e.export_date || "")}</div>
         <div><span style="font-family:ui-monospace,monospace;font-weight:800;font-size:11px;color:var(--primary-ink);background:var(--primary-soft);padding:2px 7px;border-radius:6px">${esc(e.export_id || "")}</span></div>
         <div style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="color:var(--ink)">${esc(e.company || "—")}</b> <span style="color:var(--ink-faint)">· ${esc(e.batch_type || "")}</span></div>
         <div style="color:var(--ink-soft)">${e.total_mains || 0} main · ${(e.total_fba || 0) + (e.total_fbm || 0)} shadow${e.total_kits ? " · " + e.total_kits + " kit" : ""}</div>
         <div style="color:var(--ink-faint);text-align:right">${(e.files || []).length}</div>
+        <div style="text-align:right"><button data-act="reexport" data-arg="${esc(e.export_id || "")}" title="Re-download these exact files" style="padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--ink-soft);font-weight:700;font-size:11px;cursor:pointer;white-space:nowrap">↻ Re-export</button></div>
       </div>`).join("") : `<div style="padding:24px;text-align:center;color:var(--ink-faint);font-size:12.5px">No exports yet — your generated batches will show up here.</div>`;
     return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:22px;padding:18px 22px;box-shadow:var(--shadow)">
       <div style="font-size:11px;font-weight:800;letter-spacing:.12em;color:var(--primary-ink)">EXPORT HISTORY</div>
       <div class="cpo-hf" style="font-weight:700;font-size:16px;letter-spacing:-.02em;margin:2px 0 12px">Recent exports</div>
-      <div style="border:1px solid var(--border);border-radius:14px;overflow:hidden">${head}${body}</div>
+      <div style="border:1px solid var(--border);border-radius:14px;overflow:hidden">${head}<div style="max-height:360px;overflow-y:auto">${body}</div></div>
     </div>`;
   }
 
@@ -798,6 +800,7 @@
       case "edit-mismatch": { const [rowId, field] = arg.split("|"); S.mismatchModal = null; S.editCell = rowId + "." + field; render(); break; }
       case "generate": doGenerate(); break;
       case "export": doExport(); break;
+      case "reexport": reExport(arg, t); break;
     }
   }
 
@@ -1028,6 +1031,20 @@
     S.generating = false; render();
   }
 
+  // Shared by a fresh export and a history re-export -- download each file
+  // (staggered so the browser keeps all of them instead of blocking as "multiple
+  // downloads").
+  function _downloadFiles(files) {
+    files.forEach((f, i) => setTimeout(() => {
+      const bytes = Uint8Array.from(atob(f.b64), c => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+    }, i * 400));
+  }
+
   async function doExport() {
     if (S.exporting) return;
     S.error = "";
@@ -1040,18 +1057,28 @@
       S.exportId = j.export_id || "";
       const files = j.files || [];
       if (!files.length) throw new Error("no files returned");
-      // download each template as its own file (staggered so the browser keeps all 3)
-      files.forEach((f, i) => setTimeout(() => {
-        const bytes = Uint8Array.from(atob(f.b64), c => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-        const a = document.createElement("a");
-        a.href = URL.createObjectURL(blob); a.download = f.name;
-        document.body.appendChild(a); a.click(); a.remove();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
-      }, i * 400));
+      _downloadFiles(files);
       S.exported = true; S.exporting = false; render();
       loadHistory();   // refresh so the new batch shows on the Home/upload screen
     } catch (err) { S.error = "Export failed: " + err.message; S.exporting = false; render(); }
+  }
+
+  async function reExport(exportId, btn) {
+    if (!exportId) return;
+    const prevLabel = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+    try {
+      const r = await fetch(`/api/create-po/history/${encodeURIComponent(exportId)}/download`);
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ("HTTP " + r.status));
+      const j = await r.json();
+      const files = j.files || [];
+      if (!files.length) throw new Error("no files stored for this export");
+      _downloadFiles(files);
+    } catch (err) {
+      S.error = "Re-export failed: " + err.message; render();
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = prevLabel; }
+    }
   }
 
   // ── mount ────────────────────────────────────────────────────────────────

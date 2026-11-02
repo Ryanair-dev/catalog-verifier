@@ -14,13 +14,18 @@ spent and the remaining bucket balance. Requires KEEPA_API in the environment.
 from __future__ import annotations
 
 import collections
+import datetime as dt
 import json
 import logging
 import os
 import re
 import time
+from typing import Callable
 
 import requests
+
+from services import database
+from services.cancellation import JobCancelled, cancellable_sleep
 
 log = logging.getLogger(__name__)
 
@@ -109,15 +114,49 @@ def _bb_window(stats: dict):
     return top, tp, ap
 
 
-def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
+# Per user request (2026-10-19): "out of 400 tokens (we upgraded just now) we
+# leave like 5% of tokens left" -- user was seeing real 429s on Keepa's own
+# dashboard. Confirmed live why: `need` below used to badly UNDERESTIMATE the
+# real per-ASIN cost of a /product buybox+stats+fbaFees+rating call -- a
+# 2-tokens/ASIN guess against a measured REAL cost of 6 tokens/ASIN (verified
+# live, twice, both the stats=30 and stats=90 calls: 18 tokensConsumed for a
+# 3-ASIN batch = 6.0/ASIN each time). For a 100-ASIN batch that's a real cost
+# of 600 tokens against an estimated "need" of only 200 -- `_wait_tokens`
+# would happily let the call through with, say, 250 tokens left (>= the
+# wrong 200 estimate), the request would then actually consume 600, driving
+# the real balance deeply NEGATIVE, which is exactly what trips Keepa's own
+# 429 on the next request until the bucket refills back to positive.
+# `need` below now reflects the measured real cost. `_RESERVE_PCT` is the
+# explicit safety margin on top the user asked for -- computed as a
+# percentage of the ACCOUNT'S LIVE `refillRate` (not a hardcoded "400"),
+# so it keeps tracking correctly through any future plan upgrade/downgrade.
+_RESERVE_PCT = 0.05
+
+
+def _wait_tokens(sess: requests.Session, need: int = 20,
+                  should_cancel: Callable[[], bool] | None = None) -> None:
+    """`should_cancel`, if given, is checked before every poll and during the
+    refill wait (which can otherwise block for minutes across this loop's up
+    to 90 iterations) — see services.cancellation.JobCancelled. Added
+    2026-10-20 after a real user report that cancelling a Vendor Offers
+    export didn't actually stop it; this loop was one of two un-interruptible
+    waits found (the other being SP-API's own retry backoff, services/spapi/
+    catalog.py)."""
     for _ in range(90):
+        if should_cancel and should_cancel():
+            raise JobCancelled()
         try:
             j = sess.get(f"{_ENDPOINT}/token", timeout=10).json()
-            if int(j.get("tokensLeft", 0)) >= need:
+            left = int(j.get("tokensLeft", 0))
+            refill_rate = int(j.get("refillRate") or 0)
+            reserve = int(refill_rate * _RESERVE_PCT) if refill_rate else 0
+            if left >= need + reserve:
                 return
-            time.sleep(max(2, int((j.get("refillIn") or 3000) / 1000)))
+            cancellable_sleep(max(2, int((j.get("refillIn") or 3000) / 1000)), should_cancel)
+        except JobCancelled:
+            raise
         except Exception:  # noqa: BLE001
-            time.sleep(5)
+            cancellable_sleep(5, should_cancel)
 
 
 # ASINs per /product call. We use `buybox=1` (Buy Box price + seller + share
@@ -128,21 +167,36 @@ def _wait_tokens(sess: requests.Session, need: int = 20) -> None:
 _PRODUCT_BATCH = 100
 
 
-def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> dict:
+def _call_product(sess: requests.Session, asins: list[str], stats_days: int,
+                   should_cancel: Callable[[], bool] | None = None) -> dict:
     params = {"domain": _DOMAIN, "asin": ",".join(asins), "history": 0, "stats": stats_days,
-              "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1}
-    # A 100-ASIN buybox batch costs well more than the old flat 20-token check
-    # verified -- wait for a realistic amount up front so we don't walk straight
-    # into a "not enough tokens" response from Keepa's own server.
-    need = max(20, len(asins) * 2)
+              "stock": 1, "fbaFees": 1, "buybox": 1, "update": 72, "product": 1, "rating": 1}
+    # NOTE (2026-10-07): without `rating=1`, Keepa never populates the RATING
+    # (idx 16) / COUNT_REVIEWS (idx 17) stats slots at all -- they come back as
+    # -1 ("no data") even for products that genuinely have thousands of
+    # reviews (`hasReviews: true`), which is why "Total Ratings Count" was
+    # silently 0 for every single row. Verified live: the exact same ASIN
+    # returned current[17]=-1 without this param and current[17]=7414 with it.
+    # Real measured cost (2026-10-19, live): 6 tokens/ASIN for this exact param
+    # combination (buybox+stock+fbaFees+rating+stats), confirmed identically on
+    # BOTH the stats=30 and stats=90 calls. The old `* 2` estimate here was a 3x
+    # UNDERCOUNT -- it let `_wait_tokens` pass a call through with, say, 250
+    # tokens left for a 100-ASIN batch (>= the wrong 200 estimate), the request
+    # then actually consumed 600, driving the real balance deeply NEGATIVE --
+    # which is exactly what trips Keepa's own 429 on the next request until the
+    # bucket refills back to positive. This single fix is the real root cause
+    # of the 429s the user was seeing on Keepa's own dashboard.
+    need = max(20, len(asins) * 6)
     for attempt in range(12):
-        _wait_tokens(sess, need)
+        if should_cancel and should_cancel():
+            raise JobCancelled()
+        _wait_tokens(sess, need, should_cancel=should_cancel)
         try:
             r = sess.get(f"{_ENDPOINT}/product", params=params, timeout=120)
             if r.status_code in (400, 401, 402, 403):
                 raise RuntimeError(f"Keepa fatal {r.status_code}: {r.text[:200]}")
             if r.status_code != 200:
-                time.sleep(min(30, 3 * 2 ** attempt))
+                cancellable_sleep(min(30, 3 * 2 ** attempt), should_cancel)
                 continue
             j = r.json()
             if j.get("error"):
@@ -155,14 +209,54 @@ def _call_product(sess: requests.Session, asins: list[str], stats_days: int) -> 
                     # _query() already uses for Product Finder token errors.
                     log.warning("[keepa] token exhaustion on /product (attempt %d): %s",
                                 attempt + 1, err[:150])
-                    time.sleep(min(60, 6 * (attempt + 1)))
+                    cancellable_sleep(min(60, 6 * (attempt + 1)), should_cancel)
                     continue
                 raise RuntimeError(f"Keepa error: {err}")
             return j
         except requests.RequestException as exc:      # incl. ChunkedEncodingError (broken read)
             log.warning("[keepa] /product read failed (attempt %d): %s", attempt + 1, str(exc)[:100])
-            time.sleep(min(30, 3 * 2 ** attempt))
+            cancellable_sleep(min(30, 3 * 2 ** attempt), should_cancel)
     raise RuntimeError("Keepa /product failed after retries (token exhaustion or repeated errors)")
+
+
+def seller_asins(seller_id: str) -> dict:
+    """Keepa /seller?storefront=1 -- this seller's full CURRENT ASIN roster plus
+    basic identity info. Flat ~10 tokens regardless of catalog size (verified
+    live) -- this is the Seller Analytics discovery step: unlike a vendor
+    offer's UPC, which needs a barcode->ASIN lookup pass, a seller ID already
+    IS the confirmed identity, so Keepa just hands back their ASIN list
+    directly -- no recovery/resolution pass needed."""
+    seller_id = (seller_id or "").strip()
+    if not seller_id:
+        return {"asins": [], "seller_name": None, "error": "No seller ID given."}
+    if not is_configured():
+        return {"asins": [], "seller_name": None, "error": "Keepa is not configured (KEEPA_API missing)."}
+    sess = _session()
+    _wait_tokens(sess, 10)
+    try:
+        r = sess.get(f"{_ENDPOINT}/seller",
+                     params={"domain": _DOMAIN, "seller": seller_id, "storefront": 1},
+                     timeout=60)
+        j = r.json()
+    except requests.RequestException as exc:
+        return {"asins": [], "seller_name": None, "error": str(exc)[:200]}
+    if j.get("error"):
+        return {"asins": [], "seller_name": None, "error": str(j["error"])[:200]}
+    sellers = j.get("sellers") or {}
+    obj = sellers.get(seller_id) or next(iter(sellers.values()), None)
+    if not obj:
+        return {"asins": [], "seller_name": None,
+                "error": f"Seller {seller_id!r} not found on Keepa."}
+    asin_list = obj.get("asinList") or []
+    return {
+        "asins": sorted({a for a in asin_list if a}),
+        "seller_name": obj.get("sellerName") or obj.get("businessName"),
+        "total_storefront_asins": obj.get("totalStorefrontAsins"),
+        "has_fba": obj.get("hasFBA"),
+        "rating": _kval(obj.get("currentRating")),
+        "rating_count": _kval(obj.get("currentRatingCount")),
+        "error": None,
+    }
 
 
 def _call_sellers(sess: requests.Session, seller_ids) -> dict:
@@ -201,6 +295,10 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
         "sales_rank_current": _karr(s90, "current", _IDX_SALES_RANK),
         "sales_rank_30d": _karr(s30, "avg30", _IDX_SALES_RANK),
         "url": f"https://www.amazon.com/dp/{p.get('asin')}",
+        # Only needed by Seller Analytics (no vendor-offer UPC to key off of
+        # there) -- additive, existing callers never read these keys.
+        "ean": next(iter(p.get("eanList") or []), None),
+        "upc": next(iter(p.get("upcList") or []), None),
     }
     if isinstance(p.get("variationCSV"), list):
         row["variation_asin"] = ",".join(v for v in p["variationCSV"][1:] if isinstance(v, str))
@@ -216,26 +314,98 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
     return row
 
 
+_PRODUCT_CACHE_TTL_DAYS = 2   # per user request (2026-10-19): "keepa data for 2 days"
+
+
+def _ensure_product_cache_table(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS keepa_product_cache "
+                 "(asin TEXT PRIMARY KEY, data_json TEXT, as_of TEXT)")
+
+
+def _product_cache_get(asins) -> dict:
+    """{asin: full result dict} for entries cached within the TTL. Honest tradeoff,
+    not hidden: Buy Box price/rank/etc. can genuinely move within 2 days, so a
+    cache hit may show slightly stale pricing -- the user explicitly chose this
+    tradeoff (fewer live Keepa calls/tokens spent) over always-fresh data."""
+    cutoff = (dt.datetime.now() - dt.timedelta(days=_PRODUCT_CACHE_TTL_DAYS)).isoformat()
+    out: dict = {}
+    clean = sorted({a.strip().upper() for a in asins if a})
+    if not clean:
+        return out
+    with database._connect() as conn:
+        _ensure_product_cache_table(conn)
+        for i in range(0, len(clean), 400):
+            ch = clean[i:i + 400]
+            q = ",".join("?" * len(ch))
+            for asin, dj in conn.execute(
+                    f"SELECT asin, data_json FROM keepa_product_cache "
+                    f"WHERE as_of >= ? AND asin IN ({q})", [cutoff, *ch]):
+                try:
+                    out[asin] = json.loads(dj)
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def _product_cache_put(rows: dict) -> None:
+    if not rows:
+        return
+    now = dt.datetime.now().isoformat()
+    with database._LOCK, database._connect() as conn:
+        _ensure_product_cache_table(conn)
+        conn.executemany(
+            "INSERT INTO keepa_product_cache(asin, data_json, as_of) VALUES(?,?,?) "
+            "ON CONFLICT(asin) DO UPDATE SET data_json=excluded.data_json, as_of=excluded.as_of",
+            [(a, json.dumps(r), now) for a, r in rows.items()])
+
+
 def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
-    """LIVE Keepa /product for `asins` → {asin: {…}} with the same keys the Offer
+    """Keepa /product for `asins` → {asin: {…}} with the same keys the Offer
     Analytics export reads (title, current/30d/90d buy box, fba fee, ranks, BB
     seller + share, Amazon %, FBA/FBM counts, brand, category, ratings, dims,
-    parent/variation). Two calls per 100-ASIN batch (stats=30 and stats=90) so the
-    30d AND 90d buy-box-share percentages are both correct."""
+    parent/variation). Two LIVE calls per 100-ASIN batch (stats=30 and stats=90)
+    so the 30d AND 90d buy-box-share percentages are both correct.
+
+    Cached for 2 days (`_PRODUCT_CACHE_TTL_DAYS`, per user request 2026-10-19) —
+    an ASIN already fetched recently skips the live call entirely (saves both
+    time and Keepa tokens, the latter a real past failure mode for long exports
+    — see this module's own `_call_product` token-exhaustion handling).
+
+    `should_cancel`, if given, is checked between batches AND raises
+    JobCancelled (propagating to the caller) rather than silently breaking the
+    loop, so a caller like services/vendor_offers_template_export.py's
+    build_template_xlsx (which runs this on its own thread alongside
+    enrich_asins) can tell a genuine cancellation apart from "ran out of
+    ASINs." It's also threaded into `_call_product`/`_wait_tokens` so a
+    cancel mid-retry-backoff or mid-token-wait doesn't have to wait out the
+    full sequence first — added 2026-10-20 after a real report that
+    cancelling a Vendor Offers export didn't actually stop it."""
     if not is_configured():
         return {}
     sess = _session()
     uniq = sorted({a.strip().upper() for a in asins if a})
     out: dict = {}
     seller_ids: set = set()
-    done, total = 0, len(uniq)
-    for i in range(0, len(uniq), _PRODUCT_BATCH):
+
+    cached = _product_cache_get(uniq)
+    out.update(cached)
+    to_fetch = [a for a in uniq if a not in cached]
+
+    total = len(uniq)
+    done = len(uniq) - len(to_fetch)
+    if on_progress:
+        on_progress(done, total)
+
+    fresh: dict = {}
+    for i in range(0, len(to_fetch), _PRODUCT_BATCH):
         if should_cancel and should_cancel():
-            break
-        batch = uniq[i:i + _PRODUCT_BATCH]
+            raise JobCancelled()
+        batch = to_fetch[i:i + _PRODUCT_BATCH]
         try:
-            j30 = _call_product(sess, batch, 30)
-            j90 = _call_product(sess, batch, 90)
+            j30 = _call_product(sess, batch, 30, should_cancel=should_cancel)
+            j90 = _call_product(sess, batch, 90, should_cancel=should_cancel)
+        except JobCancelled:
+            raise  # a cancelled run, not a failed batch -- let it propagate
         except Exception as exc:  # noqa: BLE001
             log.warning("[keepa] batch %d–%d permanently failed, skipping "
                         "(%d ASINs will have no Keepa data): %s",
@@ -250,15 +420,18 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
             if not asin:
                 continue
             row = _flatten_product(p, (p30.get(asin, {}).get("stats") or {}), (p.get("stats") or {}))
-            out[asin.strip().upper()] = row
+            key = asin.strip().upper()
+            out[key] = row
+            fresh[key] = row
             if row.get("buybox_seller_id"):
                 seller_ids.add(row["buybox_seller_id"])
         done += len(batch)
         if on_progress:
             on_progress(done, total)
     names = _call_sellers(sess, seller_ids)
-    for row in out.values():
+    for key, row in fresh.items():
         row["buybox_seller_name"] = names.get(row.get("buybox_seller_id"))
+    _product_cache_put(fresh)
     return out
 
 
@@ -462,12 +635,12 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
     spent = [0]
     left = [None]
 
-    def _sample_brands(selection: dict) -> tuple[collections.Counter, set[str]]:
+    def _sample_brands(selection: dict) -> tuple[collections.Counter, set[str], int]:
         al, _tot, tok, lf = _query(sess, selection, min(_MAX_PER_QUERY, _DISCOVER_POOL))
         spent[0] += tok
         left[0] = lf
         if not al:
-            return collections.Counter(), set()
+            return collections.Counter(), set(), 0
         step = max(1, len(al) // sample_size)
         samp = al[::step][:sample_size]
         bc: collections.Counter = collections.Counter()
@@ -486,7 +659,7 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
                 m = (p.get("manufacturer") or "").strip()
                 if m:
                     mfrs.add(m)
-        return bc, mfrs
+        return bc, mfrs, len(samp)
 
     tok_seed = re.sub(r"[^a-z0-9]", "", str(seed).lower())
 
@@ -504,24 +677,46 @@ def discover_sub_brands(seed: str, extra_terms: list[str] | None = None,
     terms = sorted(terms)[:40]
 
     brand_counts: collections.Counter = collections.Counter()
+    total_sampled = 0
     # (1) products under the manufacturer terms → collect their brand values
-    b_mfr, seen_mfrs = _sample_brands({"manufacturer": terms})
+    b_mfr, seen_mfrs, n1 = _sample_brands({"manufacturer": terms})
     brand_counts.update(b_mfr)
+    total_sampled += n1
     # (2) products branded as the seed itself (so the parent brand is always offered)
-    b_brand, seen_mfrs2 = _sample_brands({"brand": sorted(_term_variants(seed))})
+    b_brand, seen_mfrs2, n2 = _sample_brands({"brand": sorted(_term_variants(seed))})
     brand_counts.update(b_brand)
+    total_sampled += n2
     # (3) expand: any SEEN manufacturer string that mentions the seed but wasn't searched
     # yet (e.g. 'ACON Laboratories' discovered via Flowflex products) → search it too so
     # we catch the rest of the family. The seed-token guard keeps it from drifting.
     more = sorted({m.lower() for m in (seen_mfrs | seen_mfrs2)
                    if _has_seed(m) and m.lower() not in terms})[:20]
     if more:
-        b_more, _ = _sample_brands({"manufacturer": more})
+        b_more, _, n3 = _sample_brands({"manufacturer": more})
         brand_counts.update(b_more)
+        total_sampled += n3
+
+    # Confidence floor BEFORE spending tokens on the exact-count lookup, not after.
+    # Verified live (2026-10-02, "Safetec" manufacturer run): a handful of
+    # products with an unrelated/incidental brand value (a shared kit listing,
+    # a data-entry quirk, etc.) show up only 1-3 times out of 500+ samples —
+    # true noise, not a real house sub-brand ("Safetec" itself was 507/526 =
+    # 96%; every noise brand was <=3/526 = <=0.6%). The OLD code took every
+    # such one-off hit and looked up its GLOBAL Amazon-wide popularity, which
+    # rewards exactly the wrong thing: a brand that happens to be big
+    # EVERYWHERE ELSE on Amazon (e.g. "BND" 696 products, "PrimeMed" 490,
+    # unrelated office/safety suppliers) outranked the genuine seed brand in
+    # the final sorted-by-count output, even though its connection to the
+    # seed was a single coincidental sample. A real house sub-brand (e.g.
+    # Acon's "Flowflex", 212/~400 samples) clears this easily; a one-off
+    # mislabeled/bundled listing does not.
+    min_hits = max(3, round(0.02 * total_sampled)) if total_sampled else 3
+    candidates = [(val, cnt) for val, cnt in brand_counts.most_common(max_brands * 2)
+                  if cnt >= min_hits]
 
     # exact finder count per distinct brand (cheap: perPage=50 ≈ 11 tokens each)
     out = []
-    for val, _sc in brand_counts.most_common(max_brands):
+    for val, _sc in candidates[:max_brands]:
         if val.strip().lower() in _JUNK_BRANDS:
             continue
         _al, total, tok, lf = _query(sess, {"brand": [val.lower()]}, 50)

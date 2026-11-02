@@ -118,14 +118,13 @@ class WalmartCatalogAPI:
 
     def search_best(
         self, *, query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO, max_retries: int = 4,
-    ) -> tuple[dict | None, float, bool]:
+    ) -> tuple[dict | None, float, str]:
         """Title/keyword search WITH a relevance check. Returns
-        (best_item_or_None, best_score, size_conflict) -- best_item is None
+        (best_item_or_None, best_score, exclude_reason) -- best_item is None
         when no result clears `min_ratio` (fuzzy token_set_ratio, 0-100, of
-        the query against each candidate's title) AND has a matching size,
-        so a caller never silently accepts an unrelated product, or the
-        right product line at the wrong size, just because it ranked first
-        or scored well on text alone."""
+        the query against each candidate's title), has a matching size, and
+        actually carries a Walmart `price` -- see `best_match()`'s docstring
+        for what `exclude_reason` means."""
         data = self.search(query=query, max_retries=max_retries)
         items = data.get("items") or []
         return best_match(items, query, min_ratio)
@@ -133,33 +132,42 @@ class WalmartCatalogAPI:
 
 def best_match(
     items: list[dict], query: str, min_ratio: float = MIN_TITLE_MATCH_RATIO,
-) -> tuple[dict | None, float, bool]:
+) -> tuple[dict | None, float, str]:
     """Pick the item whose title best fuzzy-matches `query`; only returns it
-    (non-None) when the score clears `min_ratio` AND its size doesn't
-    contradict the query's.
+    (non-None) when the score clears `min_ratio`, its size doesn't
+    contradict the query's, AND it actually carries a `price`.
 
-    Two distinct failure modes verified live (2026-09-29), both needing a
-    guard: (1) a query for "L'Oreal Paris Eye Makeup Remover" returned an
-    unrelated NYX eyeliner as item[0] -- pure text mismatch, caught by
-    `min_ratio`. (2) a query for "L'Oreal Paris Eye Makeup Remover 0.4
-    fluid ounces" matched a REAL L'Oreal eye-makeup-remover listing that
-    was actually "4 fl oz" -- a 10x size difference the text-similarity
-    score barely penalises, since every other word overlaps. `_size_mismatch`
-    (reused verbatim from the Amazon matcher, `services/analytics/matcher.py`
-    -- it already parses volume/weight/linear-dimension tokens out of free
-    text and is Amazon-agnostic) catches this second case; a size-mismatched
-    candidate is excluded from being `best_item` even if it has the highest
-    text score.
+    Three distinct failure modes, each verified live against the real
+    Walmart search API, each needing its own guard:
+    (1) 2026-09-29 -- a query for "L'Oreal Paris Eye Makeup Remover"
+        returned an unrelated NYX eyeliner as item[0] -- pure text
+        mismatch, caught by `min_ratio`.
+    (2) 2026-09-29 -- a query for "L'Oreal Paris Eye Makeup Remover 0.4
+        fluid ounces" matched a REAL L'Oreal eye-makeup-remover listing
+        that was actually "4 fl oz" -- a 10x size difference the text-
+        similarity score barely penalises, since every other word
+        overlaps. `_size_mismatch` (reused verbatim from the Amazon
+        matcher, `services/analytics/matcher.py`) catches this.
+    (3) 2026-09-30 -- Walmart's keyword search frequently returns items
+        with NO `price` field at all: of 39 real results for "tide pods",
+        only 16 carried a price, and the single HIGHEST-scoring title
+        match was one of the 23 that didn't (a UPC-identifier search
+        always includes `price` -- this is specific to keyword search).
+        A price-less item is useless for Offer Analysis (net_profit/roi
+        both come out blank), so it can't be returned as `best_item`.
 
-    Returns `size_conflict=True` when the single best TEXT match overall
-    would have cleared `min_ratio` but was excluded for a size conflict --
-    lets the caller report "found the right product line, wrong size"
-    instead of a generic "no match" (the two are actionable differently)."""
+    `exclude_reason` is `""` when `best_item` is returned; otherwise one of
+    `"size"` or `"no_price"`, naming which guard excluded the single best
+    TEXT match overall (so the caller can report "found the right product,
+    wrong size" vs. "found it, but Walmart didn't give a price for it" --
+    two different, differently-actionable outcomes) -- or `""` again when
+    nothing cleared `min_ratio` at all (a genuine no-match, not an
+    exclusion)."""
     if not items:
-        return None, 0.0, False
+        return None, 0.0, ""
     q = (query or "").strip().lower()
     best_item, best_score = None, 0.0
-    best_overall_score = 0.0
+    best_overall_item, best_overall_score = None, 0.0
     for item in items:
         raw_title = item.get("title") or ""
         title = raw_title.strip().lower()
@@ -167,12 +175,16 @@ def best_match(
             continue
         score = fuzz.token_set_ratio(q, title)
         if score > best_overall_score:
-            best_overall_score = score
+            best_overall_score, best_overall_item = score, item
+        if "price" not in item:
+            continue
         if _size_mismatch(query, raw_title):
             continue
         if score > best_score:
             best_item, best_score = item, score
     if best_item is not None and best_score >= min_ratio:
-        return best_item, best_score, False
-    size_conflict = best_overall_score >= min_ratio and best_overall_score > best_score
-    return None, best_overall_score, size_conflict
+        return best_item, best_score, ""
+    if best_overall_score < min_ratio:
+        return None, best_overall_score, ""
+    reason = "no_price" if "price" not in (best_overall_item or {}) else "size"
+    return None, best_overall_score, reason

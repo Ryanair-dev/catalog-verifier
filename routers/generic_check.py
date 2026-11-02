@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from services.generic_check import classify_generic
 from services.spapi.config import load_sp_api_credentials, sp_api_configured
 from services.safety import safe_spreadsheet_value
+from services import job_persistence
 
 router = APIRouter()
 
@@ -38,9 +39,14 @@ MAX_ASINS = 5_000
 def _get_job(job_id: str) -> dict:
     now = time.time()
     with _JOBS_LOCK:
+        # TTL from when the job was first seen finished, not its start (see
+        # routers/eligibility.py _get_job, 2026-10-30).
+        for j in _JOBS.values():
+            if j.get("status") != "running":
+                j.setdefault("finished_seen_at", now)
         stale = [
             jid for jid, j in _JOBS.items()
-            if j.get("status") != "running" and now - j.get("started_at", now) > _JOB_TTL
+            if j.get("status") != "running" and now - j["finished_seen_at"] > _JOB_TTL
         ]
         for jid in stale:
             _JOBS.pop(jid, None)
@@ -56,6 +62,24 @@ def _eta(job: dict) -> int | None:
         return None
     elapsed = time.time() - job["started_at"]
     return max(0, round(elapsed / done * (job["total"] - done)))
+
+
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot for the Settings > Tasks Running tab -- see
+    routers/settings.py tasks_running()."""
+    with _JOBS_LOCK:
+        jobs = list(_JOBS.values())
+    return [
+        {
+            "feature": "Toolbox: Generic/DOG Check",
+            "job_id": j.get("job_id"),
+            "status": j.get("status"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started_at"),
+        }
+        for j in jobs
+    ]
 
 
 class CheckBody(BaseModel):
@@ -93,6 +117,13 @@ async def start_check(body: CheckBody) -> dict:
             "check submits a validation-preview listing which requires a seller ID."
         ))
 
+    job_id = _launch_check(asins)
+    return {"job_id": job_id, "total": len(asins)}
+
+
+def _launch_check(asins: list[str]) -> str:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs)."""
     job_id = str(uuid.uuid4())
     job: dict = {
         "job_id": job_id, "total": len(asins), "done": 0,
@@ -100,6 +131,7 @@ async def start_check(body: CheckBody) -> dict:
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    job_persistence.save_job(job_id, "generic_check", {"asins": asins})
 
     def run() -> None:
         lock = threading.Lock()
@@ -115,9 +147,21 @@ async def start_check(body: CheckBody) -> dict:
         except Exception as exc:  # noqa: BLE001
             job["status"] = "error"
             job["error"] = str(exc)
+        finally:
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=run, daemon=True).start()
-    return {"job_id": job_id, "total": len(asins)}
+    return job_id
+
+
+def _relaunch(params: dict) -> None:
+    asins = [str(a) for a in (params.get("asins") or []) if str(a).strip()]
+    if not asins:
+        return
+    _launch_check(asins)
+
+
+job_persistence.register_relauncher("generic_check", _relaunch)
 
 
 @router.get("/generic-check/jobs/{job_id}")
