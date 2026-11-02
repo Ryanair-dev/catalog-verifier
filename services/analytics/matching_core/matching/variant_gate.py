@@ -13,7 +13,7 @@ from services.analytics.matching_core.matching.attr_extract import extract_amazo
 from services.analytics.matching_core.matching.flags import category_check_enabled
 from services.analytics.matching_core.matching.product_line import index_for
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, variant_boxes_for
-from services.analytics.matching_core.matching.normalize import brands_match, normalize_upc, upc_matches
+from services.analytics.matching_core.matching.normalize import brands_match, mpns_match, normalize_upc, upc_matches
 from services.analytics.matching_core.matching.variation import compare_boxes
 from services.analytics.matching_core.models import MatchResult, Verdict
 
@@ -33,6 +33,7 @@ _LABELS = {
     "gender_mismatch": "men's / women's / kids differs",
     "category_far": "the product categories look unrelated",
     "product_line_mismatch": "the product line differs",
+    "product_line_unsure": "the product line may differ (descriptive words differ)",
     "brand_differs_upc_ok": "brand differs although the UPC matches",
     "size_partial": "clothing size only partly the same (like S vs XS/S)",
 }
@@ -88,7 +89,7 @@ def _rests_on_ai(reason: str, vendor: dict[str, dict], amazon: dict[str, dict]) 
 def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
                     barcode_confirmed: bool = False, brand_conflict: bool = False,
                     categories: dict[str, str] | None = None,
-                    line_conflict: str | None = None) -> dict[str, Any]:
+                    line_conflict: str | None = None, line_strong: bool = True) -> dict[str, Any]:
     boxes = compare_boxes(vendor, amazon)
     vendor_category = (categories or {}).get("vendor") or ""
     amazon_category = (categories or {}).get("amazon") or ""
@@ -103,8 +104,9 @@ def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
         (soft if barcode_confirmed else hard).append(
             "brand_differs_upc_ok" if barcode_confirmed else "brand_mismatch")
     if line_conflict and not barcode_confirmed:
-        # a different product LINE ("Sport" vs "Run", "Crew" vs "Mini-Crew"): see product_line.py
-        hard.append("product_line_mismatch")
+        # a different product LINE ("Sport" vs "Run", "Crew" vs "Mini-Crew"): see product_line.py.
+        # Only a line NAME rejects; when only descriptive words differ it is a question for a person.
+        (hard if line_strong else soft).append("product_line_mismatch" if line_strong else "product_line_unsure")
     if boxes.get("size") == "mismatch":
         hard.append("apparel_size_mismatch")
     elif boxes.get("size") == "partial" and not barcode_confirmed:
@@ -158,14 +160,16 @@ def gate_for_pair(source: dict, normalized: dict, extracted: dict | None,
             normalized.get("brand") or normalized.get("manufacturer"),
         )
         categories = {"vendor": v["identity"].get("category"), "amazon": a["identity"].get("category")}
-        line = None
-        if not barcode_confirmed:
+        line, strong = None, True
+        # the same part number (like the same UPC) is the product's own code: the title wording does not matter
+        part_number_ok = mpns_match(source.get("mpn") or source.get("itemid"), normalized.get("mpn"))
+        if not barcode_confirmed and not part_number_ok:
             index = index_for(source.get("run_id"))          # the vendor file's own line vocabulary
             if index:
-                line = index.conflict(source.get("title"),
-                                      source.get("brand") or (extracted or {}).get("brand"),
-                                      normalized.get("title"))
-        return gate_from_boxes(v["fields"], a["fields"], barcode_confirmed, conflict, categories, line)
+                line, strong = index.assess(source.get("title"),
+                                            source.get("brand") or (extracted or {}).get("brand"),
+                                            normalized.get("title"))
+        return gate_from_boxes(v["fields"], a["fields"], barcode_confirmed, conflict, categories, line, strong)
     except Exception:  # noqa: BLE001 - a failure here must never break a run
         return None
 
@@ -188,12 +192,13 @@ def gate_for_models(offer, candidate) -> dict[str, Any] | None:
         confirmed = bool(offer.upc and candidate.upc
                          and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc)))
         categories = {"vendor": v["identity"].get("category"), "amazon": a["identity"].get("category")}
-        line = None
-        index = None if confirmed else index_for("eval")
+        line, strong = None, True
+        part_number_ok = mpns_match(offer.mpn, candidate.mpn)
+        index = None if (confirmed or part_number_ok) else index_for("eval")
         if index:
-            line = index.conflict(offer.title or offer.raw_text, offer.brand, candidate.title)
+            line, strong = index.assess(offer.title or offer.raw_text, offer.brand, candidate.title)
         return gate_from_boxes(v["fields"], a["fields"], confirmed,
-                               _brand_conflict(offer.brand, candidate.brand), categories, line)
+                               _brand_conflict(offer.brand, candidate.brand), categories, line, strong)
     except Exception:  # noqa: BLE001
         return None
 
@@ -230,6 +235,8 @@ def describe_gate(gate: dict[str, Any] | None) -> str:
         for r in gate["hard"]:
             if r == "product_line_mismatch" and gate.get("line"):
                 parts.append(f"the product line differs ({gate['line']})")
+            elif r == "product_line_unsure" and gate.get("line"):
+                parts.append(f"the product line may differ ({gate['line']}); only descriptive words differ")
             else:
                 parts.append(_LABELS[r])
         return "Variant check: " + ", ".join(parts) + " - rejected."

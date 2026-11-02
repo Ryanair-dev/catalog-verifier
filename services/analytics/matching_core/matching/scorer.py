@@ -13,6 +13,7 @@ from services.analytics.matching_core.matching.attributes import (
 from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     brands_match,
+    mpns_match,
     normalize_upc,
     title_similarity,
     upc_matches,
@@ -83,7 +84,7 @@ def _strengths(offer: Offer, cand: Candidate, upc_hit: bool) -> dict[str, float]
     if _barcode(offer.upc) and _barcode(cand.upc):
         s["upc"] = 1.0 if upc_hit else 0.0
     if offer.mpn and cand.mpn:
-        s["mpn"] = 1.0 if base_mpn(offer.mpn) == base_mpn(cand.mpn) else 0.0
+        s["mpn"] = 1.0 if mpns_match(offer.mpn, cand.mpn) else 0.0
     if offer.brand and cand.brand:
         s["brand"] = _brand_score(offer, cand) / BRAND_MAX
     src, amz = offer.title or offer.raw_text or "", cand.title or ""

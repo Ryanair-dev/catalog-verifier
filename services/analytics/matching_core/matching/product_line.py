@@ -1,3 +1,6 @@
+"""
+The product-line check.
+"""
 from __future__ import annotations
 
 import json
@@ -37,6 +40,14 @@ def line_tokens(title: Any, brand: Any = "") -> frozenset[str]:
             continue
         out.append(t)
     return frozenset(out)
+
+
+def _leader(title: Any, tokens: frozenset[str]) -> str | None:
+    """The first line word of a title, in title order: its line name ('Companion', 'Eldris', 'Run' ...)."""
+    for t in _tokens(title):
+        if t in tokens:
+            return t
+    return None
 
 
 def _brand_key(brand: Any) -> str:
@@ -87,31 +98,41 @@ class LineIndex:
     def __init__(self, rows: Iterable[tuple[Any, Any]]) -> None:
         self.vocab: dict[str, set[str]] = defaultdict(set)
         self.signatures: dict[str, set[frozenset[str]]] = defaultdict(set)
+        self.leaders: dict[str, set[str]] = defaultdict(set)      # line names: the first line word of each title
         for brand, title in rows:
             tokens = line_tokens(title, brand)
             if tokens:
                 key = _brand_key(brand)
                 self.vocab[key] |= tokens
                 self.signatures[key].add(tokens)
+                lead = _leader(title, tokens)
+                if lead:
+                    self.leaders[key].add(lead)
 
-    def conflict(self, vendor_title: Any, vendor_brand: Any, amazon_title: Any) -> str | None:
-        """A short plain sentence when the listing is a different product line, else None."""
+    def assess(self, vendor_title: Any, vendor_brand: Any, amazon_title: Any) -> tuple[str | None, bool]:
+        """(sentence, strong): the sentence when the listing may be a different product line, else None.
+        strong = the evidence is a line name (hard reject); weak = only descriptive words differ (Review)."""
         key = _brand_key(vendor_brand)
         vocab = self.vocab.get(key)
         if not vocab:
-            return None
+            return None, False
         v = line_tokens(vendor_title, vendor_brand)
         a = line_tokens(amazon_title, vendor_brand) & vocab          # only words this catalog uses as line words
         if not v or not a:
-            return None
+            return None, False
         v_only, a_only, abbreviated = _abbreviation_cover(v - a, a - v, vendor_title, amazon_title)
         if v_only and a_only:
+            names = a_only & self.leaders.get(key, set())            # the listing names ANOTHER row's line name
             return (f"vendor row says {_ordered(v_only, vendor_title)}; "
-                    f"the listing says {_ordered(a_only, amazon_title)}")
+                    f"the listing says {_ordered(a_only, amazon_title)}"), bool(names)
         if not abbreviated and a != v and a in self.signatures[key]:   # the listing is exactly ANOTHER row's line
             return (f"the listing is the '{_ordered(a, amazon_title)}' line, "
-                    f"the vendor row is '{_ordered(v, vendor_title)}'")
-        return None
+                    f"the vendor row is '{_ordered(v, vendor_title)}'"), True
+        return None, False
+
+    def conflict(self, vendor_title: Any, vendor_brand: Any, amazon_title: Any) -> str | None:
+        """A short plain sentence when the listing may be a different product line, else None (strong or weak)."""
+        return self.assess(vendor_title, vendor_brand, amazon_title)[0]
 
 
 _INDEX: dict[Any, tuple[float, LineIndex]] = {}
@@ -157,4 +178,3 @@ def index_for(key: Any) -> LineIndex | None:
     return hit[1] if hit else None
 
 
-FILE_VERSION = "2026-10-22 v9 (abbreviations are not a different line)"

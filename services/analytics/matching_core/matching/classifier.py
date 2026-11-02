@@ -16,6 +16,7 @@ from services.analytics.matching_core.matching.attributes import (
 )
 from services.analytics.matching_core.matching.normalize import (
     base_mpn,
+    mpns_match,
     brands_match,
     normalize_upc,
     title_similarity,
@@ -39,7 +40,7 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
     )
     mpn_hit = bool(
         offer.mpn and candidate.mpn
-        and base_mpn(offer.mpn) == base_mpn(candidate.mpn)
+        and mpns_match(offer.mpn, candidate.mpn)
     )
     brand_agrees = bool(
         offer.brand and candidate.brand and brands_match(offer.brand, candidate.brand)

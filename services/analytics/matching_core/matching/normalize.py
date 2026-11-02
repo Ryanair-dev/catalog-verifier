@@ -39,6 +39,27 @@ def base_mpn(mpn: str | None) -> str:
     return NON_ALNUM_RE.sub("", stripped).lower()
 
 
+_LETTER_PREFIX_RE = re.compile(r"^([a-z]{1,3})(\d[a-z0-9]*)$")
+
+
+def _without_letter_prefix(base: str) -> str:
+    """'m13216' -> '13216' (a brand's 1-3 letter prefix like Morakniv's 'M-'); '' when there is none or when
+    too little would be left to be a real part number."""
+    m = _LETTER_PREFIX_RE.match(base or "")
+    if m and len(m.group(2)) >= max(4, MIN_BASE_LEN):
+        return m.group(2)
+    return ""
+
+
+def mpns_match(a: str | None, b: str | None) -> bool:
+    """The same part number.  Compared as base_mpn() forms, and a short letter prefix on ONE side is ignored:
+    'M-13216' = '13216' = 'M13216'.  Two DIFFERENT prefixes still differ ('A12345' vs 'B12345')."""
+    ba, bb = base_mpn(a), base_mpn(b)
+    if not ba or not bb:
+        return False
+    return ba == bb or _without_letter_prefix(ba) == bb or _without_letter_prefix(bb) == ba
+
+
 def normalize_upc(upc: str | None) -> str:
     """Digits only; zero-pad 11-digit UPCs to 12 (vendor feeds often strip the
     leading zero).  A number read from Excel ('760172011852.0') loses its '.0'

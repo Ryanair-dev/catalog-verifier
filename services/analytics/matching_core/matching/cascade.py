@@ -29,6 +29,7 @@ from services.analytics.matching_core.matching.attribute_compare import (
 from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     brands_match,
+    mpns_match,
     normalize_upc,
     title_similarity,
     upc_matches,
@@ -79,11 +80,16 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
     brand_ok = bool(offer.brand and cand.brand and brands_match(offer.brand, cand.brand))
     upc_ok = bool(offer.upc and cand.upc
                   and upc_matches(normalize_upc(offer.upc), normalize_upc(cand.upc)))
-    mpn_ok = bool(offer.mpn and cand.mpn and base_mpn(offer.mpn) == base_mpn(cand.mpn))
+    mpn_ok = bool(offer.mpn and cand.mpn and mpns_match(offer.mpn, cand.mpn))
 
     ident_ok = upc_ok if mode == "cpg" else mpn_ok
     upc_differs = bool(offer.upc and cand.upc and not upc_ok)
     ident_name = "upc" if mode == "cpg" else "mpn"
+    if mode == "cpg" and not offer.upc and mpn_ok:
+        # the vendor row has no barcode at all, only its item / part number: then that number IS its identifier
+        # (as in medical mode).  Before, an exact brand + part number match fell through to title similarity and
+        # was rejected whenever the vendor title was worded differently (a Morakniv file: ~24 correct listings).
+        ident_ok, ident_name = True, "mpn"
 
     all_attrs_match = (
         n_known >= MIN_ATTRS_FOR_ALL and n_mismatch == 0 and n_match == n_known
