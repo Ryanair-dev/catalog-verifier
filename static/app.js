@@ -4056,6 +4056,8 @@
     }
 
     // Vendor item ID / MPN disagrees with Amazon's part number → capped to review
+    if (sc.upc_unconfirmed_needs_check) return "UPC differs, but brand + part number + title match — needs a check";
+    if (sc.upc_unconfirmed) return "UPC differs, but brand + part number + title match";
     if (sc.mpn_field_conflict) return "Item ID / MPN mismatch";
     // Amazon's own title size vs listing size disagree → capped to review
     if (sc.size_conflict) return "Amazon size conflict (title vs listing)";

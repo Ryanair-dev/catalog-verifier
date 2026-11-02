@@ -82,6 +82,7 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
     mpn_ok = bool(offer.mpn and cand.mpn and base_mpn(offer.mpn) == base_mpn(cand.mpn))
 
     ident_ok = upc_ok if mode == "cpg" else mpn_ok
+    upc_differs = bool(offer.upc and cand.upc and not upc_ok)
     ident_name = "upc" if mode == "cpg" else "mpn"
 
     all_attrs_match = (
@@ -102,6 +103,12 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
         confidence, rule = 100.0, f"2_{ident_name}+1attr"
     elif mode == "cpg" and upc_ok:          
         confidence, rule = 90.0, "2b_upc_alone"
+    elif mode == "cpg" and brand_ok and mpn_ok and fuzzy > FUZZY_WITH_ATTRS and n_mismatch == 0:
+        # A different (or missing) UPC is not proof of a wrong match: brand + exact part number + title agree.
+        # adapter.py makes sure such a match gets a check when the UPC actually differs.
+        confidence, rule = 90.0, "2c_brand+mpn+title"
+        if upc_differs:
+            reasons.append("upc_unconfirmed")
     elif brand_ok and all_attrs_match:
         confidence, rule = 100.0, "3_brand+all_attrs"
     elif all_attrs_match and fuzzy > FUZZY_WITH_ATTRS:

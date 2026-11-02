@@ -1,6 +1,15 @@
 """Adapt Catalog Verifier's normalized records to the matcher scoring core.
+
+2026-10-22 changes (FILE_VERSION at the bottom):
+  - NOT STATED rule: a listing's count of 1 and its gender "unisex" carry no information, so they no longer
+    send a pair to Review on their own ("the vendor row does not state gender, count ... count 1").
+  - The cascade's factor list says "(scorer's own title check)", so "Color: unknown" is not read as "the
+    attributes are unknown" (the variant gate reads them properly).
+  - Explanations name the source "AI-expanded title" and show the vendor STYLE number when there is one.
 """
 from __future__ import annotations
+
+from functools import lru_cache
 
 import logging
 import threading
@@ -199,7 +208,26 @@ def score_pair(
             if unified_attrs_enabled() else None)
     if gate:
         result = apply_gate(result, gate)
+    # UPC differs, but brand + exact part number + title match: a likely match that needs a check.  With the
+    # run's LLM verifier on it stays approved (the verifier audits every approval; flagged -> Review); without
+    # it, nobody checks it, so it goes to Review.
+    upc_unconfirmed = "upc_unconfirmed" in result.reasons
+    needs_check = (upc_unconfirmed and result.verdict is Verdict.VERIFIED
+                   and not _run_has_verifier(source.get("run_id")))
+    if needs_check:
+        result = result.model_copy(update={
+            "verdict": Verdict.REVIEW, "confidence": min(float(result.confidence), 89.0),
+            "reasons": list(result.reasons) + ["upc_unconfirmed_needs_check"],
+        })
     scores = result_to_scores(result, method, offer, candidate)
+    scores["upc_unconfirmed"] = upc_unconfirmed
+    scores["upc_unconfirmed_needs_check"] = needs_check
+    if upc_unconfirmed and result.verdict is not Verdict.REJECTED and isinstance(scores.get("explanation"), dict):
+        note = ("UPC differs, but brand, part number and title match (one product can have several barcodes). "
+                + ("Sent to Review for a check; tick 'LLM approval verifier' to have AI check these "
+                   "automatically." if needs_check else "The LLM approval verifier double-checks it."))
+        explanation = scores["explanation"]
+        explanation["summary"] = f"{explanation.get('summary') or ''} {note}".strip()
     if gate:
         scores["variant_check"] = {
             "hard": gate["hard"], "soft": gate["soft"], "boxes": gate["boxes"],
@@ -213,6 +241,20 @@ def score_pair(
             explanation["summary"] = f"{explanation.get('summary') or ''} {note}".strip()
     verdict = result.verdict.value
     return scores, "not_approved" if verdict == "rejected" else verdict
+
+
+@lru_cache(maxsize=512)
+def _run_has_verifier(run_id: Any) -> bool:
+    """The run was started with "LLM approval verifier" ticked.  False without a run (Quick Search) or on error."""
+    if not run_id:
+        return False
+    try:
+        from services import database
+        with database._connect() as conn:
+            row = conn.execute("SELECT use_llm_verifier FROM analytics_runs WHERE id=?", (int(run_id),)).fetchone()
+        return bool(row and row[0])
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def build_pair(
@@ -288,7 +330,8 @@ def result_to_scores(
     if method == "weighted":
         names = (("upc", "UPC"), ("mpn", "part number"), ("brand", "brand"), ("title", "title"))
         used = [(label, signals[key]) for key, label in names if key in signals]
-        missing = [label for key, label in names if key not in signals]
+        set_aside = "upc_unconfirmed" in reasons           # UPC differs, left out (brand + part no + title)
+        missing = [label for key, label in names if key not in signals and not (set_aside and key == "upc")]
         total = sum(value for _, value in used)
         summary = (
             "Weighted: " + " + ".join(f"{label} {value:.1f}" for label, value in used)
@@ -299,6 +342,8 @@ def result_to_scores(
                 f" Not compared (missing on one side): {', '.join(missing)}; "
                 "their weight was shared by the others."
             )
+        if set_aside:
+            summary += " UPC set aside (it differs)."
         if mismatches:
             summary += f" Hard mismatch cap applied ({', '.join(mismatches)}); final score {confidence:.1f}."
         elif signals.get("upc", 0) > 0 and confidence > total + 0.05:
@@ -562,4 +607,3 @@ def _score_pair_with_unstated_rule(
 _score_pair_scorer_only = score_pair
 score_pair = _score_pair_with_unstated_rule
 
-FILE_VERSION = "2026-10-23 adapter v3.1 (count 1 / unisex = not stated; unused MATCH_SCORER_ATTRS removed)"

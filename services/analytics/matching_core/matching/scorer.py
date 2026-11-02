@@ -31,6 +31,7 @@ BRAND_DISAGREE_BELOW = 70
 WEIGHTS = {"upc": 55.0, "mpn": 20.0, "brand": 10.0, "title": 15.0}
 UPC_ALONE = 90.0      # UPC equal and nothing else known 
 NO_ID_CAP = 89.0      # no UPC and no part number to compare: never auto-approve
+UPC_DIFF_TITLE_MIN = 0.70   # title similarity needed when the UPC differs but brand + part number match
 
 _BARCODE_RE = re.compile(r"^(\d{8}|\d{11,14})$")
 
@@ -110,6 +111,13 @@ def score(offer: Offer, cand: Candidate) -> MatchResult:
         and upc_matches(normalize_upc(offer.upc), normalize_upc(cand.upc))
     )
     s = _strengths(offer, cand, upc_hit)
+    # A different UPC is not proof of a wrong match (unit vs case code, a regional EAN, an outdated barcode
+    # on the listing).  When brand, the exact part number AND the title all agree, the UPC is left out
+    # ("unconfirmed") instead of counting as 0.  adapter.py makes sure such a match gets a check.
+    upc_unconfirmed = ("upc" in s and not upc_hit and s.get("mpn") == 1.0
+                       and s.get("brand", 0.0) >= 1.0 and s.get("title", 0.0) >= UPC_DIFF_TITLE_MIN)
+    if upc_unconfirmed:
+        s.pop("upc")
     total_w = sum(WEIGHTS[k] for k in s)
     # each signal's share of 100, after the missing signals' weight is handed to the rest
     signals = {k: 100.0 * WEIGHTS[k] * v / total_w for k, v in s.items()} if total_w else {}
@@ -128,6 +136,8 @@ def score(offer: Offer, cand: Candidate) -> MatchResult:
             is_mismatch = True
     if is_mismatch:
         confidence = min(confidence, MISMATCH_CAP)
+    if upc_unconfirmed:
+        reasons.append("upc_unconfirmed")
  
     return MatchResult(
         offer_id=offer.offer_id,
