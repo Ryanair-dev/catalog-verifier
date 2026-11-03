@@ -289,18 +289,21 @@ DEFAULT_PURCHASERS = "Avi Schoemann, Victoria Romanoff"
 REFRESH_SECONDS = 1800
 _sched_thread: threading.Thread | None = None
 _sched_stop = threading.Event()
-_last_refresh: dict = {"at": None, "error": None, "pos": None}
+_last_refresh: dict = {"at": None, "error": None, "pos": None, "running_since": None}
 
 
 def _sched_loop() -> None:
     key = DEFAULT_PURCHASERS.strip().lower()
     while not _sched_stop.is_set():
+        _last_refresh["running_since"] = time.time()
         try:
             lines = _build(DEFAULT_PURCHASERS, key)
             _last_refresh.update(at=time.time(), error=None, pos=len({l["po_number"] for l in lines}))
         except Exception as exc:  # noqa: BLE001
             _last_refresh["error"] = str(exc)[:300]
             log.exception("[reports_po_pnl] scheduled refresh failed")
+        finally:
+            _last_refresh["running_since"] = None
         if _sched_stop.wait(REFRESH_SECONDS):
             return
 
@@ -324,7 +327,9 @@ def scheduler_status() -> dict:
                if at else "not built yet")
     if _last_refresh["error"]:
         summary += f" — last error: {_last_refresh['error'][:120]}"
-    return {"running_now": False, "scheduler_alive": bool(_sched_thread and _sched_thread.is_alive()),
+    since = _last_refresh["running_since"]
+    return {"running_now": since is not None, "run_started_at": since,
+            "scheduler_alive": bool(_sched_thread and _sched_thread.is_alive()),
             "interval_seconds": REFRESH_SECONDS, "summary": summary,
             "next_run": (at + REFRESH_SECONDS) * 1000 if at else None}
 

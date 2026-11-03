@@ -13,6 +13,12 @@ A shared mechanism so in-memory background jobs (PO Analytics report generation,
 
 ## Changelog
 
+**2026-11-03b** — Schedulers mid-run now also show under Active jobs in Settings > Tasks Running.
+- User: "btw the background schedulers can we also if they are running have them under active jobs".
+- `routers/settings.py` `tasks_running()`: after building the Schedulers list, every scheduler whose `scheduler_status()` has `running_now` true is also appended to `jobs` via `_scheduler_as_job()` -- feature "<name> (scheduled run)", `job_id` "scheduler:<name>", status "running", phase = its `summary`/`phase`, `started_at` = its `run_started_at` when it has one (only PO P&L for now; the others have no start time recorded, so the card shows no "Started"), and done/total = checked/(checked+queue) for the eligibility warmer (progress bar). Server-side only: the existing JS already puts any `status == "running"` job under Active jobs, so no `app.js` change and no hard-refresh needed. The scheduler's own card stays in the Schedulers list.
+- Checked: every listed scheduler's `running_now` was real except PO P&L's (hard-coded False) -- fixed, see `docs/features/reports.md` 2026-11-03.
+- Verified with the endpoint called directly, warmer + PO P&L faked as mid-run: both appear as running active jobs (warmer 40/140, PO P&L with start time), scheduler cards unchanged, PO P&L leaves Active jobs once its build ends. Needs a server restart.
+
 **2026-11-03** — New job type `vo_auto_alert` (Vendor Offers catalog-inbox opportunity alerts).
 - `services/vendor_offers_auto_alert.py` registers `register_relauncher("vo_auto_alert", _relaunch)` at import; `main.py` now imports that module just before `resume_orphaned_jobs()` since no router imports it. Unlike the other relaunchers it does **not** run immediately: it re-saves its row (resume deletes it first) and fires after a 720s `threading.Timer`, so the heavy Keepa/SP-API alert build doesn't pile onto the staggered startup schedulers. Attempt count lives in params; the row is dropped after 3 runs. Full details: `docs/features/vendor_offers.md` 2026-11-03.
 

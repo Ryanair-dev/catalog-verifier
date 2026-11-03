@@ -24,6 +24,9 @@ A new top-level sidebar section — a **full page** (`#view-reports`, same `swit
 
 ## Changelog
 
+**2026-11-03** — PO P&L refresh now reports when it is actually running.
+- `scheduler_status()` hard-coded `running_now: False`, so Settings > Tasks Running never showed the 30-min rebuild as running. `_sched_loop` now sets `_last_refresh["running_since"]` around each `_build` (cleared in `finally`); status returns `running_now` + `run_started_at`. Part of the user's request to list running schedulers under Active jobs -- see `docs/infra/job_persistence.md` 2026-11-03b. Verified with a stubbed `_build` (flag true during the build, false after). Needs a server restart.
+
 **2026-10-30b** — Scope is now Avi + Victoria; dashboard kept pre-built every 30 min; items loaded per PO on expand.
 - User: "yea lets leave only Avi's and Victoria's. But its just super slow right now the report itself, maybe we should cache it every morning or smth?"
 - **Checked where the time went first**: the server answered in 0.2 s (0.7 s via the external tunnel) after the 2026-10-30 fixes; the remaining slowness was the page itself -- `_rptPoPnlRowHtml` built every PO's hidden item table up front (~2.5k item rows for Avi alone) from a ~0.9 MB payload, on every load and filter change.
