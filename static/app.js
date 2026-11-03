@@ -8598,6 +8598,7 @@
     $("#tools-tab-quicksearch")?.classList.toggle("hidden", tab !== "quicksearch");
     $("#tools-tab-po")?.classList.toggle("hidden", tab !== "po");
     $("#tools-tab-seller")?.classList.toggle("hidden", tab !== "seller");
+    $("#tools-tab-competitor")?.classList.toggle("hidden", tab !== "competitor");
     if (tab === "mpn") _refreshMpnSyncStatus();
     if (tab === "po") {
       // PO Analytics used to re-sync on re-entering its own view (a job keeps
@@ -9783,6 +9784,147 @@
     }
   }
   $("#sa-run-btn")?.addEventListener("click", _saRunAll);
+
+  // ===== Competitor Analysis (2026-11-03) ===================================
+  // Same job pattern as Seller Analytics: start -> poll -> download. Single
+  // product (JSON) or bulk spreadsheet (multipart). The finished job also
+  // returns a small summary rendered below the card.
+  let _caPoll = null, _caJob = null;
+  const _caMoney = v => v == null ? "—" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _caInt = v => v == null ? "—" : Math.round(v).toLocaleString();
+
+  function _caSetRunning(on) {
+    ["#ca-run-btn", "#ca-bulk-btn"].forEach(s => { const b = $(s); if (b) b.disabled = on; });
+    $("#ca-cancel-btn")?.classList.toggle("hidden", !on);
+  }
+
+  async function _caStart(bulk) {
+    const err = $("#ca-error"), prog = $("#ca-progress");
+    err?.classList.add("hidden");
+    $("#ca-download-btn")?.classList.add("hidden");
+    $("#ca-summary")?.classList.add("hidden");
+    let r;
+    try {
+      if (bulk) {
+        const f = $("#ca-bulk-file")?.files?.[0];
+        if (!f) { showToast("Choose a spreadsheet first.", "warning"); return; }
+        const fd = new FormData();
+        fd.append("file", f);
+        _caSetRunning(true);
+        r = await api("/api/competitor-analysis/start-bulk", { method: "POST", body: fd, form: true });
+      } else {
+        const body = {
+          description: $("#ca-desc")?.value.trim(), our_asin: $("#ca-asin")?.value.trim(),
+          our_price: $("#ca-price")?.value, extra_terms: $("#ca-terms")?.value,
+        };
+        if (!body.description && !body.our_asin) { showToast("Describe the product or give our ASIN.", "warning"); return; }
+        _caSetRunning(true);
+        r = await api("/api/competitor-analysis/start", { method: "POST", body });
+      }
+    } catch (e) {
+      _caSetRunning(false);
+      err?.classList.remove("hidden");
+      if (err) err.textContent = e.message;
+      return;
+    }
+    _caJob = r.job_id;
+    try { localStorage.setItem("ca_job", _caJob); } catch {}
+    prog?.classList.remove("hidden");
+    if (prog) prog.textContent = `Started (${r.products} product${r.products === 1 ? "" : "s"})…`;
+    _caPollNow();
+  }
+
+  async function _caPollNow() {
+    if (_caPoll) { clearTimeout(_caPoll); _caPoll = null; }
+    if (!_caJob) return;
+    const prog = $("#ca-progress"), err = $("#ca-error");
+    let j;
+    try {
+      j = await api(`/api/competitor-analysis/jobs/${_caJob}`);
+    } catch (e) {
+      if (e.status === 404) { _caSetRunning(false); prog?.classList.add("hidden"); try { localStorage.removeItem("ca_job"); } catch {} return; }
+      _caPoll = setTimeout(_caPollNow, 5000);
+      return;
+    }
+    prog?.classList.remove("hidden");
+    if (j.status === "running") {
+      _caSetRunning(true);
+      const count = j.total ? ` — ${j.done}/${j.total}` : "";
+      const eta = j.eta_seconds ? ` (~${Math.max(1, Math.round(j.eta_seconds / 60))} min left in this step)` : "";
+      if (prog) prog.textContent = `${j.phase || "Working"}${count}${eta}`;
+      _caPoll = setTimeout(_caPollNow, 3000);
+      return;
+    }
+    _caSetRunning(false);
+    if (j.status === "complete") {
+      if (prog) prog.textContent = "Done.";
+      const dl = $("#ca-download-btn");
+      if (dl) { dl.classList.remove("hidden"); dl.onclick = () => _caDownload(_caJob, j.filename); }
+      _caRenderSummary(j.summary || []);
+    } else {
+      prog?.classList.add("hidden");
+      err?.classList.remove("hidden");
+      if (err) err.textContent = j.status === "cancelled" ? "Cancelled." : (j.error || "Failed.");
+    }
+  }
+
+  async function _caDownload(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/competitor-analysis/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const url = URL.createObjectURL(await resp.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "competitor_analysis.xlsx"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { showToast("Download failed: " + e.message, "error"); }
+  }
+
+  function _caRenderSummary(items) {
+    const el = $("#ca-summary");
+    if (!el) return;
+    if (!items.length) { el.classList.add("hidden"); return; }
+    const tile = (label, value, sub) => `<div style="flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;">
+        <div style="font-size:11px;color:#6b7480;">${escapeHtml(label)}</div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy-800);margin-top:2px;">${value}</div>
+        ${sub ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px;">${escapeHtml(sub)}</div>` : ""}</div>`;
+    el.innerHTML = items.slice(0, 10).map(s => {
+      if (s.error) return `<div class="card" style="padding:14px;color:#dc2626;font-size:12px;"><strong>${escapeHtml(s.description)}</strong>: ${escapeHtml(s.error)}</div>`;
+      const e = s.exact || {}, c = s.close || {};
+      const ours = s.our_price_per_unit != null
+        ? `Our ${_caMoney(s.our_price_per_unit)}/unit is cheaper than ${Math.round((s.our_cheaper_than_pct || 0) * 100)}% of exact matches.` : "";
+      const brands = (s.top_brands || []).map(b => `<tr><td style="padding:3px 8px;">${escapeHtml(b.name)}</td><td style="padding:3px 8px;text-align:right;">${b.listings}</td>
+          <td style="padding:3px 8px;text-align:right;">${_caInt(b.units)}</td><td style="padding:3px 8px;text-align:right;">${_caMoney(b.revenue)}</td>
+          <td style="padding:3px 8px;text-align:right;">${Math.round((b.share || 0) * 100)}%</td><td style="padding:3px 8px;text-align:right;">${_caMoney(b.avg_ppu)}</td></tr>`).join("");
+      return `<div class="card" style="padding:16px;">
+        <div style="font-weight:700;color:var(--navy-800);">${escapeHtml(s.description)}</div>
+        <div style="font-size:12px;color:#6b7480;margin:2px 0 10px;">${escapeHtml(s.spec || "")} · ${s.screened} listings screened · ${e.listings || 0} exact, ${c.listings || 0} close</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${tile("Units / month (exact)", _caInt(e.units_month), e.units_estimated_share ? `${Math.round(e.units_estimated_share * 100)}% estimated from rank` : "")}
+          ${tile("Revenue / month", _caMoney(e.revenue_month), `${e.brands || 0} brands`)}
+          ${tile("Avg price / unit", _caMoney(e.avg_ppu), `median ${_caMoney(e.median_ppu)}`)}
+          ${tile("Lowest price / unit", _caMoney(e.min_ppu), e.min_ppu_brand || "")}
+          ${tile("Best sales rank", _caInt(e.best_rank), `Amazon holds BB on ${e.amazon_bb_listings || 0}`)}
+          ${tile("Close variants", String(c.listings || 0), `${_caInt(c.units_month)} units · ${_caMoney(c.revenue_month)}`)}
+        </div>
+        ${ours ? `<div style="font-size:12px;color:#334155;margin-top:8px;">${ours}</div>` : ""}
+        ${brands ? `<table style="margin-top:10px;font-size:12px;border-collapse:collapse;width:100%;">
+          <tr style="color:#6b7480;text-align:left;"><th style="padding:3px 8px;">Brand (exact)</th><th style="padding:3px 8px;text-align:right;">Listings</th>
+          <th style="padding:3px 8px;text-align:right;">Units/mo</th><th style="padding:3px 8px;text-align:right;">Revenue/mo</th>
+          <th style="padding:3px 8px;text-align:right;">Share</th><th style="padding:3px 8px;text-align:right;">Avg $/unit</th></tr>${brands}</table>` : ""}
+      </div>`;
+    }).join("") + (items.length > 10 ? `<div style="font-size:12px;color:#6b7480;">${items.length - 10} more in the report.</div>` : "");
+    el.classList.remove("hidden");
+  }
+
+  $("#ca-run-btn")?.addEventListener("click", () => _caStart(false));
+  $("#ca-bulk-btn")?.addEventListener("click", () => _caStart(true));
+  $("#ca-cancel-btn")?.addEventListener("click", async () => {
+    if (!_caJob) return;
+    try { await api(`/api/competitor-analysis/jobs/${_caJob}/cancel`, { method: "POST" }); } catch {}
+  });
+  // Pick a running/finished job back up after a page reload.
+  try { _caJob = localStorage.getItem("ca_job"); } catch {}
+  if (_caJob) _caPollNow();
 
   function _pollSellerAnalytics(jobId) {
     const btn = $("#sa-run-btn");

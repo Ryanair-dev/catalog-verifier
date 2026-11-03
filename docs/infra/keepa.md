@@ -14,6 +14,8 @@ Client for the Keepa API, used two ways across the app: (1) **Product Finder** (
 
 ## Changelog
 
+**2026-11-03** — `_flatten_product` gains a `rating` key (star rating, Keepa stats `current[16]` / 10, e.g. 45 -> 4.5). Additive: no existing caller reads it; rows already in `keepa_product_cache` (2-day TTL) simply lack it until refetched. Read by the new Competitor Analysis (`docs/features/competitor_analysis.md`), which also uses `_query` with a `title` + `current_SALES_gte` + `sort` selection (Product Finder title search, ~11 tokens/query, verified live: 'paring knife' = 9,903 results, 'paring knife 3 inch' = 572 -- the title filter is an AND of the words) and a light `/product` call without stats for titles (~1 token/ASIN).
+
 **2026-10-19b — Found and fixed the REAL cause of recurring 429s on Keepa's own dashboard: a 3x too-low token-cost estimate, plus the explicit 5% reserve margin the user asked for:**
 - User: "I am looking at keepas dashboard and I see that we keep hitting 429 error could we make it so that out of 400 tokens (we upgraded just now) we leave like 5% of tokens left."
 - **Investigated live before changing anything.** Queried Keepa's own `/token` endpoint directly: `refillRate: 400` (confirms "400" = the account's live per-minute refill rate after the user's upgrade, not a hardcoded number this app should bake in) and `tokensLeft` can sit well above that (the bucket accumulates beyond one refill cycle if unused). Then made a REAL `/product` call with the exact params `_call_product` always sends (`buybox=1, stock=1, fbaFees=1, rating=1, stats=30/90`) against 3 real ASINs and read back `tokensConsumed` directly: **6.0 tokens/ASIN**, confirmed identically on both the stats=30 and the stats=90 call.

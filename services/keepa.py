@@ -292,6 +292,9 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
         "offer_count_fba": _karr(s90, "current", _IDX_COUNT_FBA),
         "offer_count_fbm": _karr(s90, "current", _IDX_COUNT_FBM),
         "reviews_rating_count": _karr(s90, "current", _IDX_RATING),
+        # Star rating (Keepa idx 16, stored x10: 45 = 4.5) -- additive, read by
+        # Competitor Analysis only (2026-11-03).
+        "rating": (lambda v: round(v / 10, 1) if isinstance(v, (int, float)) else None)(_karr(s90, "current", 16)),
         "sales_rank_current": _karr(s90, "current", _IDX_SALES_RANK),
         "sales_rank_30d": _karr(s30, "avg30", _IDX_SALES_RANK),
         "url": f"https://www.amazon.com/dp/{p.get('asin')}",

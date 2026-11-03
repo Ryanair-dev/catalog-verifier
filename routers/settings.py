@@ -155,7 +155,7 @@ def _recent_health_check_runs() -> list[dict]:
 
 @router.get("/settings/tasks-running")
 async def tasks_running() -> dict:
-    from routers import eligibility, generic_check, pairs, po_analytics, seller_analytics, storage_fees
+    from routers import competitor_analysis, eligibility, generic_check, pairs, po_analytics, seller_analytics, storage_fees
     from routers import vendor_offers as vo_router
     from services import azure_sql, eligibility_warmer, health_check, mpn_check_sync, reports_po_pnl
     from services import vendor_offers_auto_alert as vo_alert
@@ -163,7 +163,7 @@ async def tasks_running() -> dict:
     from services.sellercloud import catalog_index as sc_catalog_index
 
     jobs: list[dict] = []
-    for mod in (eligibility, storage_fees, generic_check, po_analytics, seller_analytics, pairs, vo_router, vo_alert):
+    for mod in (eligibility, storage_fees, generic_check, po_analytics, seller_analytics, pairs, vo_router, vo_alert, competitor_analysis):
         try:
             jobs.extend(mod.list_jobs_for_tasks_panel())
         except Exception:  # noqa: BLE001

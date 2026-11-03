@@ -25,6 +25,7 @@ This file is read automatically by Claude Code at the start of every session. It
 | [`offer_analytics.md`](docs/features/offer_analytics.md) | Offer Analysis (Analytics tab) — SP-API search/match/score pipeline, AI Check, Quick Search; the biggest doc, includes the full scoring-engine/pipeline/API-endpoint architecture |
 | [`brand_analytics.md`](docs/features/brand_analytics.md) | Brand Analytics — Keepa+SP-API brand/manufacturer ASIN discovery, AI Fill, category filtering |
 | [`seller_analytics.md`](docs/features/seller_analytics.md) | Seller Analytics — analyze a competitor's (or your own) full Amazon seller ASIN catalog in the Offer Analytics template format |
+| [`competitor_analysis.md`](docs/features/competitor_analysis.md) | Competitor Analysis (Toolbox) — same item, other brands: finds every competing listing of one of our products (single or bulk) and sizes the market (units, revenue, price per unit, brands, Buy Box sellers) |
 | [`vendor_offers.md`](docs/features/vendor_offers.md) | Vendor Offers / Price Desk — cross-vendor buy-side price comparison + "Offer Analytics export" (NOT the same thing as `offer_analytics.md` — see that doc's own note on the naming collision) |
 | [`create_skus.md`](docs/features/create_skus.md) | Create SKUs — SellerCloud SKU generation + bulk-import file wizard |
 | [`pair_manager.md`](docs/features/pair_manager.md) | Pair Manager / Pair Library — manually-confirmed identifier→ASIN library, spreadsheet import/export, weekly catalog health-check job |
@@ -100,6 +101,7 @@ catalog-verifier/
 │   ├── mpn_check.py                 Toolbox: MPN → qty/case lookup
 │   ├── health_check.py              Pair Library weekly catalog health-check job
 │   ├── walmart.py                   Walmart Catalog Offer Analysis
+│   ├── competitor_analysis.py       Competitor Analysis start/bulk/poll/download (Toolbox tab)
 │   ├── export.py                    Excel export for verify flow (20-column layout)
 │   ├── barcode.py                   5-source barcode lookup chain
 │   └── settings.py                  Threshold read/write
@@ -127,6 +129,7 @@ catalog-verifier/
 │   ├── vendor_offers_mailbox_sync.py  Vendor Offers: direct-from-email sync for the same 5 vendors (bypasses FBI/Azure entirely)
 │   ├── vendor_offers_template_export.py  Vendor Offers formatted Excel export + enrichment
 │   ├── eligibility_warmer.py        Idle-time scheduler filling eligibility_cache for every Price Desk ASIN
+│   ├── competitor_analysis.py       Competitor Analysis: AI spec/search plan -> SP-API + Keepa discovery -> AI exact/close -> market metrics + xlsx
 │   ├── job_results.py               Finished export files on disk (data/job_results, 14 days) — Seller/PO/Vendor Offers exports
 │   ├── health_check.py              Pair Library weekly health-check job
 │   ├── generic_check.py             Toolbox Generic/DOG ASIN classification

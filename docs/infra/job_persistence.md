@@ -13,6 +13,8 @@ A shared mechanism so in-memory background jobs (PO Analytics report generation,
 
 ## Changelog
 
+**2026-11-03c** — New job type `competitor_analysis` (`routers/competitor_analysis.py`, relaunched fresh with the same job id; params = the product list). Details: `docs/features/competitor_analysis.md`.
+
 **2026-11-03b** — Schedulers mid-run now also show under Active jobs in Settings > Tasks Running.
 - User: "btw the background schedulers can we also if they are running have them under active jobs".
 - `routers/settings.py` `tasks_running()`: after building the Schedulers list, every scheduler whose `scheduler_status()` has `running_now` true is also appended to `jobs` via `_scheduler_as_job()` -- feature "<name> (scheduled run)", `job_id` "scheduler:<name>", status "running", phase = its `summary`/`phase`, `started_at` = its `run_started_at` when it has one (only PO P&L for now; the others have no start time recorded, so the card shows no "Started"), and done/total = checked/(checked+queue) for the eligibility warmer (progress bar). Server-side only: the existing JS already puts any `status == "running"` job under Active jobs, so no `app.js` change and no hard-refresh needed. The scheduler's own card stays in the Schedulers list.
