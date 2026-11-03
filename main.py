@@ -82,6 +82,9 @@ async def _lifespan(app: FastAPI):
     # relauncher is already registered.
     try:
         from services import job_persistence
+        # Not imported by any router: import it so its "vo_auto_alert"
+        # relauncher is registered before the resume (2026-11-03).
+        from services import vendor_offers_auto_alert  # noqa: F401
         job_persistence.resume_orphaned_jobs()
     except Exception:
         pass
