@@ -51,6 +51,41 @@ def _without_letter_prefix(base: str) -> str:
     return ""
 
 
+def candidate_part_number(item: dict | None) -> str:
+    """A listing's part number, from wherever Amazon put it: the normalized 'mpn', then the raw SP-API summary
+    (partNumber / modelNumber) and attributes (part_number / model_number).  Sparse listings often have the
+    number only in model_number ('Kansbol Survival Green': 13912), which the scorers used to miss entirely."""
+    item = item or {}
+    for key in ("mpn", "part_number", "model_number"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw = item.get("_raw") or {}
+    summary = (raw.get("summaries") or [{}])[0] if isinstance(raw.get("summaries"), list) else {}
+    attrs = raw.get("attributes") or {}
+    candidates = [summary.get("partNumber"), summary.get("modelNumber")]
+    for key in ("part_number", "model_number"):
+        entries = attrs.get(key) or []
+        first = entries[0] if isinstance(entries, list) and entries else None
+        candidates.append(first.get("value") if isinstance(first, dict) else first)
+    for value in candidates:
+        if value not in (None, "") and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+_PART_TOKEN_RE = re.compile(r"[A-Za-z]{0,3}-?\d[\w-]*")
+
+
+def part_number_in_text(part: str | None, text: str | None) -> bool:
+    """The vendor's part number is printed in the listing's text ('... Orange (M-11824)').  Only numbers with at
+    least 4 digits count, so a size or a count can not pass for a part number."""
+    base = base_mpn(part)
+    if sum(ch.isdigit() for ch in base) < 4:
+        return False
+    return any(mpns_match(part, token) for token in _PART_TOKEN_RE.findall(str(text or "")))
+
+
 def mpns_match(a: str | None, b: str | None) -> bool:
     """The same part number.  Compared as base_mpn() forms, and a short letter prefix on ONE side is ignored:
     'M-13216' = '13216' = 'M13216'.  Two DIFFERENT prefixes still differ ('A12345' vs 'B12345')."""

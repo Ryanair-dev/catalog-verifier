@@ -66,10 +66,18 @@ def cmp_volume(offer: Offer, cand: Candidate) -> Cmp:
     return Cmp.MATCH if _within_tolerance(sv, av) else Cmp.MISMATCH
 
 
+def _spelled(words: set[str]) -> set[str]:
+    """One spelling per word, from the word library's spelling table ('grey' -> 'gray')."""
+    from services.analytics.matching_core.matching.lexicon import get_lexicon
+    spelling = get_lexicon().spelling
+    return {spelling.get(w, w) for w in words}
+
+
 def cmp_color(offer: Offer, cand: Candidate) -> Cmp:
     s, a = _texts(offer, cand)
-    sc = (set(re.findall(r"[a-z]+", s)) & COLOR_WORDS) - TRANSPARENCY_WORDS
-    ac = (set(re.findall(r"[a-z]+", a)) & COLOR_WORDS) - TRANSPARENCY_WORDS
+    # spelling first: "Dark Grey" vs "Dark Gray" used to count as two different colors
+    sc = _spelled((set(re.findall(r"[a-z]+", s)) & COLOR_WORDS) - TRANSPARENCY_WORDS)
+    ac = _spelled((set(re.findall(r"[a-z]+", a)) & COLOR_WORDS) - TRANSPARENCY_WORDS)
     if not sc or not ac:
         return Cmp.UNKNOWN
     return Cmp.MATCH if (sc & ac) else Cmp.MISMATCH

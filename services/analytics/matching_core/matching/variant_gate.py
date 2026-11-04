@@ -13,7 +13,8 @@ from services.analytics.matching_core.matching.attr_extract import extract_amazo
 from services.analytics.matching_core.matching.flags import category_check_enabled
 from services.analytics.matching_core.matching.product_line import index_for
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, variant_boxes_for
-from services.analytics.matching_core.matching.normalize import brands_match, mpns_match, normalize_upc, upc_matches
+from services.analytics.matching_core.matching.normalize import (brands_match, candidate_part_number, mpns_match,
+                                                                 normalize_upc, part_number_in_text, upc_matches)
 from services.analytics.matching_core.matching.variation import compare_boxes
 from services.analytics.matching_core.models import MatchResult, Verdict
 
@@ -89,7 +90,12 @@ def _rests_on_ai(reason: str, vendor: dict[str, dict], amazon: dict[str, dict]) 
 def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
                     barcode_confirmed: bool = False, brand_conflict: bool = False,
                     categories: dict[str, str] | None = None,
-                    line_conflict: str | None = None, line_strong: bool = True) -> dict[str, Any]:
+                    line_conflict: str | None = None, line_strong: bool = True,
+                    variant_confirmed: bool | None = None) -> dict[str, Any]:
+    """variant_confirmed: the exact variant is proven (a matching UPC, or a part number that only one row of the
+    vendor file has); then "the listing states X, the vendor row does not" is no reason to hold the pair back."""
+    if variant_confirmed is None:
+        variant_confirmed = barcode_confirmed
     boxes = compare_boxes(vendor, amazon)
     vendor_category = (categories or {}).get("vendor") or ""
     amazon_category = (categories or {}).get("amazon") or ""
@@ -135,7 +141,7 @@ def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
     if ai_only:
         hard = [r for r in hard if r not in ai_only]
         soft.extend(r for r in ai_only if r not in soft)
-    if not barcode_confirmed:                      # a confirmed UPC already pins the exact variant
+    if not variant_confirmed:                      # a confirmed UPC / unique part number pins the exact variant
         open_boxes = [b for b in _VARIANT_BOXES
                       if amazon.get(b) and not vendor.get(b) and (allowed is None or b in allowed)]
         if open_boxes:
@@ -162,16 +168,32 @@ def gate_for_pair(source: dict, normalized: dict, extracted: dict | None,
         categories = {"vendor": v["identity"].get("category"), "amazon": a["identity"].get("category")}
         line, strong = None, True
         # the same part number (like the same UPC) is the product's own code: the title wording does not matter
-        part_number_ok = mpns_match(source.get("mpn") or source.get("itemid"), normalized.get("mpn"))
-        if not barcode_confirmed and not part_number_ok:
-            index = index_for(source.get("run_id"))          # the vendor file's own line vocabulary
-            if index:
-                line, strong = index.assess(source.get("title"),
-                                            source.get("brand") or (extracted or {}).get("brand"),
-                                            normalized.get("title"))
-        return gate_from_boxes(v["fields"], a["fields"], barcode_confirmed, conflict, categories, line, strong)
+        vendor_part = source.get("mpn") or source.get("itemid")
+        part_number_ok = (mpns_match(vendor_part, candidate_part_number(normalized))
+                          or part_number_in_text(vendor_part, normalized.get("title")))
+        index = index_for(source.get("run_id"))              # the vendor file's own line vocabulary
+        if index and not barcode_confirmed and not part_number_ok:
+            line, strong = index.assess(source.get("title"),
+                                        source.get("brand") or (extracted or {}).get("brand"),
+                                        normalized.get("title"))
+        variant_ok = barcode_confirmed or (part_number_ok and part_number_pins_variant(source, normalized))
+        return gate_from_boxes(v["fields"], a["fields"], barcode_confirmed, conflict, categories, line, strong,
+                               variant_confirmed=variant_ok)
     except Exception:  # noqa: BLE001 - a failure here must never break a run
         return None
+
+
+def part_number_pins_variant(source: dict, normalized: dict) -> bool:
+    """The listing has this row's part number, and only ONE row of the vendor file has that number: then the
+    number names one exact variant (like a UPC), so "the listing states X, the vendor row does not" is no reason
+    to hold the pair back.  (Morakniv: one item number per color.  Injinji's style number is shared by every
+    size, so it never counts there.)"""
+    vendor_part = source.get("mpn") or source.get("itemid")
+    if not (mpns_match(vendor_part, candidate_part_number(normalized))
+            or part_number_in_text(vendor_part, normalized.get("title"))):
+        return False
+    index = index_for(source.get("run_id"))
+    return bool(index) and index.part_number_unique(vendor_part)
 
 
 def gate_for_models(offer, candidate) -> dict[str, Any] | None:
@@ -251,6 +273,3 @@ def describe_gate(gate: dict[str, Any] | None) -> str:
                 parts.append(_LABELS[r])
         return "Variant check: " + "; ".join(parts) + " - not auto-approved, needs review."
     return ""
-
-
-FILE_VERSION = "2026-10-22 v9 (size partial, AI values never reject alone)"

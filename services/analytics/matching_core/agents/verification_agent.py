@@ -144,6 +144,7 @@ class ApprovalAuditor:
             response = self.client.messages.create(
                 model=MODEL,
                 max_tokens=200,
+                temperature=0,
                 system=AUDIT_SYSTEM,
                 messages=[{"role": "user", "content": message}],
             )

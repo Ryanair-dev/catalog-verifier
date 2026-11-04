@@ -1393,7 +1393,7 @@ def _rescore_pipeline(
             # "ASIN claimed" / "Variant settled" / "Several variants approved" come from family_pass.py (automatic),
             # so those candidates are rescored too; the family pass below decides them again.
             if review_status and review_status not in ("ASIN Exclusivity", "ASIN claimed", "Variant settled",
-                                                     "Several variants approved"):
+                                                        "Several variants approved", "Best candidate, row unmatched"):
                 continue
  
             cat = catalog_map.get(row_idx, {})

@@ -86,6 +86,7 @@ class QueryAgent:
         response = self.client.messages.create(
             model=MODEL,
             max_tokens=max_tokens,
+            temperature=0,
             system=system,
             messages=[{"role": "user", "content": user}],
         )

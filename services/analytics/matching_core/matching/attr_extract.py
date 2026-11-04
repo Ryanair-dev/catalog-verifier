@@ -1,5 +1,6 @@
 """
-Shared attribute reader.  Reads color, flavor, scent etc."""
+Shared attribute reader.
+"""
 from __future__ import annotations
 
 import json
@@ -513,8 +514,11 @@ def _agree(field: str, a: Any, b: Any) -> bool:
             return False
         return abs(x - y) <= 0.02 * max(abs(x), abs(y), 1e-9)
     words = lambda v: set(_norm(v).replace("/", " ").split())
-    if field in ("finish", "type", "model"):
-        return bool(set(str(a).split("/")) & set(str(b).split("/")))      # whole phrases / whole numbers
+    if field == "model":                                                 # part numbers: 'M-13216' = '13216'
+        from services.analytics.matching_core.matching.normalize import mpns_match
+        return any(mpns_match(x, y) for x in str(a).split("/") for y in str(b).split("/"))
+    if field in ("finish", "type"):
+        return bool(set(str(a).split("/")) & set(str(b).split("/")))      # whole phrases
     if field == "color":
         relation = colors_relation(a, b)            # base colors: black = onyx, black != steel
         if relation != "unknown":

@@ -42,6 +42,13 @@ def line_tokens(title: Any, brand: Any = "") -> frozenset[str]:
     return frozenset(out)
 
 
+def _part_key(part: Any) -> str:
+    """A part number in one comparable form ('M-13216', 'm13216' and '13216' all -> '13216')."""
+    from services.analytics.matching_core.matching.normalize import _without_letter_prefix, base_mpn
+    base = base_mpn(str(part or ""))
+    return _without_letter_prefix(base) or base
+
+
 def _leader(title: Any, tokens: frozenset[str]) -> str | None:
     """The first line word of a title, in title order: its line name ('Companion', 'Eldris', 'Run' ...)."""
     for t in _tokens(title):
@@ -95,11 +102,17 @@ def _abbreviation_cover(v_only: set[str], a_only: set[str], vendor_title: Any,
 class LineIndex:
     """The line vocabulary and the line signatures of one vendor file, per brand."""
 
-    def __init__(self, rows: Iterable[tuple[Any, Any]]) -> None:
+    def __init__(self, rows: Iterable[tuple]) -> None:
+        """rows = (brand, title) or (brand, title, part number) of the vendor rows."""
         self.vocab: dict[str, set[str]] = defaultdict(set)
         self.signatures: dict[str, set[frozenset[str]]] = defaultdict(set)
         self.leaders: dict[str, set[str]] = defaultdict(set)      # line names: the first line word of each title
-        for brand, title in rows:
+        self.part_counts: dict[str, int] = defaultdict(int)       # part number -> rows of the file that carry it
+        for row in rows:
+            brand, title = row[0], row[1]
+            part = _part_key(row[2] if len(row) > 2 else "")
+            if part:
+                self.part_counts[part] += 1
             tokens = line_tokens(title, brand)
             if tokens:
                 key = _brand_key(brand)
@@ -130,6 +143,13 @@ class LineIndex:
                     f"the vendor row is '{_ordered(v, vendor_title)}'"), True
         return None, False
 
+    def part_number_unique(self, part: Any) -> bool:
+        """This part number belongs to exactly ONE row of the vendor file, so it names one exact variant
+        (Morakniv: one item number per color).  False when several rows share it (Injinji: one style number for
+        every size) or when the file is not known."""
+        key = _part_key(part)
+        return bool(key) and self.part_counts.get(key, 0) == 1
+
     def conflict(self, vendor_title: Any, vendor_brand: Any, amazon_title: Any) -> str | None:
         """A short plain sentence when the listing may be a different product line, else None (strong or weak)."""
         return self.assess(vendor_title, vendor_brand, amazon_title)[0]
@@ -159,7 +179,7 @@ def _load_run(run_id: int) -> LineIndex | None:
                 d = json.loads(r["data_json"] or "{}")
             except (TypeError, ValueError):
                 continue
-            pairs.append((d.get("brand") or "", d.get("title") or ""))
+            pairs.append((d.get("brand") or "", d.get("title") or "", d.get("itemid") or ""))
         return register_line_index(run_id, pairs) if pairs else None
     except Exception:  # noqa: BLE001 - without the vendor titles the check simply stays quiet
         return None

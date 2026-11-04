@@ -1,11 +1,4 @@
 """Adapt Catalog Verifier's normalized records to the matcher scoring core.
-
-2026-10-22 changes (FILE_VERSION at the bottom):
-  - NOT STATED rule: a listing's count of 1 and its gender "unisex" carry no information, so they no longer
-    send a pair to Review on their own ("the vendor row does not state gender, count ... count 1").
-  - The cascade's factor list says "(scorer's own title check)", so "Color: unknown" is not read as "the
-    attributes are unknown" (the variant gate reads them properly).
-  - Explanations name the source "AI-expanded title" and show the vendor STYLE number when there is one.
 """
 from __future__ import annotations
 
@@ -23,6 +16,7 @@ from services.analytics.matching_core.matching.classifier import (
     score as score_classifier,
 )
 from services.analytics.matching_core.matching.normalize import (
+    candidate_part_number,
     brands_match,
     normalize_upc,
     upc_matches,
@@ -33,6 +27,7 @@ from services.analytics.matching_core.matching.variant_gate import (
     apply_gate,
     describe_gate,
     gate_for_pair,
+    part_number_pins_variant,
 )
 
 import os as _ur_os
@@ -138,7 +133,7 @@ def build_export_pair(
         title=_first_value(amazon, _CANDIDATE_FIELDS["title"]) or None,
         brand=_first_value(amazon, _CANDIDATE_FIELDS["brand"]) or None,
         upc=_first_value(amazon, _CANDIDATE_FIELDS["upc"]) or None,
-        mpn=_first_value(amazon, _CANDIDATE_FIELDS["mpn"]) or None,
+        mpn=_first_value(amazon, _CANDIDATE_FIELDS["mpn"]) or candidate_part_number(amazon) or None,
         attributes={
             key: [value]
             for key, value in _mapped_attributes(amazon, _ATTRIBUTE_FIELDS).items()
@@ -221,6 +216,11 @@ def score_pair(
         })
     scores = result_to_scores(result, method, offer, candidate)
     scores["upc_unconfirmed"] = upc_unconfirmed
+    if "mpn_field_conflict" in result.reasons:
+        scores["mpn_field_conflict"] = True        # shown as "Item ID / MPN mismatch"
+    scores["matcher_build"] = MATCHER_BUILD
+    if isinstance(scores.get("explanation"), dict):
+        scores["explanation"]["summary"] = f"{scores['explanation'].get('summary') or ''} Matcher build {MATCHER_BUILD}.".strip()
     scores["upc_unconfirmed_needs_check"] = needs_check
     if upc_unconfirmed and result.verdict is not Verdict.REJECTED and isinstance(scores.get("explanation"), dict):
         note = ("UPC differs, but brand, part number and title match (one product can have several barcodes). "
@@ -241,6 +241,11 @@ def score_pair(
             explanation["summary"] = f"{explanation.get('summary') or ''} {note}".strip()
     verdict = result.verdict.value
     return scores, "not_approved" if verdict == "rejected" else verdict
+
+
+# Shown at the end of every score's explanation ("Matcher build ..."), so an export always tells which code
+# scored it.  Bump it with every scoring change.
+MATCHER_BUILD = "2026-11-03c (part no. printed in the listing title counts)"
 
 
 @lru_cache(maxsize=512)
@@ -283,7 +288,7 @@ def build_pair(
         title=str(normalized.get("title") or ""),
         brand=str(normalized.get("brand") or normalized.get("manufacturer") or "") or None,
         upc=str(normalized.get("upc") or normalized.get("ean") or normalized.get("gtin") or "") or None,
-        mpn=str(normalized.get("mpn") or "") or None,
+        mpn=candidate_part_number(normalized) or None,
         attributes={
             str(key): [str(value)]
             for key, value in candidate_attrs.items()
@@ -598,7 +603,9 @@ def _score_pair_with_unstated_rule(
         offer, candidate = build_pair(source, normalized, extracted=extracted, sources=sources)
         barcode_ok = bool(offer.upc and candidate.upc
                           and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc)))
-        scores, verdict = _ur_apply(scores, verdict, source, normalized, extracted, barcode_ok)
+        # a matching UPC, or a part number only this row has, already pins the exact variant (same as the gate)
+        variant_ok = barcode_ok or part_number_pins_variant(source, normalized)
+        scores, verdict = _ur_apply(scores, verdict, source, normalized, extracted, variant_ok)
     except Exception:  # a problem here must never break scoring
         pass
     return scores, verdict

@@ -31,6 +31,7 @@ from services.analytics.matching_core.matching.normalize import (
     brands_match,
     mpns_match,
     normalize_upc,
+    part_number_in_text,
     title_similarity,
     upc_matches,
 )
@@ -80,7 +81,9 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
     brand_ok = bool(offer.brand and cand.brand and brands_match(offer.brand, cand.brand))
     upc_ok = bool(offer.upc and cand.upc
                   and upc_matches(normalize_upc(offer.upc), normalize_upc(cand.upc)))
-    mpn_ok = bool(offer.mpn and cand.mpn and mpns_match(offer.mpn, cand.mpn))
+    mpn_ok = bool(offer.mpn and ((cand.mpn and mpns_match(offer.mpn, cand.mpn))
+                                 # the title prints the vendor's number although Amazon's field says otherwise
+                                 or part_number_in_text(offer.mpn, cand.title)))
 
     ident_ok = upc_ok if mode == "cpg" else mpn_ok
     upc_differs = bool(offer.upc and cand.upc and not upc_ok)
@@ -130,6 +133,14 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
         # nothing fired - weak fuzzy fallback so a near-miss reaches review
         # rather than being silently rejected
         confidence, rule = min(fuzzy * 0.5, 60.0), "fallback_fuzzy"
+
+    # two DIFFERENT part numbers and no matching barcode: whatever fired above (often the title alone) may not
+    # approve on its own; it goes to Review.  (A Morakniv run approved the wrong Kansbol and the Spark Emergency
+    # model this way, each with a part number that belongs to something else.)
+    if offer.mpn and cand.mpn and not mpn_ok and not upc_ok and confidence >= VERIFIED_MIN:
+        confidence = min(confidence, VERIFIED_MIN - 1)
+        rule += "+part_number_differs"
+        reasons.append("mpn_field_conflict")
 
     # contradictions override any rule
     if n_mismatch > 0:

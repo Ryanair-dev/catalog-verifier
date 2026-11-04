@@ -1,3 +1,6 @@
+"""
+Family pass: the decisions that need the WHOLE run (all rows and all listings), made once after scoring.
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,12 +21,13 @@ from services.analytics.vendor_families import (
     row_label,
 )
 
-FILE_VERSION = "2026-10-28 family_pass v2 (parent ASIN siblings)"
+FILE_VERSION = "2026-11-03 family_pass v3 (rescue: unmatched rows send their best candidate to Review)"
 
 DEDUPE_STATUS = "ASIN claimed"
 SETTLE_STATUS = "Variant settled"
 SIBLINGS_STATUS = "Several variants approved"
-OUR_STATUSES = frozenset({DEDUPE_STATUS, SETTLE_STATUS, SIBLINGS_STATUS})
+RESCUE_STATUS = "Best candidate, row unmatched"
+OUR_STATUSES = frozenset({DEDUPE_STATUS, SETTLE_STATUS, SIBLINGS_STATUS, RESCUE_STATUS})
 # statuses written by automatic rules, not by a person ("ASIN Exclusivity" = a legacy rule in routers/analytics.py)
 AUTO_STATUSES = OUR_STATUSES | {"ASIN Exclusivity"}
 DEDUPE_CAP = 89.0
@@ -178,14 +182,57 @@ def _siblings(candidates: list[dict], fam: dict) -> dict[tuple, str]:
     return out
 
 
+def _hard_reason(c: dict) -> str:
+    """A stated difference that makes the pair a NO (different color, size, brand, product line ...), else ''."""
+    scores = (c.get("data") or {}).get("scores") or {}
+    for r in scores.get("reasons") or []:
+        r = str(r)
+        if r.endswith("_mismatch") or r == "category_far":
+            return r
+    for flag in ("brand_mismatch", "size_mismatch", "color_mismatch", "count_mismatch", "gender_mismatch",
+                 "apparel_size_mismatch", "linear_size_mismatch", "shade_mismatch", "scent_mismatch",
+                 "media_format_mismatch", "category_mismatch"):
+        if scores.get(flag):
+            return flag
+    return ""
+
+
+RESCUE_TOP = 2      # per unmatched row: this many candidates (without a stated difference) are shown in Review
+
+
+def _rescue(plans: list[dict]) -> None:
+    """A row with NO approved match shows its best candidates in Review (up to RESCUE_TOP, counting the ones
+    already there), unless a candidate has a stated difference (other color, size, brand, product line ...).
+    "Not sure" is not "wrong": before, a correct match whose title was worded differently was rejected and nobody
+    looked at it again, also when a WRONG candidate of the same row was already waiting in Review."""
+    by_row: dict[Any, list[dict]] = defaultdict(list)
+    for p in plans:
+        by_row[p["c"].get("row_idx")].append(p)
+    for group in by_row.values():
+        if any(p["target_verdict"] == "verified" for p in group):
+            continue                                        # the row has its match
+        slots = RESCUE_TOP - sum(1 for p in group if p["target_verdict"] == "review")
+        if slots <= 0:
+            continue
+        eligible = [p for p in group
+                    if not p["human"] and p["target_verdict"] == "not_approved" and p["kind"] in (None, "rescue")
+                    and not p["base_status"] and not _hard_reason(p["c"])]
+        for best in sorted(eligible, key=lambda p: -float(p["base_conf"] or 0))[:slots]:
+            best.update(target_verdict="review", target_status=RESCUE_STATUS, kind="rescue",
+                        reason="one of the best candidates of this row (no listing was approved for it, and nothing "
+                               "stated differs); please check")
+
+
 def plan_changes(vendor_rows: list[dict], candidates: list[dict], families: dict | None = None) -> dict:
     """{"changes": [...], "cross_family": [...], "counts": {...}}.  Pure: nothing is written."""
     fam = families or build_families(vendor_rows, candidates)
     dedup, cross = _dedup(candidates, fam)
     siblings = _siblings(candidates, fam)
-    changes: list[dict] = []
+    plans: list[dict] = []
     for c in candidates:
         if _is_human(c):
+            plans.append({"c": c, "human": True, "target_verdict": str(c.get("verdict") or ""), "kind": None,
+                          "base_status": _status(c), "base_conf": c.get("confidence")})
             continue
         key = _key(c)
         base_verdict, base_status, base_conf = _base(c)
@@ -202,7 +249,19 @@ def plan_changes(vendor_rows: list[dict], candidates: list[dict], families: dict
         elif base_verdict == "review" and pair.get("settle") and not pair.get("barcode"):
             target_verdict, target_status, kind = "not_approved", SETTLE_STATUS, "settle"
             reason = f"another variant of the same product: {pair.get('detail')}"
+        plans.append({"c": c, "human": False, "key": key, "target_verdict": target_verdict,
+                      "target_status": target_status, "kind": kind, "reason": reason, "base_verdict": base_verdict,
+                      "base_status": base_status, "base_conf": base_conf})
 
+    _rescue(plans)
+
+    changes: list[dict] = []
+    for p in plans:
+        if p["human"]:
+            continue
+        c, key, kind, reason = p["c"], p["key"], p["kind"], p["reason"]
+        target_verdict, target_status = p["target_verdict"], p["target_status"]
+        base_verdict, base_status, base_conf = p["base_verdict"], p["base_status"], p["base_conf"]
         current_status = _status(c)
         record = _record(c)
         same_state = (str(c.get("verdict") or "") == target_verdict and current_status == target_status)
@@ -244,7 +303,7 @@ def _change(c: dict, key: tuple, kind: str | None, reason: str, verdict: str, st
     except (TypeError, ValueError):
         conf = 0.0
     if kind:
-        cap = {"dedup": DEDUPE_CAP, "siblings": SIBLINGS_CAP}.get(kind, SETTLE_CAP)
+        cap = {"dedup": DEDUPE_CAP, "siblings": SIBLINGS_CAP, "rescue": 100.0}.get(kind, SETTLE_CAP)
         data["family_pass"] = {"kind": kind, "reason": reason, "was": base_verdict, "was_status": base_status,
                                "was_confidence": conf, "summary_before": summary_before, "version": FILE_VERSION}
         if summary_before is not None:
