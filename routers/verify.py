@@ -7,7 +7,7 @@ Flow
    an ``ai_mode`` flag).
 2. Server parses both, persists Amazon rows to ``keepa_imports`` or
    ``amazon_imports`` so they can be reused across sessions, joins on ASIN,
-   runs the confidence engine (using the thresholds stored in ``settings``),
+   runs the selected matcher scorer,
    flags duplicate Item IDs, consults the blacklist, and caches extracted
    attributes for each (UPC, ASIN) pair.
 3. Response carries per-row scoring plus a ``review_status`` field the
@@ -23,8 +23,8 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from services import database
-from services.confidence import score_row
 from services.extractor import ai_extract, rule_extract
+from services.analytics.matching_core.adapter import SCORING_METHODS, score_export_pair
 from services.file_parser import parse_file
 from services.safety import read_upload_limited
 
@@ -79,12 +79,19 @@ async def verify(
     amazon_source: str = Form(...),
     ai_mode: str = Form("false"),
     abbreviations: Optional[str] = Form(None),
+    scoring_method: str = Form("weighted"),
 ) -> dict:
     """Run the full verification pipeline on two uploaded Excel files."""
     if amazon_source not in ("keepa", "amazon"):
         raise HTTPException(status_code=400, detail="amazon_source must be 'keepa' or 'amazon'")
 
     use_ai = str(ai_mode).lower() in ("1", "true", "yes", "on")
+    scoring_method = scoring_method.strip().lower()
+    if scoring_method not in SCORING_METHODS:
+        raise HTTPException(
+            status_code=400,
+            detail="scoring_method must be one of: weighted, cascade, classifier",
+        )
 
     # Prefer the categorised library from SQLite; the form-posted list is a
     # fallback for older clients.
@@ -127,7 +134,20 @@ async def verify(
         upc  = str(row.get("UPC/EAN") or "").strip()
         amz = amazon_index.get(asin)
 
-        score = score_row(row, amz, abbr_list, thresholds=thresholds)
+        matcher_scores, matcher_verdict = score_export_pair(
+            row, amz or {"ASIN": asin}, method=scoring_method,
+        )
+        score = {
+            "confidence": matcher_scores["confidence_score"],
+            "verdict": {
+                "verified": "Approved",
+                "review": "Review",
+                "not_approved": "Not Approved",
+            }[matcher_verdict],
+            "signals": matcher_scores["signals"],
+            "notes": "; ".join(matcher_scores["reasons"]),
+            "amz_pack": matcher_scores.get("effective_pack"),
+        }
 
         # Cache normalised attributes so the Pair Manager / UI can replay them.
         try:
@@ -158,6 +178,8 @@ async def verify(
             "original_verdict": score["verdict"],
             "review_status": "",   # Reviewed / Manually Approved / Manually Rejected
             "signals": score["signals"],
+            "matcher_scores": matcher_scores,
+            "scoring_method": scoring_method,
             "amz_pack": score["amz_pack"],
             "barcode_db": None,
             "duplicate": str(row.get("Item ID") or "").strip() in dupes,
@@ -171,6 +193,7 @@ async def verify(
         "amazon_count": len(amazon_rows),
         "duplicate_item_ids": sorted(dupes),
         "thresholds": thresholds,
+        "scoring_method": scoring_method,
         "ai_mode": use_ai,
         "results": results,
     }
