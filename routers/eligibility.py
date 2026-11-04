@@ -24,8 +24,9 @@ from pydantic import BaseModel
 
 from services.spapi import get_catalog_api
 from services.restrictions import classify, get_restrictions_api
-from services.spapi.config import load_sp_api_credentials, sp_api_configured
+from services.spapi.config import load_sp_api_credentials, sp_api_configured, list_stores
 from services.safety import safe_spreadsheet_value
+from services import job_persistence
 
 router = APIRouter()
 
@@ -50,9 +51,15 @@ _MIN_VERIFIED_TOTAL = 5
 def _get_job(job_id: str) -> dict:
     now = time.time()
     with _JOBS_LOCK:
+        # TTL counts from when the job was first seen finished, not from its
+        # start -- measured from start, a run longer than the TTL (a ~200-brand
+        # Check Brand) was evicted the instant it completed (2026-10-30).
+        for j in _JOBS.values():
+            if j.get("status") != "running":
+                j.setdefault("finished_seen_at", now)
         stale = [
             jid for jid, j in _JOBS.items()
-            if j.get("status") != "running" and now - j.get("started_at", now) > _JOB_TTL
+            if j.get("status") != "running" and now - j["finished_seen_at"] > _JOB_TTL
         ]
         for jid in stale:
             _JOBS.pop(jid, None)
@@ -70,10 +77,44 @@ def _eta(job: dict) -> int | None:
     return max(0, round(elapsed / done * (job["total"] - done)))
 
 
+_JOB_KIND_LABELS = {
+    "brand_check": "Toolbox: Check Brand",
+}
+
+
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot of every tracked job (running or recently
+    finished) for the Settings > Tasks Running tab -- see routers/settings.py
+    tasks_running(). Reads the live dicts directly; no copy/lock needed
+    beyond what _JOBS_LOCK already guards against concurrent mutation.
+
+    _JOBS is shared by 2 different job kinds now (plain Eligibility Check,
+    and -- since 2026-10-27 -- Check Brand's bulk background jobs), tagged
+    via each job's own "kind" field (absent = eligibility, the original job
+    type here before Check Brand got one) so each gets its correct label
+    instead of both being mislabeled as one feature."""
+    with _JOBS_LOCK:
+        jobs = list(_JOBS.values())
+    return [
+        {
+            "feature": _JOB_KIND_LABELS.get(j.get("kind"), "Toolbox: Eligibility Check"),
+            "job_id": j.get("job_id"),
+            "status": j.get("status"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started_at"),
+        }
+        for j in jobs
+    ]
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 class CheckBody(BaseModel):
     asins: list[str]
+    store: str = "default"   # which seller account's restrictions to check — see
+                              # services/spapi/config._STORES ("default" = Priority
+                              # Pharmacy, "turba" = Turba)
 
 
 class CheckBrandBody(BaseModel):
@@ -98,6 +139,13 @@ async def eligibility_status() -> dict:
         except RuntimeError:
             pass
     return {"sp_api_configured": configured, "seller_id_configured": seller_ok}
+
+
+@router.get("/eligibility/stores")
+async def eligibility_stores() -> dict:
+    """Every known store (seller account) + whether it's usable right now,
+    for the Eligibility Check store-switch button."""
+    return {"stores": list_stores()}
 
 
 def _related(query: str, candidate: str) -> bool:
@@ -221,8 +269,7 @@ def _resolve_brand_ai(brand: str) -> str:
     return result
 
 
-@router.post("/eligibility/check-brand")
-async def check_brand(body: CheckBrandBody) -> dict:
+def _run_brand_check(brand: str, sample_size: int, sample_pct: float | None) -> dict:
     """
     Brand-wide gating check. Amazon's Listings Restrictions API is per-ASIN only
     -- there is no brand-level endpoint -- but a brand block message ("You are
@@ -242,11 +289,13 @@ async def check_brand(body: CheckBrandBody) -> dict:
     Also tried `search_by_brand_names()` (brandNames with no keywords) first --
     Amazon rejects that with 400 "Missing required identifiers or keywords",
     despite its docstring's claim; the working call needs `keywords` too.
-    """
-    brand = (body.brand or "").strip()
-    if not brand:
-        raise HTTPException(status_code=400, detail="Brand name required.")
 
+    Pure logic, no FastAPI dependency -- shared by the single-brand endpoint
+    below and the bulk background-job endpoints (check_brand_start), so a
+    bulk run's per-brand work is identical to a standalone check. Raises
+    HTTPException on failure either way; the bulk job's worker thread catches
+    it and turns it into an ERROR-verdict result instead of crashing.
+    """
     try:
         creds = load_sp_api_credentials()
     except RuntimeError as exc:
@@ -330,10 +379,10 @@ async def check_brand(body: CheckBrandBody) -> dict:
                     f"brand-name resolution did not find a confident match either)."),
         )
 
-    if body.sample_pct is not None and body.sample_pct > 0:
-        wanted = max(1, round(total_amazon_results * min(body.sample_pct, 100) / 100))
+    if sample_pct is not None and sample_pct > 0:
+        wanted = max(1, round(total_amazon_results * min(sample_pct, 100) / 100))
     else:
-        wanted = max(1, body.sample_size or 8)
+        wanted = max(1, sample_size or 8)
     cap = min(wanted, BRAND_CHECK_MAX, total_amazon_results)
     max_wanted = cap * 3   # over-fetch candidates since some will turn out DOG
 
@@ -393,9 +442,18 @@ async def check_brand(body: CheckBrandBody) -> dict:
         summary = (f"{len(checked)}/{len(checked)} checked ASINs for "
                    f"'{brand}'{resolved_note} are {STATUS_LABEL.get(verdict, verdict)}.")
     else:
-        verdict = "MIXED"
+        # Majority wins (2026-10-30, per user): 299 needs-approval + 1 restricted
+        # is "needs approval", not MIXED; 286 open + 14 needs-approval is "can
+        # sell". MIXED only when no status covers more than half the sample.
         parts = ", ".join(f"{n} {STATUS_LABEL.get(s, s)}" for s, n in statuses.most_common())
-        summary = f"Mixed results for '{brand}'{resolved_note}: {parts} (of {len(checked)} checked)."
+        top, top_n = statuses.most_common(1)[0]
+        if top_n * 2 > len(checked):
+            verdict = top
+            summary = (f"Mostly {STATUS_LABEL.get(top, top)} for '{brand}'{resolved_note} "
+                       f"({top_n}/{len(checked)}): {parts}.")
+        else:
+            verdict = "MIXED"
+            summary = f"Mixed results for '{brand}'{resolved_note}: {parts} (of {len(checked)} checked)."
 
     return {
         "brand":                  brand,
@@ -406,6 +464,92 @@ async def check_brand(body: CheckBrandBody) -> dict:
         "verdict":                verdict,
         "summary":                summary,
     }
+
+
+@router.post("/eligibility/check-brand")
+async def check_brand(body: CheckBrandBody) -> dict:
+    brand = (body.brand or "").strip()
+    if not brand:
+        raise HTTPException(status_code=400, detail="Brand name required.")
+    return _run_brand_check(brand, body.sample_size, body.sample_pct)
+
+
+class CheckBrandBulkBody(BaseModel):
+    brands: list[str]
+    sample_size: int = 8
+    sample_pct: float | None = None
+
+
+BRAND_CHECK_CONCURRENCY = 2   # matches the old client-side worker-pool size exactly
+
+
+@router.post("/eligibility/check-brand/start")
+async def check_brand_start(body: CheckBrandBulkBody) -> dict:
+    """Bulk/background version of check-brand -- added 2026-10-27 so a brand
+    check (single or multi-brand) shows up in the Settings > Tasks Running
+    tab with real progress, instead of running entirely client-side with no
+    server-tracked state at all (confirmed live: the old `_checkBrands()`
+    frontend loop called the plain /check-brand endpoint once per brand with
+    its OWN client-side Promise.all concurrency pool -- nothing on the
+    backend ever knew a check was in progress)."""
+    brands = list(dict.fromkeys(b.strip() for b in (body.brands or []) if b.strip()))
+    if not brands:
+        raise HTTPException(status_code=400, detail="At least one brand name required.")
+
+    job_id = str(uuid.uuid4())
+    job: dict = {
+        "job_id": job_id, "kind": "brand_check", "status": "running",
+        "done": 0, "total": len(brands), "results": [], "error": None,
+        "cancel": False, "started_at": time.time(),
+    }
+    with _JOBS_LOCK:
+        _JOBS[job_id] = job
+
+    def run() -> None:
+        results_lock = threading.Lock()
+
+        def worker(brand: str) -> None:
+            if job["cancel"]:
+                return
+            try:
+                r = _run_brand_check(brand, body.sample_size, body.sample_pct)
+            except HTTPException as exc:
+                r = {"brand": brand, "verdict": "ERROR", "summary": str(exc.detail),
+                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0}
+            except Exception as exc:  # noqa: BLE001
+                r = {"brand": brand, "verdict": "ERROR", "summary": str(exc)[:300],
+                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0}
+            with results_lock:
+                job["results"].append(r)
+                job["done"] += 1
+
+        try:
+            with ThreadPoolExecutor(max_workers=BRAND_CHECK_CONCURRENCY) as pool:
+                futures = [pool.submit(worker, b) for b in brands]
+                for f in as_completed(futures):
+                    f.result()
+            job["status"] = "cancelled" if job["cancel"] else "complete"
+        except Exception as exc:  # noqa: BLE001
+            job["status"], job["error"] = "error", str(exc)[:400]
+
+    threading.Thread(target=run, name=f"brand-check-{job_id[:8]}", daemon=True).start()
+    return {"job_id": job_id, "total": len(brands)}
+
+
+@router.get("/eligibility/check-brand/jobs/{job_id}")
+async def check_brand_job_status(job_id: str) -> dict:
+    job = _get_job(job_id)
+    return {
+        "job_id": job_id, "status": job["status"], "done": job["done"],
+        "total": job["total"], "results": job["results"], "error": job.get("error"),
+    }
+
+
+@router.post("/eligibility/check-brand/jobs/{job_id}/cancel")
+async def check_brand_job_cancel(job_id: str) -> dict:
+    job = _get_job(job_id)
+    job["cancel"] = True
+    return {"cancelled": True}
 
 
 @router.post("/eligibility/check")
@@ -420,9 +564,11 @@ async def start_check(body: CheckBody) -> dict:
             detail=f"Max {MAX_ASINS} ASINs per request (received {len(asins)}).",
         )
 
+    store = (body.store or "default").strip().lower()
+
     # Validate credentials early for a clean error message
     try:
-        creds = load_sp_api_credentials()
+        creds = load_sp_api_credentials(store)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
@@ -430,11 +576,22 @@ async def start_check(body: CheckBody) -> dict:
         raise HTTPException(
             status_code=503,
             detail=(
-                "AMZ_SELLER_ID is not set. "
+                f"No seller ID is configured for the {store!r} store. "
                 "Add it to your .env file and restart — "
                 "the Listings Restrictions API requires a seller ID."
             ),
         )
+
+    job_id = _launch_check(asins, store, creds.seller_id)
+    return {"job_id": job_id, "total": len(asins), "store": store}
+
+
+def _launch_check(asins: list[str], store: str, seller_id: str | None = None) -> str:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs)."""
+    if seller_id is None:
+        creds = load_sp_api_credentials(store)
+        seller_id = creds.seller_id
 
     job_id = str(uuid.uuid4())
     job: dict = {
@@ -444,49 +601,63 @@ async def start_check(body: CheckBody) -> dict:
         "status":     "running",
         "results":    [],
         "started_at": time.time(),
+        "store":      store,
     }
     with _JOBS_LOCK:
         _JOBS[job_id] = job
+    job_persistence.save_job(job_id, "eligibility", {"asins": asins, "store": store})
 
     # ── Background worker ──────────────────────────────────────────────────
     def run() -> None:
-        api       = get_restrictions_api()
-        seller_id = creds.seller_id
-        lock      = threading.Lock()
-
-        def check_one(asin: str) -> dict:
-            try:
-                raw = api.get_restrictions(asin, seller_id)
-                return classify(asin, raw)
-            except PermissionError as exc:
-                return {
-                    "asin": asin, "status": "ERROR", "dog": False,
-                    "reasons": [{"type": "PERMISSION_ERROR", "message": str(exc),
-                                 "hint": "", "can_request": False, "approval_url": None}],
-                }
-            except Exception as exc:  # noqa: BLE001
-                return {
-                    "asin": asin, "status": "ERROR", "dog": False,
-                    "reasons": [{"type": "API_ERROR", "message": str(exc),
-                                 "hint": "", "can_request": False, "approval_url": None}],
-                }
-
         try:
-            with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(check_one, asin): asin for asin in asins}
-                for future in as_completed(futures):
-                    result = future.result()
-                    with lock:
-                        job["results"].append(result)
-                        job["done"] += 1
-            job["status"] = "complete"
-        except Exception as exc:  # noqa: BLE001
-            job["status"] = "error"
-            job["error"]  = str(exc)
+            api  = get_restrictions_api(store)
+            lock = threading.Lock()
+
+            def check_one(asin: str) -> dict:
+                try:
+                    raw = api.get_restrictions(asin, seller_id)
+                    return classify(asin, raw)
+                except PermissionError as exc:
+                    return {
+                        "asin": asin, "status": "ERROR", "dog": False,
+                        "reasons": [{"type": "PERMISSION_ERROR", "message": str(exc),
+                                     "hint": "", "can_request": False, "approval_url": None}],
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    return {
+                        "asin": asin, "status": "ERROR", "dog": False,
+                        "reasons": [{"type": "API_ERROR", "message": str(exc),
+                                     "hint": "", "can_request": False, "approval_url": None}],
+                    }
+
+            try:
+                with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+                    futures = {pool.submit(check_one, asin): asin for asin in asins}
+                    for future in as_completed(futures):
+                        result = future.result()
+                        with lock:
+                            job["results"].append(result)
+                            job["done"] += 1
+                job["status"] = "complete"
+            except Exception as exc:  # noqa: BLE001
+                job["status"] = "error"
+                job["error"]  = str(exc)
+        finally:
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=run, daemon=True).start()
+    return job_id
 
-    return {"job_id": job_id, "total": len(asins)}
+
+def _relaunch(params: dict) -> None:
+    asins = [str(a) for a in (params.get("asins") or []) if str(a).strip()]
+    store = params.get("store") or "default"
+    if not asins:
+        return
+    _launch_check(asins, store)
+
+
+job_persistence.register_relauncher("eligibility", _relaunch)
 
 
 @router.get("/eligibility/jobs/{job_id}")
@@ -499,6 +670,7 @@ async def get_job(job_id: str) -> dict:
         "status":      job["status"],
         "eta_seconds": _eta(job),
         "results":     job["results"],
+        "store":       job.get("store", "default"),
     }
 
 

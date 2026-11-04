@@ -194,6 +194,24 @@ def prefix_for(brand: str, company: str = "Ford Medical") -> str | None:
     return row[0] if row and row[0] else None
 
 
+def brand_for_prefix(prefix: str, company: str = "Ford Medical") -> str | None:
+    """Reverse of prefix_for(): the brand that OWNS a given SKU prefix under a
+    company (e.g. 'BLS' -> 'Blazy Susan'). Used by PO Analytics to name an
+    export file from the PO's own SKU prefix rather than a free-text field.
+    A prefix can in theory be shared by more than one brand (old/legacy
+    overlap) — picks the one with the most mains under that prefix."""
+    p = (prefix or "").strip().upper()
+    if not p:
+        return None
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT brand FROM sc_brand_prefix WHERE prefix=? AND company=? "
+            "ORDER BY sku_count DESC LIMIT 1",
+            (p, company),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def brand_manufacturer(brand: str, company: str = "Ford Medical") -> str:
     """The saved manufacturer for a brand (from a prior computed/confirmed row),
     or '' — lets a remembered NEW brand skip the AI manufacturer guess."""

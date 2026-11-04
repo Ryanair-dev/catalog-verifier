@@ -1,12 +1,33 @@
 """
 Background worker for Brand Analytics runs.
 
-For each brand name in search_terms:
-  1. Keyword-search Amazon (search_by_keywords) for up to pages_per_brand pages
-  2. Post-filter: only keep items where amazon.brand fuzzy-matches one of the
-     searched brands (rapidfuzz ≥ 70%)
-  3. BSR filter: apply min_rank / max_rank
-  4. Upsert into brand_analytics_items
+Two discovery sources are combined, not treated as either/or (2026-10-02 —
+verified live that a manufacturer-only Keepa search can miss genuine products
+whose Amazon `manufacturer` field is blank/inconsistent even though the
+`brand` field is correct, e.g. a real "Torbot" ASIN with manufacturer
+"Med-Choice"):
+
+  1. Keepa discovery (`_keepa_brand_pipeline`, when KEEPA_API is configured) —
+     finds the full ASIN list past SP-API's own keyword-search recall ceiling,
+     searching each term as BOTH a `brand` AND a `manufacturer` field (never
+     just the one the wizard's Brand/Manufacturer toggle happens to pick —
+     that toggle only labels the run + drives the AI sub-brand discovery
+     step's entity_type), then enriches each ASIN via SP-API. A Keepa `title`
+     field also exists but was tested live and rejected for discovery:
+     title="3M" returned 896,900 results vs 96,500 for brand="3M" — far too
+     noisy/expensive as a bare substring match.
+  2. SP-API keyword + brandNames search (`_brand_pipeline`'s Phases A-D,
+     ALWAYS run as a supplement, not just a fallback when Keepa is absent) —
+     catches real products Keepa's structured brand/manufacturer fields
+     missed, via Amazon's own brand-field search instead.
+
+Both sources upsert into the SAME `brand_analytics_items` row via
+`_upsert_item` (idempotent, keyed on run_id+asin), so an ASIN either source
+finds is simply refreshed with the other's data, never duplicated. Post-
+filter for the SP-API keyword phase: only keep items where amazon.brand
+fuzzy-matches one of the searched brands (rapidfuzz ≥ 70%); the brandNames-
+scan phases are filtered by Amazon itself, no post-filter needed. BSR filter
+(min_rank/max_rank) applies to both sources.
 
 Progress is written to brand_analytics_runs so the UI can poll for live status.
 """
@@ -30,7 +51,7 @@ from services.analytics.product_categorizer import (
     HOME, GARDEN, TOOLS, SPORTS, CLOTHING, AUTOMOTIVE,
     ELECTRONICS, ARTS, TOYS, ENTERTAINMENT,
 )
-from services.spapi import get_catalog_api, sp_api_configured
+from services.spapi import lease_catalog_api, sp_api_configured
 
 log = logging.getLogger(__name__)
 
@@ -175,15 +196,32 @@ def _brand_matches(
        Threshold is length-adaptive: short names (≤5 chars) require 90%
        to avoid false positives like "Bode" matching "Bose" at 75%.
     2. Brand field set but doesn't match:
-       - strict=True  → False immediately.  Used during Phase A keyword search
-         where "brand field set but wrong brand" means it's a different product
-         (e.g. Amazon brand="Shure" when searching for "Microflex").  The keyword
-         may appear in the title by coincidence (competitor name, movie title, etc.)
-         and the title fallback would wrongly pass those.
+       - strict=True  → False immediately.  Originally used during Phase A
+         keyword search on the theory that "brand field set but wrong brand"
+         always means a different product (e.g. Amazon brand="Shure" when
+         searching for "Microflex") and the keyword only appears in the title
+         by coincidence (competitor name, movie title, etc.).
        - strict=False → fall through to title check (original behaviour).  Used
          for lookups where Amazon may store the parent-company name instead of
-         the sub-brand (e.g. "DJO Global" instead of "Aircast").
+         the sub-brand (e.g. "DJO Global" instead of "Aircast"), AND (2026-10-05)
+         now also Phase A itself — see note below.
     3. Brand field empty → title check is the only signal (both modes).
+
+    2026-10-05: Phase A's strict=True call was found to also reject a real,
+    common case it was never meant to catch — a RESELLER relisting the
+    genuine searched-for product under their own company name in Amazon's
+    brand field (e.g. Myco/Glassvan surgical blades listed under Amazon
+    brand="AmeriCan Goods"). That's structurally identical to the Shure/
+    Microflex false positive strict mode was built to stop (both are "a real,
+    different company name sits in the brand field, and a search term
+    happens to appear in the title") — there is no cheap text signal that
+    tells a reseller's storefront name apart from a genuine competing brand
+    with a same-named product line, so loosening one necessarily risks the
+    other back in. Per user instruction, Phase A now calls strict=False,
+    trading a *re-opened* chance of rare coincidental keyword collisions
+    (as in the original Ringers/Edge/Microflex cases) for recovering
+    genuine reseller-relisted inventory, which is the more common real-world
+    miss. Revisit if coincidental false positives start showing up again.
 
     Title check: sub-brand name must appear as a whole-word substring OR via
     partial_ratio ≥ 92 (tightened to reduce false positives on short names).
@@ -506,59 +544,77 @@ def _keepa_brand_pipeline(
     max_rank: int,
     vetting_mode: str,
     category_filter: str,
+    catalog,
+    mark_complete: bool = True,
 ) -> None:
     """Discover ALL of a brand/manufacturer's ASINs from Keepa (past SP-API's recall
     ceiling), then enrich each via SP-API (BSR / category / UPC/EAN/GTIN/MPN / dims →
     storage fee). Keeps the same category filtering + item storage as the SP-API path.
     Keepa token spend/balance are recorded on the run. Buy-box + eligibility are added
-    by their own steps afterward."""
+    by their own steps afterward.
+
+    `catalog` is a CatalogAPI already pinned to one store for this whole run (leased
+    once by `start_brand_run`, shared with `_brand_pipeline`'s own SP-API phases if
+    this was called from there) — see services.spapi.client.lease_catalog_api.
+
+    `mark_complete=False` (used by `_brand_pipeline` when it's about to also run the
+    SP-API keyword/brandNames supplement afterward) skips the final status="Complete"
+    update, so the run stays visibly "Searching" through the supplement phase instead
+    of the UI showing Complete partway through."""
     from services import keepa
 
-    # brand vs manufacturer for the Keepa selection + the units-sold window (stored on
-    # the run; filtered in Keepa's finder for free, alongside the BSR window)
+    # The units-sold window (stored on the run; filtered in Keepa's finder for free,
+    # alongside the BSR window). `search_type` (brand vs manufacturer, the wizard's
+    # toggle) is READ but no longer used to pick ONE field — see below.
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT search_type, min_sold, max_sold FROM brand_analytics_runs WHERE id=?",
+            "SELECT min_sold, max_sold FROM brand_analytics_runs WHERE id=?",
             (run_id,),
         ).fetchone()
-    search_type = ((row[0] if row else "") or "brand").lower()
-    min_sold = int((row[1] if row and row[1] is not None else 0) or 0)
-    max_sold = int((row[2] if row and row[2] is not None else 0) or 0)
-
-    try:
-        catalog = get_catalog_api()
-    except Exception as exc:  # noqa: BLE001
-        _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
-        return
+    min_sold = int((row[0] if row and row[0] is not None else 0) or 0)
+    max_sold = int((row[1] if row and row[1] is not None else 0) or 0)
 
     _cat_target = _CATEGORY_FILTER_MAP.get(category_filter.lower()) if category_filter else None
 
     # ── 1) Keepa discovery ────────────────────────────────────────────────── #
+    # Always search EACH term as BOTH a brand AND a manufacturer field in Keepa, never
+    # just the one the wizard's toggle happened to pick — verified live (2026-10-02,
+    # "Torbot" run) that Amazon's manufacturer field is often blank/inconsistent on real
+    # listings even when the brand field is correct (and the reverse can happen too for
+    # some catalogs), so searching only one field silently drops real products. A `title`
+    # field also exists in Keepa's finder but was tested live and rejected: title="3M"
+    # returned 896,900 results vs 96,500 for brand="3M" — a bare substring match against
+    # free-text titles is far too noisy/expensive to use for discovery (the SP-API
+    # keyword-search supplement below already covers the "title" angle properly, WITH a
+    # strict brand-field verification post-filter that a raw Keepa title search has no
+    # equivalent for).
     _update_progress(run_id, status="Searching", phase="Keepa — finding ASINs…", done=0, total=0)
     all_asins: set[str] = set()
     tok_spent = 0
     tok_left = None
     for term in search_terms:
-        if _check_control(run_id) == "stop":
-            _update_progress(run_id, status="Stopped", phase="Stopped by user")
-            return
+        for field in ("brand", "manufacturer"):
+            if _check_control(run_id) == "stop":
+                _update_progress(run_id, status="Stopped", phase="Stopped by user")
+                return
 
-        def _prog(found: int, target: int, _t=term) -> None:
-            _update_progress(run_id, status="Searching",
-                             phase=f"Keepa — {_t}: {found:,}/{target:,} ASINs",
-                             done=found, total=max(target, 1))
-        try:
-            kw = {"manufacturer": term} if search_type == "manufacturer" else {"brand": term}
-            # BSR window is filtered in Keepa's finder (free) — the ONLY place the Keepa
-            # path applies min/max rank, and it trims the list before SP-API enrichment.
-            res = keepa.find_asins(progress=_prog, min_rank=min_rank, max_rank=max_rank,
-                                   min_sold=min_sold, max_sold=max_sold, **kw)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("[keepa] find_asins failed for %r: %s", term, exc)
-            continue
-        all_asins |= set(res["asins"])
-        tok_spent += int(res.get("tokens_spent") or 0)
-        tok_left = res.get("tokens_left")
+            def _prog(found: int, target: int, _t=term, _f=field) -> None:
+                _update_progress(run_id, status="Searching",
+                                 phase=f"Keepa — {_t} ({_f}): {found:,}/{target:,} ASINs",
+                                 done=found, total=max(target, 1))
+            try:
+                kw = {field: term}
+                # BSR window is filtered in Keepa's finder (free) — the ONLY place the
+                # Keepa path applies min/max rank, and it trims the list before SP-API
+                # enrichment.
+                res = keepa.find_asins(progress=_prog, min_rank=min_rank, max_rank=max_rank,
+                                       min_sold=min_sold, max_sold=max_sold, **kw)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[keepa] find_asins(%s=%r) failed: %s", field, term, exc)
+                continue
+            all_asins |= set(res["asins"])
+            tok_spent += int(res.get("tokens_spent") or 0)
+            tok_left = res.get("tokens_left")
 
     with database._LOCK, database._connect() as conn:
         conn.execute(
@@ -569,8 +625,8 @@ def _keepa_brand_pipeline(
 
     asins = sorted(all_asins)
     total = len(asins)
-    log.info("brand_runner run=%d: Keepa found %d ASINs (%s); enriching via SP-API",
-             run_id, total, search_type)
+    log.info("brand_runner run=%d: Keepa found %d ASINs (brand+manufacturer); enriching via SP-API",
+             run_id, total)
 
     # ── 2) SP-API catalog enrichment (BSR / category / IDs / dims→storage) ──── #
     _update_progress(run_id, status="Searching",
@@ -638,9 +694,15 @@ def _keepa_brand_pipeline(
         _update_progress(run_id, status="Searching", done=min(i + 20, total), total=total,
                          phase=f"Enriching {min(i + 20, total):,}/{total:,} — {kept:,} kept")
 
-    _update_progress(run_id, status="Complete",
-                     phase=f"Done — {kept:,} products · Keepa {tok_spent} tokens",
-                     done=total, total=total)
+    if mark_complete:
+        _update_progress(run_id, status="Complete",
+                         phase=f"Done — {kept:,} products · Keepa {tok_spent} tokens",
+                         done=total, total=total)
+    else:
+        _update_progress(run_id, status="Searching",
+                         phase=f"Keepa done — {kept:,} products · {tok_spent} tokens — "
+                               f"supplementing via Amazon SP-API search…",
+                         done=total, total=total)
 
 
 def _brand_pipeline(
@@ -649,29 +711,32 @@ def _brand_pipeline(
     min_rank: int,
     max_rank: int,
     pages_per_brand: int,
-    vetting_mode: str = "cpg",
-    category_filter: str = "",
+    vetting_mode: str,
+    category_filter: str,
+    catalog,
 ) -> None:
     # When a Keepa key is configured, discover the FULL brand/manufacturer catalog via
-    # Keepa (beats SP-API's ~6k recall ceiling) and enrich via SP-API. Falls back to the
-    # SP-API keyword search below when Keepa isn't configured.
+    # Keepa (beats SP-API's ~6k recall ceiling) first. The SP-API keyword/brandNames
+    # search below then ALWAYS ALSO runs as a supplement, not a fallback — verified
+    # live (2026-10-02, "Torbot" manufacturer run) that Keepa's own `manufacturer`
+    # field is frequently blank or inconsistent on real listings (e.g. "Med-Choice",
+    # "MedC", "TORBOTGROUPINC.1231") even when Amazon's own `brand` field correctly
+    # says "Torbot" — so a manufacturer-only Keepa search silently misses genuine
+    # products that a brand-field keyword/brandNames search on SP-API catches. Both
+    # sources feed the SAME `_upsert_item` (idempotent, keyed on run_id+asin), so an
+    # ASIN Keepa already found is just harmlessly re-upserted with fresh SP-API data,
+    # never duplicated.
     try:
         from services import keepa
         if keepa.is_configured():
             _keepa_brand_pipeline(run_id, search_terms, min_rank, max_rank,
-                                  vetting_mode, category_filter)
-            return
+                                  vetting_mode, category_filter, catalog, mark_complete=False)
     except Exception as exc:  # noqa: BLE001
-        log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search", run_id, exc)
+        log.warning("brand_runner run=%d: Keepa path failed (%s); using SP-API search only", run_id, exc)
 
     # 0 = unlimited (paginate until Amazon has no more results)
     unlimited = pages_per_brand == 0
     pages_per_brand = max(1, int(pages_per_brand or 3))
-    try:
-        catalog = get_catalog_api()
-    except Exception as exc:
-        _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
-        return
 
     # Search strategy — three phases:
     #
@@ -769,11 +834,14 @@ def _brand_pipeline(
                 amz_brand = normalized.get("brand") or normalized.get("manufacturer") or ""
                 amz_title = normalized.get("title") or ""
 
-                # strict=True: if Amazon brand field is set but doesn't match, reject
-                # immediately.  Prevents keyword coincidences (e.g. "Ringers" keyword
-                # matching "Dead Ringers" DVD, "Edge" matching shaving gel) from
-                # slipping through via the title fallback.
-                if not _brand_matches(amz_brand, search_terms, title=amz_title, strict=True):
+                # strict=False (2026-10-05, was True): a brand-field mismatch now
+                # falls through to the title check instead of a hard reject -- this
+                # is what recovers reseller-relisted inventory (e.g. Myco/Glassvan
+                # surgical blades listed under Amazon brand="AmeriCan Goods"), at
+                # the cost of re-opening rare coincidental keyword collisions
+                # (e.g. "Ringers" matching "Dead Ringers" DVD) that the old
+                # strict=True was built to stop. See _brand_matches docstring.
+                if not _brand_matches(amz_brand, search_terms, title=amz_title, strict=False):
                     continue
 
                 # Collect the exact Amazon brand name for Phase B seed
@@ -1066,14 +1134,41 @@ def _brand_pipeline(
             "WHERE id=?",
             (run_id,),
         )
+        # True combined total (Keepa + this SP-API pass share one idempotent upsert,
+        # keyed on run_id+asin) — `asin_count` only tracks THIS pass's own finds, which
+        # would understate the real total whenever the Keepa supplement ran first.
+        total_items = conn.execute(
+            "SELECT COUNT(*) FROM brand_analytics_items WHERE run_id=?", (run_id,)
+        ).fetchone()[0]
 
     _update_progress(
         run_id,
         status="Complete",
-        phase=f"Done — {asin_count} ASINs found",
+        phase=f"Done — {total_items} ASINs found ({asin_count} via SP-API)",
         done=total_pages,
         total=total_pages,
     )
+    _notify_teams_complete(run_id, total_items)
+
+
+def _notify_teams_complete(run_id: int, total_items: int) -> None:
+    """Best-effort Teams ping when a Brand Analytics run finishes -- per user
+    request 2026-10-23 ("Teams notification on Offer/Vendor/Brand Analytics
+    completion"). Never lets a notification failure affect the run itself."""
+    from services import teams_notify
+    if not teams_notify.is_configured():
+        return
+    try:
+        with database._connect() as conn:
+            row = conn.execute(
+                "SELECT name FROM brand_analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        name = row[0] if row else f"run {run_id}"
+        teams_notify.send_teams_message(
+            f"✅ Brand Analytics run \"{name}\" is complete — {total_items} ASINs found."
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[brand_runner] Teams notification failed for run %s", run_id)
 
 
 def start_brand_run(
@@ -1090,11 +1185,26 @@ def start_brand_run(
     pages_per_brand = int(pages_per_brand or 10)
     if pages_per_brand < 0:
         pages_per_brand = 0  # normalise negatives to unlimited
-    t = threading.Thread(
-        target=_brand_pipeline,
-        args=(run_id, search_terms, min_rank, max_rank, pages_per_brand, vetting_mode, category_filter),
-        daemon=True,
-    )
+
+    def _run() -> None:
+        # Store-leased for the WHOLE run (2026-10-20, per user request), shared by
+        # both the Keepa-enrichment catalog calls and the SP-API search/getCatalogItem
+        # phases below -- if another batch job (a Vendor Offers export, a PO Analytics
+        # report, ...) is ALSO leasing "default" right now, this run gets pinned to
+        # "turba" instead so the two never fight over one store's rate budget. See
+        # services.spapi.client.lease_catalog_api's own docstring for the full rationale.
+        try:
+            lease = lease_catalog_api()
+        except Exception as exc:  # noqa: BLE001
+            _update_progress(run_id, status="Error", phase=f"SP-API init failed: {exc}")
+            return
+        try:
+            _brand_pipeline(run_id, search_terms, min_rank, max_rank, pages_per_brand,
+                            vetting_mode, category_filter, lease.api)
+        finally:
+            lease.release()
+
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
 
 

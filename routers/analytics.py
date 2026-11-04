@@ -38,12 +38,20 @@ from services import database
 from services.file_parser import parse_raw_rows as _parse_raw_rows_shared, get_sheet_names as _get_sheet_names
 from services.safety import clamp_int, read_upload_limited, safe_spreadsheet_row
 from services.analytics import parse_source_rows, start_analytics_run
+from pydantic import BaseModel
 from services.analytics.runner import (
-    _clean_search_query, request_pause, request_stop, resume_run, start_rescore,
-    _tier1_upc, _tier2_itemid, _tier3_title,
+    _clean_search_query,
+    request_pause,
+    request_stop,
+    resume_run,
+    start_rescore,
+    _tier1_upc,
+    _tier2_itemid,
+    _tier3_title,
     _normalize_source_rows,
     normalize_amazon_item,
-    AUTO_APPROVE, REVIEW_FLOOR,
+    AUTO_APPROVE,
+    REVIEW_FLOOR,
 )
 from services.analytics.matching_core.adapter import SCORING_METHODS, score_pair
 from services.analytics.parser import SourceRow as _SourceRow
@@ -52,7 +60,7 @@ from services.analytics.eligibility_check import (
     start_eligibility_check, stop_eligibility_check,
     is_running as elig_check_running, approved_review_asins,
 )
-from services.spapi import sp_api_configured, get_catalog_api
+from services.spapi import sp_api_configured, get_catalog_api, get_multi_store_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
 from services.analytics.vendor_families import FAMILY_EXPORT_BLANK, FAMILY_EXPORT_COLUMNS, export_family_columns
 
@@ -101,6 +109,11 @@ SECONDS_PER_CALL = 1.0
 MISS_RATE = 0.15         
 _PREVIEW_LIMIT = 25
 MAX_PAGE_SIZE = 1000
+_AMZ_BRAND_EXPR = (
+    "COALESCE(json_extract(data_json,'$.amazon.brand'), "
+    "json_extract(data_json,'$.amazon.manufacturer'))"
+)
+
 MAX_TITLE_PAGES = 100   
 
 
@@ -428,83 +441,15 @@ def get_run_detail(
     }
 
     # ASIN conflicts are surfaced to the user as an informational "⚠ Conflict"
-    # badge (via `asin_conflicts` in the response). A blanket "any conflict
-    # downgrades the verdict" rule was tried and explicitly reverted on
-    # 2026-06-08 (it stranded solid 90%+ matches in Review whenever the same
-    # ASIN legitimately matched >1 catalog row — common when the vendor
-    # catalog has duplicate SKUs for one product).
-    #
-    # Legacy candidate rows retain the historical 100%-confidence ASIN
-    # exclusivity behavior. Candidates scored by the selected matcher are
-    # intentionally excluded: cross-row ownership must not rewrite its verdict.
-    _to_conflict_cap: list[tuple[int, str]] = []
-    with database._connect() as conn:
-        conn.row_factory = sqlite3.Row
-        _hundred_rows = conn.execute(
-            "SELECT row_idx, asin, "
-            "json_extract(data_json,'$.scores.product_type_similarity') AS title_sim "
-            "FROM analytics_candidates WHERE run_id=? AND confidence=100 "
-            "AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
-            "NOT IN ('weighted','cascade','classifier')",
-            (run_id,),
-        ).fetchall()
-    _asin_100_owners: dict[str, list[tuple[int, float]]] = {}
-    for r in _hundred_rows:
-        _asin_100_owners.setdefault(r["asin"], []).append((r["row_idx"], float(r["title_sim"] or 0)))
-    # Deterministic winner per ASIN even among several genuine 100% ties:
-    # highest title similarity first, then lowest row_idx for full stability.
-    _asin_owner: dict[str, int] = {
-        asin: sorted(pairs, key=lambda p: (-p[1], p[0]))[0][0]
-        for asin, pairs in _asin_100_owners.items()
-    }
-    if _asin_owner:
-        with database._connect() as conn:
-            conn.row_factory = sqlite3.Row
-            _placeholders = ",".join("?" * len(_asin_owner))
-            _owned_asin_rows = conn.execute(
-                f"SELECT row_idx, asin, verdict, review_status FROM analytics_candidates "
-                f"WHERE run_id=? AND asin IN ({_placeholders}) "
-                f"AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
-                f"NOT IN ('weighted','cascade','classifier')",
-                (run_id, *_asin_owner.keys()),
-            ).fetchall()
-        for r in _owned_asin_rows:
-            if r["row_idx"] == _asin_owner[r["asin"]]:
-                continue  # the winner keeps its verdict untouched
-            if (r["review_status"] or "").strip():
-                continue  # a manual/AI decision on this candidate is respected
-            if r["verdict"] == "verified":
-                _to_conflict_cap.append((r["row_idx"], r["asin"]))
-
-        if _to_conflict_cap:
-            # review_status is set (not left blank) so the high-confidence
-            # auto-promotion block further below — "any Review candidate with
-            # confidence >= 90 gets auto-verified" — does NOT immediately
-            # reverse this decision. A capped row's confidence is still 100,
-            # so without this it would bounce straight back to 'verified' a
-            # few lines later in this SAME request (caught by an idempotency
-            # test: a second call kept finding more to cap, because the first
-            # call's caps were being silently undone before the response even
-            # went out). Same guard pattern already used for ai-accepted /
-            # Manually Rejected / Pair Blacklisted elsewhere in this file.
-            with database._LOCK, database._connect() as conn:
-                conn.executemany(
-                    "UPDATE analytics_candidates SET verdict='review', review_status='ASIN Exclusivity' "
-                    "WHERE run_id=? AND row_idx=? AND asin=? AND verdict='verified' "
-                    "AND (review_status IS NULL OR review_status='')",
-                    [(run_id, row_idx, asin) for row_idx, asin in _to_conflict_cap],
-                )
-            _capped_keys = set(_to_conflict_cap)
-            for c in candidates:
-                if (c.get("row_idx"), c.get("asin")) in _capped_keys \
-                   and c.get("verdict") == "verified" \
-                   and not (c.get("review_status") or "").strip():
-                    c["verdict"] = "review"
-                    c["review_status"] = "ASIN Exclusivity"
-                    c["asin_exclusivity_capped"] = True
-            with database._LOCK, database._connect() as conn:
-                updated = _recompute_run_counts(conn, run_id)
-            run_d.update(updated)
+    # badge (via `asin_conflicts` in the response) but no longer downgrade the
+    # verdict.  Per the user's rule, a candidate scoring >= the auto-approve
+    # threshold is a confirmed match and belongs in Approved even when the same
+    # ASIN was matched to more than one catalog row — which in this catalog is
+    # almost always a vendor-side duplicate (same product, two SKUs/UPCs).  The
+    # badge still lets the user spot and manually discard a genuine ambiguous
+    # match.  (Previously this loop capped conflicted verified items to Review
+    # and persisted that downgrade, stranding 90%+ matches on the Review tab.)
+    _to_conflict_cap: list[tuple[int, str]] = []  # retained for the refresh guard; cap disabled
 
     # Defensive promotion: a legacy-scored candidate stored as "not_approved" with confidence
     # >= REVIEW_FLOOR but no hard-reject flag and no valid BSR cap is in an
@@ -1495,6 +1440,86 @@ async def estimate_run(
 _HDR_FONT = Font(bold=True)
 
 
+@router.get("/runs/{run_id}/brands")
+def get_run_brands(run_id: int) -> dict[str, Any]:
+    """Distinct Amazon brand values present among this run's candidates, with
+    counts, for the "Remove Brands" picker. NULL/blank -> '(Blanks)'."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        rows = conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF({_AMZ_BRAND_EXPR}, ''), '(Blanks)') AS brand,
+                   COUNT(*) AS count
+            FROM analytics_candidates
+            WHERE run_id=?
+            GROUP BY brand
+            ORDER BY count DESC
+            """,
+            (run_id,),
+        ).fetchall()
+    return {"brands": [dict(r) for r in rows]}
+
+
+class FilterBrandsBody(BaseModel):
+    remove_brands: list[str]
+
+
+@router.post("/runs/{run_id}/filter-brands")
+def filter_run_brands(run_id: int, body: FilterBrandsBody) -> dict[str, Any]:
+    """Permanently delete candidates whose Amazon brand is in remove_brands.
+    '(Blanks)' removes both NULL and empty-string brand rows."""
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        run = conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    if not body.remove_brands:
+        return {"deleted": 0, "remaining": 0}
+
+    remove_set = [b for b in body.remove_brands if b != "(Blanks)"]
+    remove_blank = "(Blanks)" in body.remove_brands
+
+    with database._LOCK, database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        deleted = 0
+        if remove_set:
+            placeholders = ",".join("?" * len(remove_set))
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? AND {_AMZ_BRAND_EXPR} IN ({placeholders})",
+                [run_id] + remove_set,
+            )
+            deleted += cur.rowcount
+        if remove_blank:
+            cur = conn.execute(
+                f"DELETE FROM analytics_candidates WHERE run_id=? "
+                f"AND ({_AMZ_BRAND_EXPR} IS NULL OR {_AMZ_BRAND_EXPR} = '')",
+                (run_id,),
+            )
+            deleted += cur.rowcount
+
+        # Keep the run's cached tab-badge counts (Approved/Review/Not Approved)
+        # in sync — the same guard every other bulk candidate mutation in this
+        # file already applies (_recompute_run_counts).
+        counts = _recompute_run_counts(conn, run_id)
+        remaining_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM analytics_candidates WHERE run_id=?", (run_id,)
+        ).fetchone()
+        remaining = remaining_row["n"] if remaining_row else 0
+
+    return {"deleted": deleted, "remaining": remaining, "counts": counts}
+
+
+# --------------------------------------------------------------------------- #
+# GET /runs/{run_id}/export — multi-sheet Excel download
+# --------------------------------------------------------------------------- #
+
+_HDR_FONT = Font(bold=True)
+
+
 def _hdr_row(ws, titles: list[str]) -> list[WriteOnlyCell]:
     cells = []
     for t in titles:
@@ -1907,3 +1932,180 @@ async def create_analytics_run(
         "warnings": report.as_dict()["issues"],
         "warning_summary": report.summary(),
     }
+
+
+@router.post("/quick-search")
+def analytics_quick_search(body: dict = Body(...)) -> dict[str, Any]:
+    """
+    Synchronous single-item ASIN search with full confidence scoring.
+    No DB writes — results are returned directly and not persisted.
+
+    Body fields (all optional, at least one required):
+      upc:          UPC / EAN barcode string
+      itemid:       Item ID / MPN / SKU
+      title:        Product title for keyword search
+      brand:        Brand name applied to every candidate during scoring
+      vetting_mode: "cpg" | "medical"  (default "cpg")
+      scoring_method: "weighted" | "cascade" | "classifier"  (default "weighted"; the same matcher as a run)
+      max_rank:     int — BSR cap  (0 = disabled)
+      min_rank:     int — BSR floor (0 = disabled)
+    """
+    if not sp_api_configured():
+        raise HTTPException(status_code=503, detail="SP-API credentials not configured")
+
+    upc      = str(body.get("upc")    or "").strip()
+    itemid   = str(body.get("itemid") or "").strip()
+    title    = str(body.get("title")  or "").strip()
+    brand    = str(body.get("brand")  or "").strip()
+    mode     = str(body.get("vetting_mode") or "cpg").lower()
+    scoring_method = str(body.get("scoring_method") or "weighted").strip().lower()
+    if scoring_method not in SCORING_METHODS:
+        raise HTTPException(status_code=400, detail="scoring_method must be one of: weighted, cascade, classifier")
+    max_rank = int(body.get("max_rank") or 0)
+    min_rank = int(body.get("min_rank") or 0)
+
+    if not upc and not itemid and not title:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of upc, itemid, or title is required",
+        )
+
+    # Zero-pad 11-digit UPCs → UPC-A
+    if len(upc) == 11 and upc.isdigit():
+        upc = "0" + upc
+
+    row = _SourceRow(row_idx=0, upc=upc, itemid=itemid, title=title, brand=brand)
+    source_dict = row.as_source_dict()
+    # Round-robins UPC/ItemID/Title search across every configured SP-API store
+    # (same public catalog data either way — just doubles sustained throughput
+    # via two independent per-store rate-limit buckets); see runner.py's
+    # _run_pipeline for the same change on the full Offer Analysis pipeline.
+    api = get_multi_store_catalog_api()
+
+    # Collect (normalized_item, source_label) from all tiers.
+    raw_candidates: list[tuple[dict, str]] = []
+
+    if upc:
+        # _tier1_upc returns (matched, kw_unverified) -- barcode-confirmed hits
+        # vs. Pass-4 keyword-fallback hits whose barcode does NOT match the
+        # searched UPC (often the same product under a different Amazon
+        # UPC/ASIN). This caller was still unpacking it as a single dict (a
+        # pre-tuple calling convention -- confirmed live 2026-09-22: crashed
+        # with AttributeError on every UPC search), while the full Analytics
+        # run's caller (services/analytics/runner.py ~line 1691) already
+        # unpacks and tags both halves correctly. Matched here to that
+        # standard: "UPC" gets full UPC credit in scoring below, "UPC-KW"
+        # does not (still barcode/UPC-string-scoped search either way -- no
+        # title/brand tier is involved, matching "only the UPC was searched").
+        tier1_matched, tier1_kw = _tier1_upc(api, [row], run_id=0)
+        for items in tier1_matched.values():
+            for it in items:
+                raw_candidates.append((it, "UPC"))
+        for items in tier1_kw.values():
+            for it in items:
+                raw_candidates.append((it, "UPC-KW"))
+
+    if itemid:
+        tier2 = _tier2_itemid(api, [row], run_id=0)
+        for items in tier2.values():
+            for it in items:
+                raw_candidates.append((it, "ItemID"))
+
+    if title:
+        tier3 = _tier3_title(api, [row], max_pages=3, run_id=0)
+        for items in tier3.values():
+            for it in items:
+                raw_candidates.append((it, "Title"))
+
+    # Deduplicate by ASIN, union sources.
+    by_asin: dict[str, tuple[dict, list[str]]] = {}
+    for item, src_label in raw_candidates:
+        asin = (item.get("asin") or "").strip().upper()
+        if not asin:
+            continue
+        if asin in by_asin:
+            prev_item, prev_srcs = by_asin[asin]
+            merged_srcs = list(dict.fromkeys(prev_srcs + [src_label]))
+            by_asin[asin] = (prev_item, merged_srcs)
+        else:
+            by_asin[asin] = (item, [src_label])
+
+    # Score each unique ASIN in-memory (mirrors _upsert_candidate logic, no DB).
+    results: list[dict] = []
+    for asin, (normalized, sources) in by_asin.items():
+        # the same matcher as a full run (the "Scoring method" picked in Quick Search)
+        scores, verdict = score_pair(source_dict, normalized, method=scoring_method, mode=mode, sources=sources)
+        conf = float(scores.get("confidence_score") or 0)
+
+        sales_rank = normalized.get("sales_rank")
+        if max_rank > 0 and sales_rank is not None and int(sales_rank) > max_rank:
+            verdict = "not_approved"
+        # min_rank excludes unranked items (null BSR) — same logic as the run filter.
+        if min_rank > 0 and (sales_rank is None or int(sales_rank) < min_rank):
+            verdict = "not_approved"
+
+        # Dimensions, storage fee, and list price all come from the SAME raw
+        # SP-API item this search already fetched (normalize_amazon_item keeps
+        # the full response as `_raw`) -- no extra API call, same approach
+        # services/analytics/eligibility_check.py already uses for a full
+        # Analytics run's storage-fee enrichment (its own docstring: "computed
+        # from the Amazon dimensions ALREADY stored ... no extra API call").
+        # Quick Search fetches the identical data but was discarding it.
+        raw_attrs = ((normalized.get("_raw") or {}).get("attributes") or {})
+        dims = extract_dimensions(raw_attrs)
+        storage_offpeak = storage_peak = None
+        if all(dims.get(k) is not None for k in ("length_cm", "width_cm", "height_cm", "weight_g")):
+            storage_offpeak, storage_peak = calc_storage_fee(
+                dims["length_cm"], dims["width_cm"], dims["height_cm"], dims["weight_g"],
+            )
+        list_price = None
+        lp_list = raw_attrs.get("list_price") or []
+        if isinstance(lp_list, list) and lp_list and isinstance(lp_list[0], dict):
+            list_price = lp_list[0].get("value")
+
+        results.append({
+            "asin":              asin,
+            "title":             normalized.get("title") or "",
+            "brand":             normalized.get("brand") or "",
+            "manufacturer":      normalized.get("manufacturer") or "",
+            "upc":               normalized.get("upc") or "",
+            "ean":               normalized.get("ean") or "",
+            "gtin":              normalized.get("gtin") or "",
+            "mpn":               normalized.get("mpn") or "",
+            "sales_rank":        sales_rank,
+            "sales_rank_category": normalized.get("sales_rank_category") or "",
+            "confidence":        round(conf, 1),
+            "verdict":           verdict,
+            "sources":           sources,
+            "scores":            scores,
+            "list_price":        list_price,
+            "length_in":         dims["length_in"],
+            "width_in":          dims["width_in"],
+            "height_in":         dims["height_in"],
+            "weight_lb":         dims["weight_lb"],
+            "storage_fee_offpeak": storage_offpeak,
+            "storage_fee_peak":    storage_peak,
+        })
+
+    # Context filter: when the user provides a brand or title, keep only
+    # candidates where ALL significant words (>2 chars) from that context
+    # appear in the Amazon brand + title.  This prevents the search from
+    # returning unrelated products that happened to carry the same MPN/UPC.
+    # Example: title="smith & nephew" → only keep listings that contain
+    # both "smith" and "nephew" somewhere in the Amazon brand or title.
+    context_text = (brand or title or "").strip().lower()
+    if context_text:
+        import re as _re
+        context_words = [w for w in _re.findall(r'\b[a-z]{3,}\b', context_text)]
+        if context_words:
+            def _context_matches(r: dict) -> bool:
+                haystack = (
+                    (r.get("brand") or "") + " " +
+                    (r.get("manufacturer") or "") + " " +
+                    (r.get("title") or "")
+                ).lower()
+                return all(w in haystack for w in context_words)
+            results = [r for r in results if _context_matches(r)]
+
+    results.sort(key=lambda x: x["confidence"], reverse=True)
+    return {"candidates": results, "total": len(results)}

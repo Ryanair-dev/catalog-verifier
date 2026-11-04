@@ -7,20 +7,82 @@ shared SP-API infrastructure (auth, rate limiter, credential loader).
 Public API:
   get_restrictions_api()  -> RestrictionsAPI  (cached singleton)
   classify(asin, raw)     -> {"asin", "status", "reasons"}
+  eligibility_cache_get/put -> opt-in 14-day eligibility cache (see below)
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
-import time
 from functools import lru_cache
+from typing import Callable
 
 import requests
 
+from services import database
+from services.cancellation import JobCancelled, cancellable_sleep
 from .spapi.auth import LWATokenManager
 from .spapi.config import load_sp_api_credentials
+from .spapi.http import thread_session
 from .spapi.rate_limiter import LIMITERS
 
 log = logging.getLogger(__name__)
+
+# --------------------------------------------------------------------------- #
+# Eligibility cache (14-day TTL since 2026-10-28, per user "lets cache it for #
+# 2 weeks"; was 7) — OPT-IN, per user request (2026-10-19):                   #
+# "cache eligibility for 1 week" in the context of the Vendor Offers export   #
+# pipeline specifically. Deliberately NOT wired into the standalone Toolbox   #
+# "Eligibility Check" tool (routers/eligibility.py), which has its own        #
+# long-standing, explicitly-confirmed design: eligibility there is ALWAYS     #
+# live, never cached, because a user specifically wanted to see it change     #
+# day-to-day as Amazon's own gating changes (see that router's own history).  #
+# This cache exists for callers that explicitly opt in by calling it          #
+# themselves (currently just services/vendor_offers_template_export.py       #
+# enrich_asins) -- classify()/get_restrictions_api() are UNCHANGED and stay   #
+# fully live for every other existing caller.                                #
+# --------------------------------------------------------------------------- #
+_ELIGIBILITY_CACHE_TTL_DAYS = 14
+
+
+def _ensure_eligibility_cache_table(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS eligibility_cache "
+                 "(asin TEXT PRIMARY KEY, status TEXT, as_of TEXT)")
+
+
+def eligibility_cache_get(asins) -> dict:
+    """{asin: status} for entries cached within the TTL. Honest tradeoff, not
+    hidden: Amazon's own gating can genuinely change within a week (confirmed
+    live in an earlier session — a brand got newly restricted between two
+    days), so a cache hit may show a slightly stale status. The user
+    explicitly chose this tradeoff for the export pipeline."""
+    cutoff = (dt.datetime.now() - dt.timedelta(days=_ELIGIBILITY_CACHE_TTL_DAYS)).isoformat()
+    out: dict = {}
+    clean = sorted({a.strip().upper() for a in asins if a})
+    if not clean:
+        return out
+    with database._connect() as conn:
+        _ensure_eligibility_cache_table(conn)
+        for i in range(0, len(clean), 400):
+            ch = clean[i:i + 400]
+            q = ",".join("?" * len(ch))
+            for asin, status in conn.execute(
+                    f"SELECT asin, status FROM eligibility_cache "
+                    f"WHERE as_of >= ? AND asin IN ({q})", [cutoff, *ch]):
+                if status:
+                    out[asin] = status
+    return out
+
+
+def eligibility_cache_put(mapping: dict) -> None:
+    if not mapping:
+        return
+    now = dt.datetime.now().isoformat()
+    with database._LOCK, database._connect() as conn:
+        _ensure_eligibility_cache_table(conn)
+        conn.executemany(
+            "INSERT INTO eligibility_cache(asin, status, as_of) VALUES(?,?,?) "
+            "ON CONFLICT(asin) DO UPDATE SET status=excluded.status, as_of=excluded.as_of",
+            [(a, s, now) for a, s in mapping.items() if s])
 
 ENDPOINT       = "https://sellingpartnerapi-na.amazon.com"
 MARKETPLACE_ID = "ATVPDKIKX0DER"   # US — overridden by creds.marketplace_id
@@ -64,9 +126,14 @@ class RestrictionsAPI:
         self,
         token_manager: LWATokenManager,
         marketplace_id: str = MARKETPLACE_ID,
+        limiters: dict | None = None,
     ):
         self.tokens = token_manager
         self.marketplace_id = marketplace_id
+        # A second store's client gets its OWN independent rate-limit buckets
+        # (see services/spapi/rate_limiter.new_limiters) so it isn't throttled
+        # together with the default store.
+        self.limiters = limiters if limiters is not None else LIMITERS
 
     def _headers(self) -> dict:
         return {
@@ -74,16 +141,19 @@ class RestrictionsAPI:
             "Content-Type": "application/json",
         }
 
-    def _get(self, path: str, params: dict, max_retries: int = 5) -> requests.Response:
+    def _get(self, path: str, params: dict, max_retries: int = 5,
+             should_cancel: Callable[[], bool] | None = None) -> requests.Response:
         operation = "getListingsRestrictions"
-        limiter = LIMITERS.get(operation)
+        limiter = self.limiters.get(operation)
 
         for attempt in range(max_retries):
+            if should_cancel and should_cancel():
+                raise JobCancelled()
             if limiter:
                 limiter.acquire()
 
             try:
-                resp = requests.get(
+                resp = thread_session().get(
                     f"{ENDPOINT}{path}",
                     headers=self._headers(),
                     params=params,
@@ -95,7 +165,7 @@ class RestrictionsAPI:
                 wait = min(30, 2 ** attempt)
                 log.warning("[net] %s on %s (attempt %d): %s. Backing off %ss.",
                             type(exc).__name__, operation, attempt + 1, str(exc)[:80], wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code == 200:
@@ -107,14 +177,14 @@ class RestrictionsAPI:
                     "[429] Throttled on %s (attempt %d). Backing off %ss.",
                     operation, attempt + 1, wait,
                 )
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code in (500, 502, 503, 504):
                 wait = min(30, 2 ** attempt)
                 log.warning("[%d] server error on %s (attempt %d). Backing off %ss.",
                             resp.status_code, operation, attempt + 1, wait)
-                time.sleep(wait)
+                cancellable_sleep(wait, should_cancel)
                 continue
 
             if resp.status_code == 403:
@@ -139,12 +209,17 @@ class RestrictionsAPI:
         asin: str,
         seller_id: str,
         condition_type: str = "new_new",
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict:
         """
         Returns the raw restrictions JSON for one ASIN.
 
         An empty `restrictions` list means the seller can list freely.
         Non-empty means restricted; check `reasons` for details.
+
+        `should_cancel`, if given, is polled during any retry backoff so a
+        caller's cancel request isn't stuck behind a stuck retry — see
+        services.cancellation.JobCancelled.
         """
         params = {
             "asin":           asin,
@@ -152,7 +227,7 @@ class RestrictionsAPI:
             "sellerId":       seller_id,
             "marketplaceIds": self.marketplace_id,
         }
-        resp = self._get("/listings/2021-08-01/restrictions", params)
+        resp = self._get("/listings/2021-08-01/restrictions", params, should_cancel=should_cancel)
         return resp.json()
 
 
@@ -284,16 +359,21 @@ def classify(asin: str, raw_response: dict) -> dict:
 
 # ── Cached singleton factory ──────────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
-def get_restrictions_api() -> RestrictionsAPI:
+@lru_cache(maxsize=4)
+def get_restrictions_api(store: str = "default") -> RestrictionsAPI:
     """
-    Build (or return a cached) RestrictionsAPI using the environment credentials.
-    Raises RuntimeError if SP-API credentials are not configured.
+    Build (or return a cached) RestrictionsAPI for the given store (seller
+    account — see services/spapi/config._STORES). Raises RuntimeError if
+    that store's SP-API credentials are not configured.
     """
-    creds = load_sp_api_credentials()
+    from .spapi.rate_limiter import new_limiters
+    creds = load_sp_api_credentials(store)
     token_mgr = LWATokenManager(
         client_id=creds.client_id,
         client_secret=creds.client_secret,
         refresh_token=creds.refresh_token,
     )
-    return RestrictionsAPI(token_mgr, creds.marketplace_id)
+    return RestrictionsAPI(
+        token_mgr, creds.marketplace_id,
+        limiters=None if store == "default" else new_limiters(),
+    )

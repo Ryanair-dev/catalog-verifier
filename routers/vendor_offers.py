@@ -5,7 +5,11 @@ GET  /api/vendor-offers/data        — the price-comparison ledger payload
 POST /api/vendor-offers/upload      — upload a vendor catalog file → merge (§5B)
 POST /api/vendor-offers/sync-asins  — pull UPC→ASIN from the existing Pair Library
 POST /api/vendor-offers/assign      — hand-assign one ASIN to a UPC
+POST /api/vendor-offers/unassign    — remove a wrong ASIN pairing (+ its Pair Library mirror)
 GET  /api/vendor-offers/status      — configured vendors + row counts
+GET  /api/vendor-offers/mailbox-sync/status — direct-from-email sync state (5 vendors, replaces db-sync)
+POST /api/vendor-offers/mailbox-sync/run    — sync now (one vendor or all 5)
+POST /api/vendor-offers/clear-stale-avail   — null out avail_qty older than N days (any vendor/source)
 """
 from __future__ import annotations
 
@@ -22,11 +26,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from services import database
+from services import graph_mail
+from services import teams_notify
 from services import vendor_offers as vo
 from services import vendor_offers_db_sync as vo_sync
+from services import vendor_offers_mailbox_sync as vo_mail_sync
 from services import vendor_offers_export as vo_export
 from services import vendor_offers_template_export as vo_tpl
 from services.spapi import reports as sp_reports
+from services import job_persistence, job_results
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -84,23 +92,73 @@ _AJOBS_LOCK = threading.Lock()
 _AJOB_TTL = 3600
 
 
+def _parse_export_emails(raw: str) -> list[str]:
+    """Same loose comma/semicolon/newline splitting + '@'/no-space validation
+    every other recipients field in this app already uses (routers/settings.py,
+    routers/po_analytics.py) — kept as its own small copy rather than importing
+    a sibling router's private helper."""
+    parts = re.split(r"[\n,;]+", raw or "")
+    cleaned = [p.strip() for p in parts if p.strip()]
+    for e in cleaned:
+        if "@" not in e or " " in e:
+            raise HTTPException(status_code=400, detail=f"'{e}' doesn't look like a valid email address.")
+    return cleaned
+
+
 def _get_ajob(job_id: str) -> dict:
+    # BUG FIXED: eviction used to measure the TTL from "started" (job creation),
+    # not from completion -- so a job that legitimately took longer than
+    # _AJOB_TTL to run (e.g. a big Offer Analytics export throttled by Keepa's
+    # token bucket, which can easily take 1-3+ hours) was already PAST the TTL
+    # the instant it finished, and got silently deleted -- blob and all -- on
+    # the very next status poll, before anyone (including the persistent
+    # "Download" banner added in static/app.js) ever got a chance to see it
+    # as complete. Now the TTL is measured from "completed_at" (set only once
+    # the job leaves "running"), so a finished job always gets a full
+    # _AJOB_TTL window to be downloaded, no matter how long it took to build.
     now = time.time()
     with _AJOBS_LOCK:
         for jid in [j for j, jb in _ANALYTICS_JOBS.items()
-                    if jb["status"] != "running" and now - jb["started"] > _AJOB_TTL]:
+                    if jb["status"] != "running" and jb.get("completed_at")
+                    and now - jb["completed_at"] > _AJOB_TTL]:
             _ANALYTICS_JOBS.pop(jid, None)
         job = _ANALYTICS_JOBS.get(job_id)
     if not job:
+        job = job_results.stub_job(job_id)        # finished earlier; file kept on disk
+    if not job:
         raise HTTPException(status_code=404, detail="Job not found (or expired).")
     return job
+
+
+def list_jobs_for_tasks_panel() -> list[dict]:
+    """Normalized snapshot for the Settings > Tasks Running tab -- see
+    routers/settings.py tasks_running()."""
+    with _AJOBS_LOCK:
+        items = list(_ANALYTICS_JOBS.items())
+    return [
+        {
+            "feature": "Vendor Offers Export",
+            "job_id": jid,
+            "status": j.get("status"),
+            "phase": j.get("phase"),
+            "done": j.get("done"),
+            "total": j.get("total"),
+            "started_at": j.get("started"),
+            "completed_at": j.get("completed_at"),
+        }
+        for jid, j in items
+    ]
 
 
 @router.post("/vendor-offers/analytics-export/start")
 async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     """Start building the Offer-Analytics (template) workbook. Body (optional):
     { upcs: [...] } restricts to the current view; { prep_fee } sets Prep & Out;
-    { live: false } skips the per-ASIN SP-API enrichment (Approved + Storage)."""
+    { live: false } skips the per-ASIN SP-API enrichment (Approved + Storage);
+    { email_to: "a@x.com, b@x.com" } emails the finished xlsx to these
+    addresses once the job completes (validated eagerly here — a typo'd
+    address 400s immediately instead of only surfacing after a possibly
+    hours-long export finishes)."""
     body = body or {}
     upcs = body.get("upcs") or None
     focus = (body.get("focus_vendor") or "").strip() or None
@@ -111,13 +169,45 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
     prep = body.get("prep_fee")
     prep = float(prep) if prep is not None else None      # None → build reads the setting
     live = bool(body.get("live", True))
-    job_id = uuid.uuid4().hex[:12]
+    email_to = _parse_export_emails(body.get("email_to") or "")
+    if email_to and not graph_mail.is_configured():
+        raise HTTPException(status_code=400,
+            detail="Email isn't configured on this server (.env OUTLOOK_*) — uncheck \"Email it when done\" or ask an admin to add it.")
+    params = {
+        "upcs": upcs, "focus_vendor": focus, "has_asin": has_asin,
+        "only_available": only_available, "apply_filters": apply_filters,
+        "populate_keepa": populate_keepa, "prep_fee": prep, "live": live,
+        "email_to": email_to,
+    }
+    job_id, filename = _launch_export(params)
+    return {"job_id": job_id, "filename": filename}
+
+
+def _launch_export(params: dict) -> tuple[str, str]:
+    """The actual job-launch logic, shared by the live POST endpoint and the
+    startup relauncher (job_persistence.resume_orphaned_jobs). `params` is the
+    exact body dict `/analytics-export/start` would have received."""
+    upcs = params.get("upcs") or None
+    focus = params.get("focus_vendor") or None
+    has_asin = bool(params.get("has_asin"))
+    only_available = bool(params.get("only_available"))
+    apply_filters = bool(params.get("apply_filters"))
+    populate_keepa = bool(params.get("populate_keepa", True))
+    prep = params.get("prep_fee")
+    prep = float(prep) if prep is not None else None
+    live = bool(params.get("live", True))
+    email_to = params.get("email_to") or []
+
+    # The relauncher passes the original id back so an open page keeps polling it.
+    job_id = params.get("_job_id") or uuid.uuid4().hex[:12]
     filename = vo_tpl.export_filename(focus)              # increment the per-vendor/day seq once
     job = {"status": "running", "phase": "pulling Amazon data", "done": 0,
            "total": 0, "blob": None, "error": None, "started": time.time(),
+           "completed_at": None, "email_to": email_to, "email_sent": False, "email_error": None,
            "phase_started": time.time(), "filename": filename, "cancel": False}
     with _AJOBS_LOCK:
         _ANALYTICS_JOBS[job_id] = job
+    job_persistence.save_job(job_id, "offer_export", {**params, "_job_id": job_id})
 
     def _progress(done: int, total: int, phase: str | None = None) -> None:
         if phase and phase != job.get("phase"):
@@ -131,15 +221,53 @@ async def analytics_export_start(body: dict = Body(default=None)) -> dict:
                 only_available=only_available, live=live, apply_filters=apply_filters,
                 populate_keepa=populate_keepa,
                 on_progress=_progress, should_cancel=lambda: job["cancel"])
+            job_results.save(job_id, "offer_export", "Vendor Offers Export", filename, job["blob"])
             job["phase"], job["status"] = "done", "complete"
+            if email_to:
+                # Email failure must never undo an already-successful export —
+                # the file is still there to download either way, this is a
+                # best-effort add-on, not the primary deliverable.
+                try:
+                    scope = f"vendor: {focus}" if focus else "the whole desk"
+                    subject = f"Offer Analytics export — {filename.rsplit('.', 1)[0]}"
+                    body_html = (
+                        f"<p>Attached is the Offer Analytics export you requested "
+                        f"(scope: <b>{scope}</b>).</p>"
+                    )
+                    graph_mail.send_mail(email_to, subject, body_html, attachments=[(filename, job["blob"])])
+                    job["email_sent"] = True
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("[analytics-export] email send failed")
+                    job["email_error"] = str(exc)[:300]
+            # Teams ping, per user request 2026-10-23 ("Teams notification on
+            # Offer/Vendor/Brand Analytics completion") -- best-effort, never
+            # undoes an already-successful export.
+            if teams_notify.is_configured():
+                try:
+                    scope = f"vendor: {focus}" if focus else "the whole desk"
+                    teams_notify.send_teams_message(
+                        f"✅ Vendor Offers export \"{filename}\" is complete ({scope})."
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("[analytics-export] Teams notification failed")
         except vo_tpl.ExportCancelled:
             job["status"], job["phase"] = "cancelled", "cancelled"
         except Exception as exc:  # noqa: BLE001
             log.exception("[analytics-export] failed")
             job["status"], job["error"] = "error", str(exc)[:400]
+        finally:
+            job["completed_at"] = time.time()
+            job_persistence.finish_job(job_id)
 
     threading.Thread(target=_run, name=f"analytics-export-{job_id}", daemon=True).start()
-    return {"job_id": job_id, "filename": filename}
+    return job_id, filename
+
+
+def _relaunch(params: dict) -> None:
+    _launch_export(params)
+
+
+job_persistence.register_relauncher("offer_export", _relaunch)
 
 
 @router.post("/vendor-offers/analytics-export/jobs/{job_id}/cancel")
@@ -171,15 +299,18 @@ async def analytics_export_status(job_id: str) -> dict:
         el = time.time() - job.get("phase_started", job["started"])   # ETA within the current phase
         eta = max(0, round(el / job["done"] * (job["total"] - job["done"])))
     return {"status": job["status"], "phase": job["phase"], "done": job["done"],
-            "total": job["total"], "eta_seconds": eta, "error": job["error"]}
+            "total": job["total"], "eta_seconds": eta, "error": job["error"],
+            "email_to": job.get("email_to") or [], "email_sent": job.get("email_sent", False),
+            "email_error": job.get("email_error")}
 
 
 @router.get("/vendor-offers/analytics-export/jobs/{job_id}/download")
 async def analytics_export_download(job_id: str) -> StreamingResponse:
     job = _get_ajob(job_id)
-    if job["status"] != "complete" or not job["blob"]:
+    blob = job["blob"] or (job_results.load_blob(job_id) if job["status"] == "complete" else None)
+    if job["status"] != "complete" or not blob:
         raise HTTPException(status_code=409, detail=f"Not ready ({job['status']}).")
-    return _xlsx_response(job["blob"], job.get("filename") or "offer_analytics.xlsx")
+    return _xlsx_response(blob, job.get("filename") or "offer_analytics.xlsx")
 
 
 @router.post("/vendor-offers/lookup-export")
@@ -228,6 +359,55 @@ async def db_sync_run(body: dict = Body(default=None)) -> dict:
     except Exception as exc:  # noqa: BLE001
         log.exception("[vendor_offers] db sync failed")
         raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
+
+
+@router.get("/vendor-offers/mailbox-sync/status")
+async def mailbox_sync_status() -> dict:
+    """30-min-sync state for the 5 vendors whose catalog emails are now read
+    directly (replaces /db-sync for them, per user request 2026-10-23 -- see
+    services/vendor_offers_mailbox_sync.py's module docstring)."""
+    return await run_in_threadpool(vo_mail_sync.scheduler_status)
+
+
+@router.post("/vendor-offers/mailbox-sync/run")
+async def mailbox_sync_run(body: dict = Body(default=None)) -> dict:
+    """Manually sync now. Body optional: {vendor: "..."} for just one vendor,
+    else all 5."""
+    body = body or {}
+    vendor = (body.get("vendor") or "").strip() or None
+    try:
+        if vendor:
+            if vendor not in vo_mail_sync.VENDOR_KEYS:
+                raise HTTPException(status_code=400, detail=(
+                    f"No mailbox parser for {vendor!r}. Known: {vo_mail_sync.VENDOR_KEYS}"))
+            result = await run_in_threadpool(vo_mail_sync.sync_vendor_from_mailbox, vendor)
+            return {"ok": True, "vendor": vendor, "result": result}
+        result = await run_in_threadpool(vo_mail_sync.sync_all_from_mailbox)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[vendor_offers] mailbox sync failed")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(exc)[:200]}")
+
+
+@router.post("/vendor-offers/clear-stale-avail")
+async def clear_stale_avail(body: dict = Body(default=None)) -> dict:
+    """Null out avail_qty for every offer (any vendor, any source) whose
+    last_seen is older than `days` (default vo.STALE_AVAIL_QTY_DAYS -- see
+    that constant's own comment for the current threshold/rationale).
+    Body optional: {days: N}."""
+    body = body or {}
+    days = body.get("days")
+    try:
+        if days is not None:
+            result = await run_in_threadpool(vo.clear_stale_available_qty, int(days))
+        else:
+            result = await run_in_threadpool(vo.clear_stale_available_qty)
+        return {"ok": True, **result}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("[vendor_offers] clear-stale-avail failed")
+        raise HTTPException(status_code=500, detail=f"Failed: {str(exc)[:200]}")
 
 
 @router.post("/vendor-offers/upload")
@@ -284,6 +464,23 @@ async def assign(body: dict = Body(...)) -> dict:
 async def assign_bulk(body: dict = Body(...)) -> dict:
     return await run_in_threadpool(
         vo.assign_bulk, body.get("text") or "", bool(body.get("dry")))
+
+
+@router.get("/vendor-offers/asins")
+async def asins_for_upc(upc: str) -> dict:
+    """Every ASIN paired to a UPC (drawer's Unpair list)."""
+    return {"upc": upc, "asins": await run_in_threadpool(vo.asins_for_upc, upc)}
+
+
+@router.post("/vendor-offers/unassign")
+async def unassign(body: dict = Body(...)) -> dict:
+    """Remove a wrong ASIN pairing from the Price Desk (and its Pair Library
+    mirror, for that UPC only) and blacklist the pair. Body: {asin, upc?} --
+    without upc, every desk UPC currently paired to the ASIN is unpaired."""
+    try:
+        return await run_in_threadpool(vo.unassign_asin, body.get("asin"), body.get("upc"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/vendor-offers/page", response_class=HTMLResponse)

@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 from openpyxl import Workbook
 
-from services.sellercloud.catalog_index import CatalogIndex, _is_shadow_sku
+from services.sellercloud.catalog_index import CatalogIndex
 
 # Reuse the Analytics engine's brand normalisation so "NIVEA MEN" ≈ "NIVEA",
 # "Parker Labs" ≈ "Parker Laboratories" — same rules everywhere.
@@ -352,6 +352,20 @@ def _main_exists(index: CatalogIndex, upc: str, mpn: str, create_by: str,
     return hits
 
 
+def _pick_main(hits: list[dict], base_main: str) -> dict:
+    """When more than one existing row matches (messy historical data can have
+    real oddball variants sitting alongside the real main -- confirmed live:
+    'TORMS407W.B2B-PARENT' next to the real 'TORMS407W', both with an empty
+    ShadowOf), prefer the one that's an EXACT match to our own naming convention
+    (prefix + identifier) over whichever happened to come first. Only matters
+    when there's a genuine choice -- a single hit is returned as-is."""
+    if len(hits) > 1 and base_main:
+        for r in hits:
+            if _s(r.get("ProductID") or r.get("ID")).upper() == base_main.upper():
+                return r
+    return hits[0]
+
+
 # Shadow/kit ProductID suffixes. Used to (a) recover a MAIN from an ASIN's existing
 # child SKU and (b) detect the ASIN's existing shadow so we REUSE it instead of
 # minting a climber (-FBA2). Handles Ford Medical (-FBA/-FBM), Turba (-FBATRB/-FBMTRB)
@@ -364,21 +378,6 @@ def _strip_to_main(pid: str) -> str:
     """Strip a shadow/kit ProductID down to its MAIN SKU.
     'SOC615559-FBA' -> 'SOC615559'; 'DOV266545_QY6-FBA2' -> 'DOV266545'."""
     return _KIT_TAG_RE.sub("", _SHADOW_SUFFIX_RE.sub("", pid or ""))
-
-
-def _main_from_asin(index: CatalogIndex, asin: str) -> str:
-    """When UPC/MPN find no main but the ASIN is already attached to a shadow/kit,
-    the main exists under another UPC/item-ID — recover it by stripping the shadow/kit
-    suffix off the ASIN's existing child SKU (ShadowOf here stores the channel, not the
-    parent, so we strip). Only returns a main that actually exists in the catalog."""
-    if not (index and asin):
-        return ""
-    for r in index.shadows_for_asin(asin):
-        pid = _s(r.get("ProductID") or r.get("ID"))
-        cand = _strip_to_main(pid)
-        if cand and not _is_shadow_sku(cand) and index.sku_exists(cand):
-            return cand
-    return ""
 
 
 def _existing_shadow(index: CatalogIndex, asin: str, suffix: str,
@@ -479,13 +478,19 @@ def derive_rows(
         base_main = f"{bi.prefix}{id_part}" if (bi.prefix and id_part) else ""
         existing = _main_exists(index, upc, mpn, create_by, brand=bi.brand or brand) if index else []
         if existing and create.get("main", True):
-            main = _s(existing[0].get("ProductID") or existing[0].get("ID"))
+            picked = _pick_main(existing, base_main)
+            main = _s(picked.get("ProductID") or picked.get("ID"))
         else:
-            # Not found by UPC/MPN. If the ASIN is already attached to a shadow/kit,
-            # the main exists under another UPC/item-ID — recover it (strip the shadow
-            # suffix) rather than minting a brand-new main. Only falls back to a new
-            # base_main when the ASIN is genuinely unknown.
-            main = _main_from_asin(index, asin) or base_main
+            # Not found by UPC/MPN -- always mint a fresh main from prefix+identifier.
+            # Deliberately does NOT try to recover a main from whatever shadow the
+            # ASIN already happens to have attached: that used to silently adopt a
+            # totally unrelated brand's main on a cross-brand MPN collision (e.g. a
+            # Torbot row inheriting an ASIN's existing Skin Tac shadow as "the main").
+            # If the ASIN's existing shadow turns out to belong to a different main
+            # than the one generated here, the reused-shadow-stem mismatch check below
+            # (fba_mismatch/fbm_mismatch) catches it and flags it for human review
+            # instead of silently trusting it.
+            main = base_main
         main = ov("main", main) or None
         # "Already on SellerCloud" reflects the FINAL main SKU string (after any hand
         # edit) — not just the UPC/MPN lookup. Reserve it so children never reuse it.
@@ -750,8 +755,35 @@ def build_files(results: list[RowResult], config: dict, tag: str = "",
     def uom(qty: int) -> str:
         return f"Pack of {qty}" if qty and qty > 1 else "Each"
 
+    def _unwrap_trailing_uom(name: str) -> tuple[str, str]:
+        """Split a ProductName into (everything before the trailing '(...)' UOM
+        parenthetical, the text INSIDE that parenthetical) --
+        'Torbot ... Wipes (Box of 50)' -> ('Torbot ... Wipes', 'Box of 50').
+        No trailing parenthetical -> (name, '')."""
+        m = re.search(r"^(.*?)\s*\(([^()]*)\)\s*$", name or "")
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
+        return (name or "").strip(), ""
+
     def product_name(r: RowResult, name_qty: int, is_main: bool = False) -> str:
         brand = r.brand_name or r.brand
+        # When the MAIN already exists on SellerCloud and we're only creating its
+        # FBA/FBM child(ren), reuse the main's own REAL title instead of re-deriving
+        # one from the vendor's data -- the vendor title can drift from whatever the
+        # main is actually published as, and the sibling SKUs should read the same.
+        # A plain (non-kit) shadow's title is IDENTICAL to the main's own, UOM and
+        # all -- e.g. main "...Wipes (Box of 50)" -> shadow "...Wipes (Box of 50)".
+        # A KIT unwraps the main's UOM parenthetical into plain text and appends its
+        # own "(Pack of N)" -- "...Wipes (Box of 50)" + QY2 -> "...Wipes Box of 50
+        # (Pack of 2)".
+        if not is_main and r.main_on_sc and r.main and index is not None:
+            existing_name = _s((index.by_sku.get(r.main.upper()) or {}).get("ProductName"))
+            if existing_name:
+                if name_qty and name_qty > 1:
+                    base, inner = _unwrap_trailing_uom(existing_name)
+                    unwrapped = f"{base} {inner}".strip() if inner else base
+                    return f"{unwrapped} ({uom(name_qty)})".strip()
+                return existing_name
         # prefer the AI-cleaned description (set on the item by the export route);
         # fall back to the raw vendor title.
         title = _s(r.item.get("clean_name")) or _s(r.item.get("name"))
