@@ -87,7 +87,7 @@ class FindAsinsTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx.MockTransport(lambda request: httpx.Response(404))
         )
         with patch.object(asin_research, "app_client", client):
-            with self.assertRaisesRegex(AppClientError, "no API endpoint"):
+            with self.assertRaisesRegex(AppClientError, "could not find the requested resource"):
                 await asin_research.find_asins(upc="012345678905")
 
 

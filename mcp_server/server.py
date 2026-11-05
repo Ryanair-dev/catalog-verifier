@@ -2,7 +2,6 @@ import logging
 import sys
 
 from mcp_server.app import mcp
-from mcp_server.tools import asin_research  # noqa: F401
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
