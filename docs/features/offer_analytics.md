@@ -98,6 +98,8 @@ When `category_mismatch=True`, `scores["category_mismatch"] = True` is stored in
 
 `_normalize_brand(brand)` + `_brands_match(src, amz)` (in `matcher.py`) treat brand strings as equal when they differ only by spacing/punctuation ("Shea Moisture"="SheaMoisture"), corporate suffix ("Cardinal Health"="Cardinal" — `_BRAND_NOISE_WORDS` strips inc/llc/ltd/corp/co/health/healthcare/medical/pharma/labs/industries/products/brands/group/holdings/international/usa/global/the/…), prefix containment (≥5 chars), or minor spelling (fuzzy ≥88 on normalized forms: "Moleskine"="Moleskin"). A `_brands_match` hit sets `brand_score=BRAND_MAX` and `brand_confirmed=True`. Plain fuzzy ≥90 also sets `brand_confirmed=True`. `brand_confirmed` is returned in the scores dict.
 
+In the matching-core scorers, an Amazon `manufacturer` matching the vendor brand is also full brand agreement (same weight as the Amazon `brand` field). If the Amazon brand differs but its MPN matches the vendor MPN, the brand difference is sent to Review instead of hard-rejecting the candidate. Other hard mismatches still reject it.
+
 #### Same-item confirmation floors (analytics)
 
 Computed in `calculate_confidence` AFTER the brand+title VERIFIED_FLOOR and BEFORE the hard-reject caps (so contradictions still override). `_size_match(src, amz, size_attr)` = positive counterpart to `_size_mismatch`: True when both sides have a parseable size (volume/weight/linear inches·cm·mm) agreeing within 10% (same per-unit/pack division as `_size_mismatch`); returned as `size_match`.
@@ -236,6 +238,8 @@ Candidate ORDER BY: `confidence DESC, row_idx, asin` — all tabs default to hig
 - **Runs-list pagination**: the "Past Analytics Runs" board paginates client-side 10/page (`state.analyticsRunsList`), separate from the per-run candidate table's own (also 10/page) pagination.
 
 ## Changelog
+
+**2026-11-09** — User reported valid PDI Offer Analysis pairs rejected because the Amazon brand label differed, despite matching MPNs. Updated matching-core scoring so Amazon's `manufacturer` field earns the full brand signal when it matches the vendor brand. A different Amazon brand no longer hard-rejects a candidate when its MPN matches; it is sent to Review, while other hard mismatches still apply. Added focused regression tests for manufacturer brand credit, matching-MPN review, and preserving brand rejection without an MPN match. Verified with the focused tests and MCP-free matcher checks. Restart the backend and rescore the affected run (or run a new one) to apply the change to previously saved results.
 
 **2026-10-26** — Teams webhook finally live: fixed the payload-shape mismatch flagged in the 2026-10-23 entry below, and `TEAMS_WEBHOOK_URL` is now configured.
 - Continuation of the 2026-10-23 webhook setup, which shipped the code but had no real URL to test against. This session walked the user live through Power Automate (Teams' classic Incoming Webhook connector is fully retired in this tenant — "Workflows" is the only option). The "When a Teams webhook request is received" / generic "When an HTTP request is received" Direct API trigger types both generated unsigned `environment.api.powerplatform.com` URLs that require OAuth (`401 DirectApiAuthorizationRequired`) — confirmed live via curl, twice, with two different workflow IDs. The **"Post to a channel when a webhook request is received"** template, however, generates a properly SAS-signed URL (`...?api-version=1&sp=...&sv=1.0&sig=...`) that posts anonymously.

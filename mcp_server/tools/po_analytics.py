@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, Literal
 
 from mcp_server.app import mcp
-from mcp_server.client import AppClientError, app_client
+from mcp_server.mcp_client import AppClientError, app_client
 
 
 @mcp.tool()

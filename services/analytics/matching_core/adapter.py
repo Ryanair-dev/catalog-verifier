@@ -18,6 +18,7 @@ from services.analytics.matching_core.matching.classifier import (
 from services.analytics.matching_core.matching.normalize import (
     candidate_part_number,
     brands_match,
+    candidate_brand_matches,
     normalize_upc,
     upc_matches,
 )
@@ -132,6 +133,7 @@ def build_export_pair(
         ),
         title=_first_value(amazon, _CANDIDATE_FIELDS["title"]) or None,
         brand=_first_value(amazon, _CANDIDATE_FIELDS["brand"]) or None,
+        manufacturer=_first_value(amazon, ("Manufacturer", "manufacturer")) or None,
         upc=_first_value(amazon, _CANDIDATE_FIELDS["upc"]) or None,
         mpn=_first_value(amazon, _CANDIDATE_FIELDS["mpn"]) or candidate_part_number(amazon) or None,
         attributes={
@@ -245,7 +247,7 @@ def score_pair(
 
 # Shown at the end of every score's explanation ("Matcher build ..."), so an export always tells which code
 # scored it.  Bump it with every scoring change.
-MATCHER_BUILD = "2026-11-03c (part no. printed in the listing title counts)"
+MATCHER_BUILD = "2026-11-09a (manufacturer brand signal and matching-MPN review)"
 
 
 @lru_cache(maxsize=512)
@@ -287,6 +289,7 @@ def build_pair(
         asin=str(normalized.get("asin") or ""),
         title=str(normalized.get("title") or ""),
         brand=str(normalized.get("brand") or normalized.get("manufacturer") or "") or None,
+        manufacturer=str(normalized.get("manufacturer") or "") or None,
         upc=str(normalized.get("upc") or normalized.get("ean") or normalized.get("gtin") or "") or None,
         mpn=candidate_part_number(normalized) or None,
         attributes={
@@ -326,6 +329,14 @@ def result_to_scores(
     signals = dict(result.signals)
     reasons = list(result.reasons)
     confidence = float(result.confidence)
+    manufacturer_match = brands_match(offer.brand, candidate.manufacturer)
+    brand_match = candidate_brand_matches(
+        offer.brand, candidate.brand, candidate.manufacturer,
+    )
+    manufacturer_factor = (
+        [f"Amazon manufacturer matches input brand: {'yes' if manufacturer_match else 'no'}"]
+        if candidate.manufacturer else []
+    )
     mismatches = [
         reason.removesuffix("_mismatch").replace("_", " ")
         for reason in reasons
@@ -364,6 +375,7 @@ def result_to_scores(
         explanation = {
             "summary": summary,
             "factors": [f"{label}: {value:.1f} points" for label, value in used]
+                       + manufacturer_factor
                        + ([f"Hard mismatch: {', '.join(mismatches)}"] if mismatches else []),
         }
     elif method == "cascade":
@@ -402,6 +414,7 @@ def result_to_scores(
             "summary": summary,
             "factors": [
                 f"Brand agreement: {'yes' if signals.get('brand') else 'no'}",
+                *manufacturer_factor,
                 f"UPC match: {'yes' if signals.get('upc') else 'no'}",
                 f"MPN match: {'yes' if signals.get('mpn') else 'no'}",
                 f"Title similarity: {signals.get('fuzzy', 0):.1f}%",
@@ -432,7 +445,8 @@ def result_to_scores(
             offer.upc and candidate.upc
             and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
         ),
-        "brand_confirmed": brands_match(offer.brand, candidate.brand),
+        "brand_confirmed": brand_match,
+        "manufacturer_confirmed": manufacturer_match,
         "effective_pack": None,
     }
     for key in (
@@ -613,4 +627,3 @@ def _score_pair_with_unstated_rule(
 
 _score_pair_scorer_only = score_pair
 score_pair = _score_pair_with_unstated_rule
-

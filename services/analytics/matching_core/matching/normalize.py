@@ -259,3 +259,34 @@ def brands_match(a: str | None, b: str | None) -> bool:
     if len(na) >= 5 and len(nb) >= 5 and (nb.startswith(na) or na.startswith(nb)):
         return True
     return fuzz.ratio(na, nb) >= 88
+
+
+def candidate_brand_matches(
+    brand: str | None,
+    candidate_brand: str | None,
+    candidate_manufacturer: str | None = None,
+) -> bool:
+    """Treat the Amazon brand or manufacturer as the candidate's brand signal."""
+    return any(
+        brands_match(brand, value)
+        for value in (candidate_brand, candidate_manufacturer)
+        if value
+    )
+
+
+def candidate_brand_similarity(
+    brand: str | None,
+    candidate_brand: str | None,
+    candidate_manufacturer: str | None = None,
+) -> float:
+    """Best raw-string similarity across the Amazon brand and manufacturer fields."""
+    if not brand:
+        return 0.0
+    return max(
+        (
+            fuzz.ratio(str(brand).lower(), str(value).lower())
+            for value in (candidate_brand, candidate_manufacturer)
+            if value
+        ),
+        default=0.0,
+    )

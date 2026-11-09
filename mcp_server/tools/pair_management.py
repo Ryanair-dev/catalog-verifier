@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from mcp_server.app import mcp
-from mcp_server.client import AppClientError, app_client
+from mcp_server.mcp_client import AppClientError, app_client
 
 async def _library_search(query: str) -> list[dict[str, Any]]:
     response = await app_client.post("/api/pairs/library/search", {"query": query})

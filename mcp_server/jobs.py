@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Literal
 
-from mcp_server.client import AppClientError, app_client
+from mcp_server.mcp_client import AppClientError, app_client
 
 JobKind = Literal[
     "eligibility", "storage", "generic", "brand_check",

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_server.app import mcp
-from mcp_server.client import AppClientError, app_client
+from mcp_server.mcp_client import AppClientError, app_client
 
 _FIELDS = {
     "ignore", "asin", "upc", "mpn", "name", "amzpack", "brand", "purchaser", "sourcer",

@@ -28,7 +28,7 @@ from services.analytics.matching_core.matching.attribute_compare import (
 )
 from services.analytics.matching_core.matching.normalize import (
     base_mpn,
-    brands_match,
+    candidate_brand_matches,
     mpns_match,
     normalize_upc,
     part_number_in_text,
@@ -78,7 +78,7 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
     n_match, n_mismatch, n_known = summarize(attrs)
     fuzzy = _fuzzy(offer, cand)
 
-    brand_ok = bool(offer.brand and cand.brand and brands_match(offer.brand, cand.brand))
+    brand_ok = candidate_brand_matches(offer.brand, cand.brand, cand.manufacturer)
     upc_ok = bool(offer.upc and cand.upc
                   and upc_matches(normalize_upc(offer.upc), normalize_upc(cand.upc)))
     mpn_ok = bool(offer.mpn and ((cand.mpn and mpns_match(offer.mpn, cand.mpn))

@@ -34,6 +34,7 @@ class Candidate(BaseModel):
     asin: str
     title: str | None = None
     brand: str | None = None
+    manufacturer: str | None = None
     upc: str | None = None
     mpn: str | None = None
     attributes: dict[str, list[str]] = Field(default_factory=dict)  # multi-value

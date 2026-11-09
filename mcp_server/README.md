@@ -3,8 +3,7 @@
 The MCP server exposes Catalog Verifier tools to Claude Code over stdio. The
 Catalog Verifier app must also be running. MCP calls its local HTTP API, and
 reads saved Offer Analysis history directly from the app database in read-only
-mode. Tools that start jobs, submit feedback, or save files require explicit
-`confirm=true`.
+mode. 
 
 Available tools:
 
@@ -61,6 +60,17 @@ Available tools:
   Supported kinds include ASIN checks, brand-gating checks, Seller Analytics,
   and PO Analytics.
 
+Ready-made prompts are also available in MCP clients that support prompts:
+
+- `Research Amazon ASINs`: search from a UPC, item ID, or description and,
+  when possible, check saved Catalog Verifier pair/history data too.
+- `Check ASINs`: start the selected eligibility, storage-fee, and/or generic
+  checks, then guide Claude to report job status and results.
+
+Prompts guide Claude to use the tools above; they do not add or copy app
+business logic. Prompt display depends on the MCP client. Users can still ask
+Claude a question without selecting a prompt.
+
 `explain_pair` returns the scorer explanation already saved for a candidate;
 it does not call the candidate-detail endpoint or recalculate the verdict.
 `pile_summary` is not exposed. The read-only history tools use the database
@@ -83,25 +93,6 @@ configured upload-size limit. For
 
 `header_row` and mapped column indexes are zero-based. `report_match.row` is a
 one-based catalog data-row number, matching the Offer Analysis results table.
-
-## Install
-
-From the repository root, install the project's normal dependencies, including
-the MCP SDK:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-If the virtual environment has not been created yet:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-Keep using `requirements.txt` and pip for this project; the MCP SDK is listed
-there alongside the app's pinned dependencies.
 
 ## Run with Claude Code
 
@@ -134,63 +125,3 @@ repository's `.env`. `CV_API_BASE` defaults to `http://localhost:8000`. If
 app. `CATALOG_VERIFIER_DB_PATH` is optional and only changes where the
 read-only history tools look for the SQLite database.
 
-## Unit tests
-
-The MCP tests mock the HTTP API and use temporary SQLite databases for saved
-history tests; they do not require the app or SP-API access:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests\mcp -v
-```
-
-## Changelog
-
-**2026-11-06** — Removed MCP-side business decisions and stopped relying on
-app endpoints added only to support MCP behavior. Product lookup now calls the
-existing Pair Library and blacklist searches; cheapest-offer lookup reads the
-existing Price Desk lookup workbook; PO reports use the app's active/archive
-endpoints. Pair writes remain unavailable because the existing API has no
-audited single-pair preview/write flow. Brand discovery requires confirmation
-before calling the existing discovery endpoint, which does not provide a
-pre-run cost estimate; users choose the terms before run creation. Verified
-with mocked MCP tests. Restart the MCP server to load the updated tools.
-
-**2026-11-05** — Added read-only access to saved Offer Analysis history for
-`lookup_product`, including UPC, ASIN, and item ID searches, and added
-`explain_pair` to return the saved scorer output without using the app's
-mutating candidate-detail endpoint or recalculating a verdict. The database is
-opened with SQLite read-only and query-only settings; no app code or schema was
-changed. Verified with scratch-database tests, including checks that reads do
-not change the database. Restart the MCP server to load the tools.
-
-**2026-11-05** — Added Parts 4–9: Pair Library search and audited,
-confirmation-gated pair/unpair; Brand Analytics run listing/detail and
-cost-previewed search; Seller Analytics; local-file Create SKUs; PO watchlist,
-analysis and P&L; and Vendor Offers cheapest-offer/export. Long Seller and PO
-exports are polled/downloaded through `job_status`. Domain operations
-(normalization, pair previews, cheapest-offer selection, brand workflow, PO
-parsing and P&L bucket aggregation) run in the Catalog Verifier app API;
-MCP gates confirmation, transports requests, and saves client-side files.
-Verified with the MCP mocked unit suite; restart the MCP server to load the
-tools and the app to create the audit table/register its new endpoints.
-
-**2026-11-04** — Added Offer Analysis matching tools: `list_runs`,
-`run_status`, `estimate_run`, `start_run`, `export_run`, and `report_match`.
-Local file uploads are validated and sent only to the running app's HTTP API;
-starting a run, saving an export, and submitting feedback require
-`confirm=true`. `pile_summary` and `explain_pair` remain omitted because the
-existing detail endpoint can repair legacy verdicts on read. Verified with
-mocked HTTP/MCP tests, including multipart uploads and confirmation gates.
-Restart the MCP server to load the new tools; the app routes and UI did not
-change.
-
-**2026-11-04** — Added the remaining Part 1 and Part 2 research/check tools:
-`lookup_product`, `mpn_lookup`, `check_asins`, `check_brand`, and shared
-`job_status`. Lookup reports Pair Library, blacklist, and Price Desk data;
-Offer Analysis run history is deliberately omitted because the available
-read endpoint can repair legacy saved verdicts. MPN AI web search requires
-`confirm=true` after showing a variable-cost warning. Completed ASIN check
-jobs save their CSV export locally. Verified with mocked unit tests for the
-tool result shapes, limits, confirmation behavior, job polling, and file
-download. Restart the MCP server to load the new tools; the app routes and UI
-did not change.

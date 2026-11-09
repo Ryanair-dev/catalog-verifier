@@ -7,14 +7,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from rapidfuzz import fuzz
-
 from services.analytics.matching_core.matching.attr_extract import extract_amazon, extract_vendor
 from services.analytics.matching_core.matching.flags import category_check_enabled
 from services.analytics.matching_core.matching.product_line import index_for
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, variant_boxes_for
-from services.analytics.matching_core.matching.normalize import (brands_match, candidate_part_number, mpns_match,
-                                                                 normalize_upc, part_number_in_text, upc_matches)
+from services.analytics.matching_core.matching.normalize import (
+    candidate_brand_matches,
+    candidate_brand_similarity,
+    candidate_part_number,
+    mpns_match,
+    normalize_upc,
+    part_number_in_text,
+    upc_matches,
+)
 from services.analytics.matching_core.matching.variation import compare_boxes
 from services.analytics.matching_core.models import MatchResult, Verdict
 
@@ -36,6 +41,7 @@ _LABELS = {
     "product_line_mismatch": "the product line differs",
     "product_line_unsure": "the product line may differ (descriptive words differ)",
     "brand_differs_upc_ok": "brand differs although the UPC matches",
+    "brand_differs_mpn_ok": "brand differs although the MPN matches",
     "size_partial": "clothing size only partly the same (like S vs XS/S)",
 }
 
@@ -70,15 +76,20 @@ def category_gap(vendor_category: Any, amazon_category: Any) -> float | None:
 _VARIANT_BOXES = ("color", "size", "flavor", "scent")
 
 
-def _brand_conflict(vendor_brand: Any, amazon_brand: Any) -> bool:
+def _brand_conflict(
+    vendor_brand: Any,
+    amazon_brand: Any,
+    amazon_manufacturer: Any = None,
+) -> bool:
     """True only when BOTH sides state a brand and they are clearly different brands.
-    A missing brand is not a conflict (same rule as the weighted scorer)."""
-    if not vendor_brand or not amazon_brand:
+    A match in either Amazon identity field counts as agreement."""
+    if not vendor_brand or not (amazon_brand or amazon_manufacturer):
         return False
-    a, b = str(vendor_brand), str(amazon_brand)
-    if brands_match(a, b):
+    if candidate_brand_matches(vendor_brand, amazon_brand, amazon_manufacturer):
         return False
-    return fuzz.ratio(a.lower(), b.lower()) < BRAND_DISAGREE_BELOW
+    return candidate_brand_similarity(
+        vendor_brand, amazon_brand, amazon_manufacturer,
+    ) < BRAND_DISAGREE_BELOW
 
 
 def _rests_on_ai(reason: str, vendor: dict[str, dict], amazon: dict[str, dict]) -> bool:
@@ -91,7 +102,8 @@ def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
                     barcode_confirmed: bool = False, brand_conflict: bool = False,
                     categories: dict[str, str] | None = None,
                     line_conflict: str | None = None, line_strong: bool = True,
-                    variant_confirmed: bool | None = None) -> dict[str, Any]:
+                    variant_confirmed: bool | None = None,
+                    mpn_confirmed: bool = False) -> dict[str, Any]:
     """variant_confirmed: the exact variant is proven (a matching UPC, or a part number that only one row of the
     vendor file has); then "the listing states X, the vendor row does not" is no reason to hold the pair back."""
     if variant_confirmed is None:
@@ -106,9 +118,12 @@ def gate_from_boxes(vendor: dict[str, dict], amazon: dict[str, dict],
     soft: list[str] = []
     open_boxes: list[str] = []
     if brand_conflict:
-        # a different brand is a hard "no"; with a confirmed UPC it is "needs a person" instead
-        (soft if barcode_confirmed else hard).append(
-            "brand_differs_upc_ok" if barcode_confirmed else "brand_mismatch")
+        if barcode_confirmed:
+            soft.append("brand_differs_upc_ok")
+        elif mpn_confirmed:
+            soft.append("brand_differs_mpn_ok")
+        else:
+            hard.append("brand_mismatch")
     if line_conflict and not barcode_confirmed:
         # a different product LINE ("Sport" vs "Run", "Crew" vs "Mini-Crew"): see product_line.py.
         # Only a line NAME rejects; when only descriptive words differ it is a question for a person.
@@ -163,7 +178,8 @@ def gate_for_pair(source: dict, normalized: dict, extracted: dict | None,
         v, a = extract_vendor(source, extracted), extract_amazon(normalized)
         conflict = _brand_conflict(
             source.get("brand") or (extracted or {}).get("brand"),
-            normalized.get("brand") or normalized.get("manufacturer"),
+            normalized.get("brand"),
+            normalized.get("manufacturer"),
         )
         categories = {"vendor": v["identity"].get("category"), "amazon": a["identity"].get("category")}
         line, strong = None, True
@@ -178,7 +194,7 @@ def gate_for_pair(source: dict, normalized: dict, extracted: dict | None,
                                         normalized.get("title"))
         variant_ok = barcode_confirmed or (part_number_ok and part_number_pins_variant(source, normalized))
         return gate_from_boxes(v["fields"], a["fields"], barcode_confirmed, conflict, categories, line, strong,
-                               variant_confirmed=variant_ok)
+                               variant_confirmed=variant_ok, mpn_confirmed=part_number_ok)
     except Exception:  # noqa: BLE001 - a failure here must never break a run
         return None
 
@@ -219,8 +235,15 @@ def gate_for_models(offer, candidate) -> dict[str, Any] | None:
         index = None if (confirmed or part_number_ok) else index_for("eval")
         if index:
             line, strong = index.assess(offer.title or offer.raw_text, offer.brand, candidate.title)
-        return gate_from_boxes(v["fields"], a["fields"], confirmed,
-                               _brand_conflict(offer.brand, candidate.brand), categories, line, strong)
+        return gate_from_boxes(
+            v["fields"], a["fields"], confirmed,
+            _brand_conflict(offer.brand, candidate.brand, candidate.manufacturer),
+            categories, line, strong,
+            mpn_confirmed=(
+                mpns_match(offer.mpn, candidate.mpn)
+                or part_number_in_text(offer.mpn, candidate.title)
+            ),
+        )
     except Exception:  # noqa: BLE001
         return None
 
@@ -242,6 +265,13 @@ def apply_gate(result: MatchResult, gate: dict[str, Any] | None) -> MatchResult:
     if gate["hard"]:
         return _copy(result, confidence=min(float(result.confidence), MISMATCH_CAP),
                      verdict=Verdict.REJECTED, reasons=reasons)
+    if "brand_differs_mpn_ok" in gate["soft"]:
+        return _copy(
+            result,
+            confidence=min(max(float(result.confidence), 35.0), SOFT_CAP),
+            verdict=Verdict.REVIEW,
+            reasons=reasons,
+        )
     if result.verdict is Verdict.VERIFIED:
         return _copy(result, confidence=min(float(result.confidence), SOFT_CAP),
                      verdict=Verdict.REVIEW, reasons=reasons)

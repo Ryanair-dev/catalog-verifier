@@ -1,6 +1,5 @@
 import logging
 import sys
-
 from mcp_server.app import mcp
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)

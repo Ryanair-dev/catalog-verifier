@@ -7,8 +7,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from rapidfuzz import fuzz
-
 from services.analytics.matching_core.matching.attributes import (
     apparel_size_mismatch,
     linear_size_mismatch,
@@ -18,7 +16,10 @@ from services.analytics.matching_core.matching.normalize import (
     base_mpn,
     mpns_match,
     brands_match,
+    candidate_brand_matches,
+    candidate_brand_similarity,
     normalize_upc,
+    part_number_in_text,
     title_similarity,
     upc_matches,
 )
@@ -42,13 +43,22 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
         offer.mpn and candidate.mpn
         and mpns_match(offer.mpn, candidate.mpn)
     )
-    brand_agrees = bool(
-        offer.brand and candidate.brand and brands_match(offer.brand, candidate.brand)
+    brand_agrees = candidate_brand_matches(
+        offer.brand, candidate.brand, candidate.manufacturer,
     )
     brand_disagrees = bool(
-        offer.brand and candidate.brand
-        and not brands_match(offer.brand, candidate.brand)
-        and fuzz.ratio(offer.brand.lower(), candidate.brand.lower()) < 70
+        offer.brand and (candidate.brand or candidate.manufacturer)
+        and not brand_agrees
+        and not (
+            offer.mpn
+            and (
+                mpns_match(offer.mpn, candidate.mpn)
+                or part_number_in_text(offer.mpn, candidate.title)
+            )
+        )
+        and candidate_brand_similarity(
+            offer.brand, candidate.brand, candidate.manufacturer,
+        ) < 70
     )
 
     source_title = offer.title or offer.raw_text or ""
@@ -138,6 +148,11 @@ def explain(offer: Offer, candidate: Candidate) -> dict[str, Any]:
         "Apparel-size mismatch: " + ("yes" if features["apparel_mismatch"] else "no"),
         "Linear-dimension mismatch: " + ("yes" if features["linear_mismatch"] else "no"),
     ]
+    if candidate.manufacturer:
+        input_factors.append(
+            "Amazon manufacturer matches input brand: "
+            + ("yes" if brands_match(offer.brand, candidate.manufacturer) else "no")
+        )
 
     importances = getattr(classifier, "feature_importances_", None)
     global_importance = []

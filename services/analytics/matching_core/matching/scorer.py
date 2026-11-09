@@ -2,7 +2,6 @@
 """
 from __future__ import annotations
 
-from rapidfuzz import fuzz
 import re
 
 from services.analytics.matching_core.matching.attributes import (
@@ -12,7 +11,8 @@ from services.analytics.matching_core.matching.attributes import (
 )
 from services.analytics.matching_core.matching.normalize import (
     base_mpn,
-    brands_match,
+    candidate_brand_matches,
+    candidate_brand_similarity,
     mpns_match,
     normalize_upc,
     part_number_in_text,
@@ -47,22 +47,32 @@ def _barcode(value: str | None) -> str | None:
     return s if _BARCODE_RE.match(s) else None
 
 def _brand_score(offer: Offer, cand: Candidate) -> float:
-    if not offer.brand or not cand.brand:
+    if not offer.brand or not (cand.brand or cand.manufacturer):
         return 0.0
-    if brands_match(offer.brand, cand.brand):
+    if candidate_brand_matches(offer.brand, cand.brand, cand.manufacturer):
         return BRAND_MAX
-    ratio = fuzz.ratio(offer.brand.lower(), cand.brand.lower())
+    ratio = candidate_brand_similarity(offer.brand, cand.brand, cand.manufacturer)
     return (ratio / 100.0) * BRAND_MAX if ratio >= BRAND_DISAGREE_BELOW else 0.0
 
 
 def _brand_disagrees(offer: Offer, cand: Candidate) -> bool:
     """True only when both sides state a brand and they're clearly different.
     Absence of a brand is not disagreement."""
-    if not offer.brand or not cand.brand:
+    if not offer.brand or not (cand.brand or cand.manufacturer):
         return False
-    if brands_match(offer.brand, cand.brand):
+    if (
+        offer.mpn
+        and (
+            mpns_match(offer.mpn, cand.mpn)
+            or part_number_in_text(offer.mpn, cand.title)
+        )
+    ):
         return False
-    return fuzz.ratio(offer.brand.lower(), cand.brand.lower()) < BRAND_DISAGREE_BELOW
+    if candidate_brand_matches(offer.brand, cand.brand, cand.manufacturer):
+        return False
+    return candidate_brand_similarity(
+        offer.brand, cand.brand, cand.manufacturer,
+    ) < BRAND_DISAGREE_BELOW
 
 
 def _hard_mismatch(offer: Offer, cand: Candidate) -> tuple[bool, list[str]]:
@@ -87,7 +97,7 @@ def _strengths(offer: Offer, cand: Candidate, upc_hit: bool) -> dict[str, float]
     in_title = bool(offer.mpn) and part_number_in_text(offer.mpn, cand.title)
     if offer.mpn and (cand.mpn or in_title):
         s["mpn"] = 1.0 if (in_title or mpns_match(offer.mpn, cand.mpn)) else 0.0
-    if offer.brand and cand.brand:
+    if offer.brand and (cand.brand or cand.manufacturer):
         s["brand"] = _brand_score(offer, cand) / BRAND_MAX
     src, amz = offer.title or offer.raw_text or "", cand.title or ""
     if src and amz:

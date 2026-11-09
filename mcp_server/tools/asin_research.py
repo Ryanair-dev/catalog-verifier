@@ -7,7 +7,7 @@ import time
 from typing import Any, Literal
 
 from mcp_server.app import mcp
-from mcp_server.client import AppClientError, app_client
+from mcp_server.mcp_client import AppClientError, app_client
 from mcp_server.format_results import format_quick_search_result
 from mcp_server.history_db import search_saved_matches
 
