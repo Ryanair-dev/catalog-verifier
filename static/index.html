@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=19" />
+  <link rel="stylesheet" href="/static/styles.css?v=20" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/create_po.css?v=10" />
 </head>
@@ -944,7 +944,7 @@
                 <div class="flex items-center gap-3 flex-1">
                   <div class="search-wrap" style="max-width: 260px; flex: 1;">
                     <svg class="si" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <input id="analytics-run-search" type="text" class="input text-sm w-full" placeholder="Search title, brand, ASIN, UPC…" />
+                    <input id="analytics-run-search" type="text" class="input text-sm w-full" placeholder="Search title, keyword, brand, ASIN, UPC…" />
                   </div>
                   <div class="flex items-center gap-2" style="flex-shrink:0; border-left:1px solid #e2e8f0; padding-left:10px;">
                     <span class="text-xs" style="color:#64748b; white-space:nowrap;">BSR</span>
@@ -973,8 +973,9 @@
                       <th class="sortable" data-sort-key="row_idx">Row <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="upc">Source UPC / Item ID <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="title">Vendor Title <span class="sort-caret"></span></th>
+                      <th class="analytics-keyword-column analytics-keyword-spec-column">Search Keyword + Spec</th>
                       <th class="sortable" data-sort-key="asin">ASIN <span class="sort-caret"></span></th>
-                      <th class="sortable" data-sort-key="amz_title">Amazon Title <span class="sort-caret"></span></th>
+                      <th class="sortable" data-sort-key="amz_title">Amazon Item Name <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="brand">Brand <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="sources">Sources <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="amz_pack">AMZ Pack <span class="sort-caret"></span></th>
@@ -3070,7 +3071,11 @@
             <div class="flex flex-wrap gap-x-8 gap-y-3 mt-2">
               <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
                 <input type="checkbox" id="awiz-title-ai-clean" style="margin-top:2px;" />
-                <span><b>AI reads vendor titles</b> <span id="awiz-ai-cost-hint" style="display:none; margin-left:4px; padding:1px 6px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span><br />Pulls brand, size and model out of every vendor title. Used for scoring on <b>all</b> searches; with Title search on, it also builds the search words. Uses Claude Haiku, or OpenAI GPT-4o-mini when there is no Anthropic key.</span>
+                <span><b>Generate vendor search keywords</b> <span id="awiz-ai-cost-hint" style="display:none; margin-left:4px; padding:1px 6px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span><br />Creates <b>Search Keyword</b> and <b>Search Keyword + Spec</b>, expands product wording, and extracts brand, size and model. Uses the first for Title search and the second for matching on all searches. Both appear in results and exports. Uses Claude Haiku, or OpenAI GPT-4o-mini when there is no Anthropic key.</span>
+              </label>
+              <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
+                <input type="checkbox" id="awiz-amazon-title-cleaner" style="margin-top:2px;" />
+                <span><b>Extract item names from Amazon titles</b><br />Removes marketing and listing clutter, keeping the brand, product type, and key identifying details. The extracted name appears beside the original in results and exports; uses Claude.</span>
               </label>
               <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
                 <input type="checkbox" id="awiz-ai-reader" style="margin-top:2px;" />
@@ -3105,7 +3110,7 @@
   <div id="panel-overlay"></div>
 
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=72"></script>
+  <script src="/static/app.js?v=78"></script>
   <script src="/static/families.js?v=9"></script>
   <script src="/static/create_po.js?v=27"></script>
 </body>

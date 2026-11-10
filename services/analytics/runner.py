@@ -30,7 +30,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
-from datetime import datetime
 from typing import Any, Iterable
 
 from services import database
@@ -38,8 +37,8 @@ from services.analytics.matching_core.adapter import build_pair, score_pair
 from services.analytics.matching_core.models import MatchResult, Verdict
 from services.analytics.parser import SourceRow
 from services.analytics.matching_core.matching.normalize import normalize_text
-from services.analytics.brand_extractor import extract_brands
-from services.spapi import get_catalog_api, get_multi_store_catalog_api, sp_api_configured
+from services.analytics.brand_extractor import enabled as brand_extractor_enabled, extract_brands
+from services.spapi import get_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
 
 log = logging.getLogger(__name__)
@@ -481,7 +480,9 @@ def _upsert_candidate(
         return "skip"
 
     # Save all fetched ASIN data to the global cache (strips _raw to save space).
-    database.save_asin_to_cache(asin, normalized)
+    cache_data = dict(normalized)
+    cache_data.pop("matching_title", None)
+    database.save_asin_to_cache(asin, cache_data)
 
     scores, verdict = score_pair(
         source, normalized, method=scoring_method, mode=mode,
@@ -691,6 +692,8 @@ def _audit_run_approvals(
             candidate_data = json.loads(row["data_json"] or "{}")
             scores = candidate_data.get("scores") or {}
             if scores.get("scorer_verdict") != "verified":
+                continue
+            if scores.get("mpn_brand_match"):
                 continue
             if (candidate_data.get("verification_audit") or {}).get("audited"):
                 continue
@@ -1190,9 +1193,12 @@ def _tier3_title(
     for r in rows:
         ext = extracted_brands.get(r.row_idx) or {}
         brand = ext.get("brand") or r.brand or ""
+        keyword = str(ext.get("search_keyword") or "").strip()
         cleaned = _clean_search_query(r.search_term)
 
-        if cleaned:
+        if keyword:
+            term = keyword
+        elif cleaned:
             # brand + cleaned title (don't duplicate the brand if the title
             # already leads with it).
             if brand and brand.lower() not in cleaned.lower():
@@ -1505,7 +1511,7 @@ def _rescore_pipeline(
                 continue  # skip adding to cand_batch
  
             audit = cand_data.get("verification_audit") or {}
-            if audit.get("flagged") and verdict != "not_approved":
+            if audit.get("flagged") and not scores.get("mpn_brand_match") and verdict != "not_approved":
                 verdict = "review"
                 conf = min(conf, 70.0)
                 scores["llm_verifier_flagged"] = True
@@ -1617,6 +1623,7 @@ def start_analytics_run(
     use_query_agent: bool = False,
     use_llm_verifier: bool = False,
     use_ai_reader: bool = False,
+    clean_amazon_titles: bool = False,
 ) -> int:
     """
     Create an analytics_runs row, persist source rows, and kick off a
@@ -1644,6 +1651,10 @@ def start_analytics_run(
     _save_catalog_rows(run_id, source_rows)
     with database._LOCK, database._connect() as conn:                # the AI title reader is a run option
         conn.execute("UPDATE analytics_runs SET use_ai_reader=? WHERE id=?", (int(bool(use_ai_reader)), run_id))
+        conn.execute(
+            "UPDATE analytics_runs SET clean_amazon_titles=? WHERE id=?",
+            (int(bool(clean_amazon_titles)), run_id),
+        )
         conn.commit()
 
     # Run in a daemon thread so uvicorn shuts down cleanly. This is
@@ -1653,7 +1664,8 @@ def start_analytics_run(
         target=_run_pipeline,
         args=(run_id, marketplace, search_methods, pages_per_title,
               ai_clean_titles, source_rows, False, max_rank, min_rank, mode,
-              scoring_method, use_query_agent, use_llm_verifier, bool(use_ai_reader)),
+              scoring_method, use_query_agent, use_llm_verifier, bool(use_ai_reader),
+              bool(clean_amazon_titles)),
         daemon=True,
     )
     thread.start()
@@ -1712,6 +1724,7 @@ def resume_run(run_id: int) -> bool:
     use_query_agent = bool(run_d.get("use_query_agent"))
     use_llm_verifier = bool(run_d.get("use_llm_verifier"))
     use_ai_reader = bool(run_d.get("use_ai_reader"))
+    clean_amazon_titles = bool(run_d.get("clean_amazon_titles"))
  
     clear_control(run_id)
     _update_progress(run_id, status="Searching", phase="Resuming…")
@@ -1726,7 +1739,8 @@ def resume_run(run_id: int) -> bool:
               source_rows,
               True,       # is_resume=True
               max_rank, min_rank, run_mode, scoring_method,
-              use_query_agent, use_llm_verifier, use_ai_reader),
+              use_query_agent, use_llm_verifier, use_ai_reader,
+              clean_amazon_titles),
         daemon=True,
     )
     thread.start()
@@ -2024,6 +2038,7 @@ def _run_pipeline(
     use_query_agent: bool = False,
     use_llm_verifier: bool = False,
     use_ai_reader: bool = False,
+    clean_amazon_titles: bool = False,
 ) -> None:
     """Do the work. All errors are caught and recorded on the run row.
     is_resume: the run was paused / stopped before; search tiers that already finished are skipped (they are
@@ -2047,6 +2062,7 @@ def _run_pipeline(
         # Claude steps the user ticked: check once that Claude answers at all.  If it cannot (no credits, usage
         # limit, bad key, not reachable) the run page says so at once and those steps are skipped for this run.
         claude_steps = [name for on, name in ((use_ai_reader, "AI title reader"),
+                                              (clean_amazon_titles, "Amazon title cleanup"),
                                               (use_query_agent, "LLM query fallback"),
                                               (use_llm_verifier, "LLM approval verifier")) if on]
         if claude_steps:
@@ -2060,21 +2076,76 @@ def _run_pipeline(
                 log.warning("Run %s: Claude check failed (%s): %s", run_id, kind, problem[:300])
                 if not passing:
                     use_ai_reader = use_query_agent = use_llm_verifier = False
+                    clean_amazon_titles = False
                     _update_progress(run_id, phase=f"Claude: {kind} — continuing without the Claude steps")
 
-        # Round-robins UPC/ItemID/Title search across every configured SP-API
-        # store (Priority Pharmacy + Turba, when both are set up) — same
-        # public catalog data either way, just drawing from two independent
-        # per-store rate-limit buckets instead of one, so a long search run
-        # gets roughly double the sustained throughput. Falls back to a
-        # single store automatically when only one is configured.
-        api = get_multi_store_catalog_api(marketplace)
+        if ai_clean_titles and not brand_extractor_enabled():
+            _add_ai_notice(
+                run_id,
+                "Vendor keyword generation",
+                "missing_api_key",
+                "Anthropic or OpenAI",
+                detail="Set ANTHROPIC_API_KEY or OPENAI_API_KEY to generate vendor keywords.",
+                skipped=True,
+            )
+
+        api = get_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)
  
         # a resumed run starts from the candidates it already stored
         candidates_by_row: dict[int, list[tuple[dict, str]]] = _load_saved_candidates(run_id) if is_resume else {}
+        attempted_amazon_titles = {
+            (item.get("title") or "").strip()
+            for items in candidates_by_row.values()
+            for item, _ in items
+            if item.get("matching_title")
+        }
+
+        def _clean_candidate_titles() -> None:
+            if not clean_amazon_titles:
+                return
+            titles = list(dict.fromkeys(
+                (item.get("title") or "").strip()
+                for items in candidates_by_row.values()
+                for item, _ in items
+                if (item.get("title") or "").strip()
+                and not item.get("matching_title")
+                and (item.get("title") or "").strip() not in attempted_amazon_titles
+            ))
+            if not titles:
+                return
+            attempted_amazon_titles.update(titles)
+            _update_progress(run_id, phase=f"Cleaning Amazon titles (0/{len(titles)})")
+            try:
+                from services.analytics.amazon_title_cleaner import (
+                    clean_amazon_titles as clean_titles,
+                )
+
+                def _clean_progress(done: int, total_titles: int) -> None:
+                    _update_progress(
+                        run_id,
+                        phase=f"Cleaning Amazon titles ({done}/{total_titles})",
+                    )
+
+                with _ai_step(run_id, "Amazon title cleanup"):
+                    cleaned = clean_titles(
+                        titles,
+                        progress_cb=_clean_progress,
+                        run_id=run_id,
+                    )
+                for items in candidates_by_row.values():
+                    for item, _ in items:
+                        title = (item.get("title") or "").strip()
+                        if title in cleaned:
+                            item["matching_title"] = cleaned[title]
+            except Exception as exc:
+                log.exception(
+                    "Amazon-title cleanup failed for run %s; using original titles",
+                    run_id,
+                )
+                _note_step_crash(run_id, "Amazon title cleanup", exc)
  
         # ------------------------------------------------------------------ #
         # Helper: check for pause/stop after each major step
@@ -2117,8 +2188,8 @@ def _run_pipeline(
         # Extracts brand / product_type / model / size / pack_info from vendor
         # titles. Used to build better Tier 3 search queries and improve scorer
         # brand matching.  Stored in DB so rescore can reuse without re-calling.
-        rows_with_ai_fields: set[int] = set()       # rows the AI extraction found fields for (decided per row)
-        if ai_clean_titles and (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
+        ai_extracted: dict[int, dict] = {}
+        if ai_clean_titles and brand_extractor_enabled():
             _update_progress(run_id, phase="Extracting product fields with AI…")
  
             def _extraction_progress(done: int, total_ext: int) -> None:
@@ -2133,34 +2204,28 @@ def _run_pipeline(
                 ai_extracted = extract_brands(
                     original_source_rows, run_id, progress_cb=_extraction_progress,
                 )
-            rows_with_ai_fields = {
-                row_idx for row_idx, fields in ai_extracted.items()
-                if any(fields.get(key) for key in ("brand", "product_type", "model", "size", "pack_info"))
-            }
-            for row_idx, fields in ai_extracted.items():
-                extracted_brands.setdefault(row_idx, {}).update(fields)
+                for row_idx, fields in ai_extracted.items():
+                    extracted_brands.setdefault(row_idx, {}).update(fields)
             _save_extracted_brands(run_id, extracted_brands)
             if _handle_control():
                 return
  
         # --- AI title cleaning (before Tier 3, if enabled) ------------------
         cleaned_titles: dict[int, str] = {}
-        # Rows the AI extraction found nothing for get the simpler title cleaning instead (per row: before, one
-        # row with fields switched the cleaning off for every row).  Only the title search uses cleaned titles.
-        rows_to_clean = [r for r in source_rows if r.row_idx not in rows_with_ai_fields]
-        if ai_clean_titles and "Title" in search_methods and "Title" not in tiers_done and rows_to_clean:
-            _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(len(rows_to_clean)))
+        if (ai_clean_titles and os.getenv("OPENAI_API_KEY") and "Title" in search_methods
+                and "Title" not in tiers_done and not ai_extracted):
+            _update_progress(run_id, phase="Cleaning titles with AI (0/{})".format(len(original_source_rows)))
             with _ai_step(run_id, "AI title cleaning"):
-                cleaned_titles = clean_titles_parallel(rows_to_clean, run_id)
+                cleaned_titles = clean_titles_parallel(original_source_rows, run_id)
             if _handle_control():
                 return
  
         # Build a version of source_rows with cleaned titles for Tier 3.
         def _rows_for_title_search() -> list[SourceRow]:
             if not cleaned_titles:
-                return source_rows
+                return original_source_rows
             out = []
-            for r in source_rows:
+            for r in original_source_rows:
                 if r.row_idx in cleaned_titles:
                     from dataclasses import replace
                     out.append(replace(
@@ -2183,7 +2248,7 @@ def _run_pipeline(
         if "UPC" in search_methods and "UPC" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 1 / UPC batch search")
-            tier1, tier1_kw = _tier1_upc(api, source_rows, run_id=run_id)
+            tier1, tier1_kw = _tier1_upc(api, original_source_rows, run_id=run_id)
             for ri, items in tier1.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "UPC"))
@@ -2193,6 +2258,7 @@ def _run_pipeline(
             for ri, items in tier1_kw.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "UPC-KW"))
+            _clean_candidate_titles()
             # Score + persist this tier's rows immediately so UPC matches appear
             # in the UI right away (and aren't lost if the user stops later).
             _tier1_rows = set(tier1) | set(tier1_kw)
@@ -2210,10 +2276,13 @@ def _run_pipeline(
         if "ItemID" in search_methods and "ItemID" not in tiers_done:
             _t0 = time.monotonic()
             _update_progress(run_id, phase="Tier 2 / Item ID search")
-            tier2 = _tier2_itemid(api, source_rows, run_id=run_id, max_pages=pages_per_title)
+            tier2 = _tier2_itemid(
+                api, original_source_rows, run_id=run_id, max_pages=pages_per_title,
+            )
             for ri, items in tier2.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "ItemID"))
+            _clean_candidate_titles()
             _vet_and_store(
                 run_id, [r for r in source_rows if r.row_idx in tier2],
                 candidates_by_row, extracted_brands,
@@ -2238,6 +2307,7 @@ def _run_pipeline(
             for ri, items in tier3.items():
                 for it in items:
                     candidates_by_row.setdefault(ri, []).append((it, "Title"))
+            _clean_candidate_titles()
             _vet_and_store(
                 run_id, [r for r in source_rows if r.row_idx in tier3],
                 candidates_by_row, extracted_brands,
@@ -2255,6 +2325,7 @@ def _run_pipeline(
                 comparison_titles, agent_rows = _run_query_agent_fallback(
                     run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
                 )
+            _clean_candidate_titles()
             fallback_rows = [row for row in source_rows if row.row_idx in agent_rows]
             if fallback_rows:
                 scored_rows = [

@@ -33,6 +33,7 @@ class Candidate(BaseModel):
 
     asin: str
     title: str | None = None
+    matching_title: str | None = None
     brand: str | None = None
     manufacturer: str | None = None
     upc: str | None = None

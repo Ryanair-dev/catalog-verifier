@@ -62,7 +62,7 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
     )
 
     source_title = offer.title or offer.raw_text or ""
-    candidate_title = candidate.title or ""
+    candidate_title = candidate.matching_title or candidate.title or ""
     title_ratio = title_similarity(source_title, candidate_title)
     size_mm = bool(size_mismatch(offer, candidate))
     apparel_mm = bool(apparel_size_mismatch(offer, candidate))

@@ -307,13 +307,17 @@ def get_run_detail(
         # Verdict-filtered fetches skip them — the client already has them.
         if not verdict:
             rows = conn.execute(
-                "SELECT row_idx, data_json, query_agent_json FROM analytics_catalog_rows "
+                "SELECT row_idx, data_json, extracted_json, query_agent_json FROM analytics_catalog_rows "
                 "WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
             catalog_rows = []
             for row in rows:
                 catalog_row = json.loads(row["data_json"])
+                try:
+                    catalog_row["extracted"] = json.loads(row["extracted_json"] or "{}")
+                except (ValueError, TypeError):
+                    catalog_row["extracted"] = {}
                 try:
                     catalog_row["query_agent"] = json.loads(row["query_agent_json"] or "null")
                 except (ValueError, TypeError):
@@ -637,6 +641,9 @@ def get_run_detail(
         "query_agent": query_stats,
         "llm_verifier": verifier_stats,
     }
+    if run_d.get("clean_amazon_titles"):
+        from services.analytics.amazon_title_cleaner import run_usage
+        run_d["amazon_title_cleaning_usage"] = run_usage(run_id)
     # AI provider problems during the run (out of credits, rate limit, bad key, outage) for the run page banner
     try:
         notices = json.loads(run_d.get("ai_notices") or "[]")
@@ -1562,7 +1569,8 @@ def export_analytics_run(
                    json_extract(data_json, '$.itemid') AS itemid,
                    json_extract(data_json, '$.title')  AS title,
                    json_extract(data_json, '$.brand')  AS brand,
-                   json_extract(data_json, '$.raw')    AS raw_json
+                   json_extract(data_json, '$.raw')    AS raw_json,
+                   extracted_json
             FROM analytics_catalog_rows
             WHERE run_id=? ORDER BY row_idx
             """,
@@ -1586,6 +1594,9 @@ def export_analytics_run(
                    COALESCE(
                        json_extract(data_json, '$.amazon.title'), ''
                    ) AS amz_title,
+                   COALESCE(
+                       json_extract(data_json, '$.amazon.matching_title'), ''
+                   ) AS cleaned_amz_title,
                    COALESCE(
                        json_extract(data_json, '$.amazon.brand'),
                        json_extract(data_json, '$.amazon.manufacturer'),
@@ -1618,6 +1629,10 @@ def export_analytics_run(
             d["_raw"] = json.loads(d.get("raw_json") or "{}") if pt_cols else {}
         except (ValueError, TypeError):
             d["_raw"] = {}
+        try:
+            d["_extracted"] = json.loads(d.get("extracted_json") or "{}")
+        except (ValueError, TypeError):
+            d["_extracted"] = {}
         src_by_idx[r["row_idx"]] = d
  
     found_idxs = {c["row_idx"] for c in cand_rows}
@@ -1632,9 +1647,13 @@ def export_analytics_run(
             return False
         return True
  
+    keyword_cols = ["Search Keyword", "Search Keyword + Spec"] if run_d.get("ai_clean_titles") else []
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-        "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
+    ] + keyword_cols + [
+        "ASIN", "Amazon Title",
+    ] + (["Amazon Item Name"] if run_d.get("clean_amazon_titles") else []) + [
+        "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
         "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
@@ -1670,8 +1689,13 @@ def export_analytics_run(
             src.get("itemid") or "",
             src.get("title") or "",
             src.get("brand") or "",
+        ] + ([
+            (src.get("_extracted") or {}).get("search_keyword") or "",
+            (src.get("_extracted") or {}).get("keyword_specs") or "",
+        ] if run_d.get("ai_clean_titles") else []) + [
             c["asin"] or "",
             c["amz_title"] or "",
+        ] + ([c["cleaned_amz_title"] or ""] if run_d.get("clean_amazon_titles") else []) + [
             c["amz_brand"] or "",
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
@@ -1701,7 +1725,7 @@ def export_analytics_run(
     ws_nf = wb.create_sheet("Not Found")
     ws_nf.append(_hdr_row(ws_nf, [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-    ] + pt_cols))
+    ] + keyword_cols + pt_cols))
     for idx in sorted(src_by_idx.keys()):
         if idx in found_idxs:
             continue
@@ -1714,7 +1738,10 @@ def export_analytics_run(
             src.get("itemid") or "",
             src.get("title") or "",
             src.get("brand") or "",
-        ] + pt_values))
+        ] + ([
+            (src.get("_extracted") or {}).get("search_keyword") or "",
+            (src.get("_extracted") or {}).get("keyword_specs") or "",
+        ] if run_d.get("ai_clean_titles") else []) + pt_values))
  
     buf = io.BytesIO()
     wb.save(buf)
@@ -1759,6 +1786,7 @@ async def create_analytics_run(
     use_query_agent: bool = Form(False),
     use_llm_verifier: bool = Form(False),
     use_ai_reader: bool = Form(False),           # AI title reader (abbreviations), Claude
+    clean_amazon_titles: bool = Form(False),
     sheet_name: str = Form(""),
     passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
 ) -> dict[str, Any]:
@@ -1794,11 +1822,11 @@ async def create_analytics_run(
             status_code=400,
             detail="scoring_method must be one of: weighted, cascade, classifier",
         )
-    if (use_query_agent or use_llm_verifier or use_ai_reader) and not os.getenv("ANTHROPIC_API_KEY"):
+    if (use_query_agent or use_llm_verifier or use_ai_reader or clean_amazon_titles) and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=400,
-            detail="Set ANTHROPIC_API_KEY in .env to use the LLM query fallback, the LLM verifier "
-                   "or the AI title reader",
+            detail="Set ANTHROPIC_API_KEY in .env to use the LLM query fallback, the LLM verifier, "
+                   "the AI title reader, or Amazon title cleanup",
         )
     if ai_clean_titles and not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
         raise HTTPException(
@@ -1910,6 +1938,7 @@ async def create_analytics_run(
         use_query_agent=bool(use_query_agent),
         use_llm_verifier=bool(use_llm_verifier),
         use_ai_reader=bool(use_ai_reader),
+        clean_amazon_titles=bool(clean_amazon_titles),
         brand_col=saved_brand_col,
         brand_mode=saved_brand_mode,
         passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",

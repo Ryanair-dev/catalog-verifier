@@ -4028,9 +4028,7 @@
   // The rest of the pipeline endpoints stream in behind the Upload buttons
   // which re-use the existing 4-step import wizard — wired in a later pass.
 
-  // AI title-clean cost estimator.
-  // gpt-4o-mini pricing: $0.15/1M input tokens, $0.60/1M output tokens.
-  // Each title call: ~100 tokens in (system prompt + title) + ~20 tokens out.
+  // AI keyword-extraction cost estimate for the configured provider.
   function _updateAiCostHint() {
     const hint = $("#awiz-ai-cost-hint");
     if (!hint) return;
@@ -4040,13 +4038,10 @@
     const header  = (state.awiz?.headerRowIdx ?? 0) + 1;
     const rows    = Math.max(0, total - header);
     if (rows === 0) { hint.style.display = "none"; return; }
-    const inputCost  = rows * 100 * (0.15  / 1_000_000);
-    const outputCost = rows * 20  * (0.60  / 1_000_000);
-    const total_usd  = inputCost + outputCost;
-    const label = total_usd < 0.01
-      ? "< $0.01"
-      : `~$${total_usd.toFixed(2)}`;
-    hint.textContent = `est. ${label} for ${rows.toLocaleString()} rows`;
+    const format = value => value < 0.01 ? "<$0.01" : `~$${value.toFixed(2)}`;
+    const claudeCost = rows * (100 * (0.80 / 1_000_000) + 80 * (4.00 / 1_000_000));
+    const openaiCost = rows * (100 * (0.15 / 1_000_000) + 80 * (0.60 / 1_000_000));
+    hint.textContent = `est. Claude ${format(claudeCost)} / GPT ${format(openaiCost)} for ${rows.toLocaleString()} rows`;
     hint.style.display = "inline";
   }
 
@@ -4330,7 +4325,7 @@
                 ${r.use_query_agent ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fef3c7;color:#92400e;">query agent</span>' : ''}
                 ${r.use_llm_verifier ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#dcfce7;color:#166534;">LLM verifier</span>' : ''}
                 ${r.use_ai_reader ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#ede9fe;color:#5b21b6;">AI title reader</span>' : ''}
-                ${r.ai_clean_titles ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#e0f2fe;color:#075985;">AI reads titles</span>' : ''}
+                ${r.ai_clean_titles ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#e0f2fe;color:#075985;">AI keywords</span>' : ''}
                 ${(() => { try { return JSON.parse(r.ai_notices || "[]").length; } catch { return 0; } })() ? '<span title="An AI step could not work in this run; open it for details" style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fee2e2;color:#991b1b;">⚠ AI problem</span>' : ''}
               </div>
               <div class="text-xs mt-0.5" style="color: #6b7480;">
@@ -4750,6 +4745,9 @@
   function renderAnalyticsRunDetail(j) {
     const run  = j.run || {};
     const cand = Array.isArray(j.candidates) ? j.candidates : [];
+    document.querySelectorAll(".analytics-keyword-column").forEach(column => {
+      column.classList.toggle("hidden", !run.ai_clean_titles);
+    });
 
     const modeLabel = run.vetting_mode === "medical" ? "Medical" : "CPG";
     const modeBadgeColor = run.vetting_mode === "medical" ? "#dbeafe" : "#f0fdf4";
@@ -4777,6 +4775,19 @@
         `LLM verifier: ${verifierStats.approvals_audited} audited, ` +
         `${verifierStats.flagged} flagged${verifierStats.errors ? `, ${verifierStats.errors} errors` : ""}`
       );
+    }
+    if (run.clean_amazon_titles) {
+      const cleanUsage = run.amazon_title_cleaning_usage || {};
+      if (cleanUsage.titles) {
+        agentSummary.push(
+          `Amazon item cleaning: ${Number(cleanUsage.titles).toLocaleString()} unique titles · ` +
+          `${Number(cleanUsage.title_chars || 0).toLocaleString()} title characters · ` +
+          `${(Number(cleanUsage.tokens_in || 0) + Number(cleanUsage.tokens_out || 0)).toLocaleString()} tokens · ` +
+          `$${Number(cleanUsage.cost_usd || 0).toFixed(4)} actual`
+        );
+      } else {
+        agentSummary.push("Amazon item cleaning: actual cost appears as batches finish");
+      }
     }
     $("#analytics-run-subtitle").textContent =
       [methods, when, `${run.total_catalog_items || 0} catalog rows`, ...agentSummary]
@@ -5175,6 +5186,7 @@
   function renderAnalyticsRunCandidates() {
     const j = state.analyticsRun.data;
     const tab = state.analyticsRun.tab;
+    const showKeywordColumns = !!j?.run?.ai_clean_titles;
     const isVerdictTab = tab !== "All";
     const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
     const isLoading = state.analyticsRun.tabLoading === tab;
@@ -5209,8 +5221,9 @@
       if (!q) return true;
       const src = srcByIdx[c.row_idx] || {};
       const amz = (c.data && c.data.amazon) || {};
+      const ext = src.extracted || {};
       const hay = [
-        src.title, src.brand, src.upc, src.itemid,
+        src.title, src.brand, src.upc, src.itemid, ext.search_keyword, ext.keyword_specs, amz.matching_title,
         c.asin, amz.title, amz.brand, amz.manufacturer,
       ].map(v => String(v || "").toLowerCase()).join(" ");
       return hay.includes(q);
@@ -5350,6 +5363,7 @@
                       :                    "badge-not";
       const amz = (c.data && c.data.amazon) || {};
       const amzTitle = amz.title || "";
+      const amzItemName = amz.matching_title || "";
       const amzBrand = amz.brand || amz.manufacturer || "";
       const sources = Array.isArray(c.sources) ? c.sources.join(", ") : "";
       const label  = _VERDICT_LABEL[v] || (c.verdict || "");
@@ -5384,6 +5398,7 @@
       const conflictBadge = conflictRows
         ? `<span class="has-tooltip" data-tooltip="${escapeHtml(conflictTooltip)}" style="display:inline-block;margin-left:4px;padding:1px 6px;font-size:0.68rem;font-weight:700;border-radius:4px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:help;">⚠ Conflict</span>`
         : "";
+      const keywordFields = src.extracted || {};
  
       return `
         <tr>
@@ -5392,14 +5407,21 @@
             <div>${escapeHtml(src.upc || "—")}</div>
             <div style="color:#94a3b8;">${escapeHtml(src.itemid || "")}</div>
           </td>
-          <td style="max-width:260px;">
+          <td style="max-width:260px;min-width:180px;">
             <div class="text-sm" style="color: var(--navy-800);">${escapeHtml(src.title || "")}</div>
             <div class="text-xs" style="color:#94a3b8;">${escapeHtml(src.brand || "")}</div>
             ${queryAgentDetails}
           </td>
+          <td class="analytics-keyword-column analytics-keyword-spec-column${showKeywordColumns ? "" : " hidden"}" style="white-space:normal;overflow-wrap:anywhere;color:#0369a1;">${escapeHtml(keywordFields.keyword_specs || "")}</td>
           <td class="font-mono text-xs"><a href="${escapeHtml(_amazonUrl(c.asin))}" target="_blank" rel="noopener noreferrer" title="Open on Amazon" style="color:#4f46e5;text-decoration:none;">${escapeHtml(c.asin || "")}</a>${conflictBadge}</td>
-          <td style="max-width:300px;">
-            <div class="text-sm" style="color: #475569;">${escapeHtml(amzTitle)}</div>
+          <td class="analytics-amazon-title-column">
+            ${amzItemName
+              ? `<div class="text-sm" style="color:#166534;font-weight:600;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzItemName)}</div>
+                 <details style="margin-top:5px;font-size:11px;color:#64748b;">
+                   <summary style="cursor:pointer;">Original Amazon title</summary>
+                   <div style="padding-top:4px;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzTitle)}</div>
+                 </details>`
+              : `<div class="text-sm" style="color:#475569;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzTitle)}</div>`}
           </td>
           <td class="text-xs">${escapeHtml(amzBrand)}</td>
           <td class="text-xs">${escapeHtml(sources)}</td>
@@ -6691,6 +6713,7 @@
     fd.append("use_query_agent", $("#awiz-query-agent")?.checked ? "true" : "false");
     fd.append("use_llm_verifier", $("#awiz-llm-verifier")?.checked ? "true" : "false");
     fd.append("use_ai_reader", $("#awiz-ai-reader")?.checked ? "true" : "false");
+    fd.append("clean_amazon_titles", $("#awiz-amazon-title-cleaner")?.checked ? "true" : "false");
     if (state.awiz.selectedSheet) fd.append("sheet_name", state.awiz.selectedSheet);
     const ptCols = Array.from(state.awiz.passthroughCols || []);
     if (ptCols.length) fd.append("passthrough_cols", JSON.stringify(ptCols));

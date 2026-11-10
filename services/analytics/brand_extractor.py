@@ -1,9 +1,9 @@
 """
-AI field extraction for analytics runs: GPT-4o-mini, only when the run has "AI clean titles" ticked.
+AI field extraction for analytics runs, only when the run has vendor keyword generation enabled.
 
 What it reads
-  - vendor titles (before the Amazon search): brand, product_type, model, size, pack_info (used for the Tier 3
-    search query and the brand score, as before) and the variant ATTRIBUTES the title states;
+  - vendor titles (before the Amazon search): brand, product_type, model, size, pack_info, Search Keyword,
+    Search Keyword + Spec, and the variant ATTRIBUTES the title states;
   - Amazon listings (before they are scored): the variant attributes their title + description state.
   Attributes: color, finish, size, type, flavor, scent, gender, material, count, volume, weight.
   Each attribute comes with "evidence" = the words of the text that state it.  The code keeps an attribute only
@@ -17,8 +17,9 @@ Where the results go
 Saved once per product (table ai_field_cache): vendor rows by UPC (brand + title when there is no UPC),
 listings by ASIN.  A product already in the table is never sent again.  Every call is logged in ai_field_usage.
 
-Needs OPENAI_API_KEY.  Report for one run (reads only, changes nothing):
-    uv run python -m services.analytics.brand_extractor --report --run 68
+Uses Anthropic Claude Haiku when configured, with OpenAI GPT-4o-mini as fallback.
+Report for one run (reads only, changes nothing):
+    python -m services.analytics.brand_extractor --report --run 68
   1. cost   what the run spent, how much came from the table, the cost per 1,000 products
   2. found  how many vendor rows / listings got attributes, and which ones
   3. value  every pair scored twice in memory, without and with the AI attributes: how many verdicts change
@@ -38,22 +39,33 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from services.analytics.keyword_prompts import KEYWORD_FORMULA
+
 log = logging.getLogger(__name__)
 
-FILE_VERSION = "2026-10-23 brand_extractor v2 (GPT-4o-mini, attributes with evidence, cache)"
-MODEL = "gpt-4o-mini"
-PROMPT_VERSION = "fields-v2"
+FILE_VERSION = "2026-11-09 brand_extractor v3 (keyword formula, attributes with evidence, cache)"
+OPENAI_MODEL = "gpt-4o-mini"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+PROMPT_VERSION = "fields-keywords-v3"
+LISTING_PROMPT_VERSION = "fields-v2"
 BATCH_SIZE = 20                 # texts per call
 MAX_WORKERS = 4                 # parallel calls
 DESCRIPTION_CHARS = 800
-PRICE_IN, PRICE_OUT = 0.15 / 1_000_000, 0.60 / 1_000_000          # GPT-4o-mini list price per token
+MODEL_PRICING = {
+    OPENAI_MODEL: (0.15 / 1_000_000, 0.60 / 1_000_000),
+    ANTHROPIC_MODEL: (0.80 / 1_000_000, 4.00 / 1_000_000),
+}
 ATTRIBUTES = ("color", "finish", "size", "type", "flavor", "scent", "gender", "material", "count", "volume", "weight")
-VENDOR_FIELDS = ("brand", "product_type", "model", "size", "pack_info")
+VENDOR_FIELDS = (
+    "brand", "product_type", "model", "size", "pack_info",
+    "search_keyword", "keyword_specs",
+)
 
 _SYSTEM = """\
 You read product texts for a program that matches vendor products to Amazon listings.
 You get a JSON object {"items": [...]}; each item has an "id", a "kind" ("vendor" = a vendor product title,
-"listing" = an Amazon title followed by its description) and the "text".
+"listing" = an Amazon title followed by its description) and the "text". Vendor items may also include
+"manufacturer" and "mpn" fields; use them only as source context, never as evidence for attributes.
 
 For EVERY item return "attributes": the variant attributes the text states, each with "evidence" = the exact
 words of the text that state it, copied from the text as written:
@@ -74,16 +86,31 @@ For "vendor" items ALSO return:
   model         the specific variant / model name, without brand and type; null if none
   size          the size / volume / weight string (e.g. "3.4 oz"); null if none
   pack_info     the pack count if listed (e.g. "pack of 3"); null if single
+  search_keyword  the short Amazon search keyword
+  keyword_specs   the same keyword with only useful size/unit-count specs appended
+
+Follow this formula for vendor keyword fields:
+""" + KEYWORD_FORMULA + """
 
 Reply with a JSON object only:
 {"items": [{"id": "0", "brand": "Kwikset", "product_type": "door lever", "model": "Tustin", "size": null,
-            "pack_info": null, "attributes": {"finish": {"value": "satin nickel", "evidence": "SN"}}},
+            "pack_info": null, "search_keyword": "Kwikset Tustin Door Lever",
+            "keyword_specs": "Kwikset Tustin Door Lever",
+            "attributes": {"finish": {"value": "satin nickel", "evidence": "SN"}}},
            {"id": "1", "attributes": {"color": {"value": "black", "evidence": "Black"}}}]}
 """
 
 
 def enabled() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return bool(os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY"))
+
+
+def _selected_provider() -> tuple[str, str, tuple[float, float]]:
+    if os.getenv("ANTHROPIC_API_KEY"):
+        model = ANTHROPIC_MODEL
+        return "anthropic", model, MODEL_PRICING[model]
+    model = OPENAI_MODEL
+    return "openai", model, MODEL_PRICING[model]
 
 
 # --------------------------------------------------------------------------- #
@@ -94,13 +121,18 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").lower()).strip()
 
 
-def vendor_key(upc: Any, brand: Any, title: Any) -> str | None:
-    """'vendor:upc:760172011715', else 'vendor:title:<brand>|<title>', else None."""
+def vendor_key(upc: Any, brand: Any, title: Any, mpn: Any = "") -> str | None:
+    """Build a stable cache key, including manufacturer+MPN for untitled rows."""
     digits = re.sub(r"\D", "", re.sub(r"\.0+$", "", str(upc or "").strip())).lstrip("0")
     if len(digits) >= 6:
         return f"vendor:upc:{digits}"
     t = _norm(title)
-    return f"vendor:title:{_norm(brand)}|{t}" if t else None
+    if t and t != "untitled product":
+        return f"vendor:title:{_norm(brand)}|{t}"
+    part = _norm(mpn)
+    if part:
+        return f"vendor:mpn:{_norm(brand)}|{part}"
+    return None
 
 
 def listing_key(item: dict) -> str | None:
@@ -142,13 +174,21 @@ def _db() -> sqlite3.Connection:
     return conn
 
 
-def _lookup(conn: sqlite3.Connection, keys: list[str]) -> dict[str, dict]:
+def _lookup(
+    conn: sqlite3.Connection,
+    keys: list[str],
+    prompt_version: str | None = None,
+) -> dict[str, dict]:
     out: dict[str, dict] = {}
     keys = [k for k in dict.fromkeys(keys) if k]
     for i in range(0, len(keys), 500):
         chunk = keys[i:i + 500]
-        for r in conn.execute(f"SELECT key, result_json FROM ai_field_cache WHERE key IN ({','.join('?' * len(chunk))})",
-                              chunk).fetchall():
+        query = f"SELECT key, result_json FROM ai_field_cache WHERE key IN ({','.join('?' * len(chunk))})"
+        params: list[Any] = list(chunk)
+        if prompt_version:
+            query += " AND prompt_version=?"
+            params.append(prompt_version)
+        for r in conn.execute(query, params).fetchall():
             try:
                 value = json.loads(r["result_json"] or "{}")
             except (TypeError, ValueError):
@@ -185,19 +225,59 @@ def _result(kind: str, text: str, raw: dict) -> dict:
     return out
 
 
-def _call(client: Any, batch: list[dict]) -> tuple[dict[str, dict], int, int]:
-    payload = json.dumps({"items": [{"id": str(n), "kind": e["kind"], "text": e["text"]}
-                                    for n, e in enumerate(batch)]}, ensure_ascii=False)
+def _call(
+    client: Any,
+    batch: list[dict],
+    provider: str = "openai",
+    model: str = OPENAI_MODEL,
+) -> tuple[dict[str, dict], int, int]:
+    items = []
+    for n, entry in enumerate(batch):
+        item = {"id": str(n), "kind": entry["kind"], "text": entry["text"]}
+        if entry["kind"] == "vendor":
+            item["manufacturer"] = entry.get("manufacturer") or ""
+            item["mpn"] = entry.get("mpn") or ""
+        items.append(item)
+    payload = json.dumps({"items": items}, ensure_ascii=False)
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model=MODEL, temperature=0, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": payload}],
-            )
-            parsed = json.loads(response.choices[0].message.content or "{}")
+            if provider == "anthropic":
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=3000,
+                    system=_SYSTEM,
+                    messages=[{"role": "user", "content": payload}],
+                )
+                response_text = "".join(
+                    block.text for block in response.content
+                    if getattr(block, "type", "") == "text"
+                )
+                tokens_in = int(response.usage.input_tokens or 0)
+                tokens_out = int(response.usage.output_tokens or 0)
+            elif provider == "openai":
+                response = client.chat.completions.create(
+                    model=model, temperature=0, response_format={"type": "json_object"},
+                    messages=[{"role": "system", "content": _SYSTEM}, {"role": "user", "content": payload}],
+                )
+                response_text = response.choices[0].message.content or "{}"
+                tokens_in = int(response.usage.prompt_tokens or 0)
+                tokens_out = int(response.usage.completion_tokens or 0)
+            else:
+                raise ValueError(f"Unsupported AI provider: {provider}")
+            response_text = re.sub(
+                r"^```(?:json)?|```$", "", response_text.strip(), flags=re.MULTILINE,
+            ).strip()
+            parsed = json.loads(response_text or "{}")
             answers = {str(it.get("id")): it for it in parsed.get("items") or [] if isinstance(it, dict)}
-            return answers, int(response.usage.prompt_tokens or 0), int(response.usage.completion_tokens or 0)
+            for n, entry in enumerate(batch):
+                if entry["kind"] == "vendor":
+                    answer = answers.get(str(n)) or {}
+                    if not str(answer.get("search_keyword") or "").strip():
+                        raise ValueError(f"Vendor item {n} omitted search_keyword")
+                    if not str(answer.get("keyword_specs") or "").strip():
+                        raise ValueError(f"Vendor item {n} omitted keyword_specs")
+            return answers, tokens_in, tokens_out
         except Exception as exc:  # noqa: BLE001 - retried, then reported
             last_error = exc
             time.sleep(2 ** attempt)
@@ -217,17 +297,23 @@ def _extract(run_id: Any, kind: str, entries: list[dict], progress_cb=None) -> d
     from services import database
     conn = _db()
     try:
-        results = _lookup(conn, list(unique))
+        prompt_version = PROMPT_VERSION if kind == "vendor" else LISTING_PROMPT_VERSION
+        provider, model, (price_in, price_out) = _selected_provider()
+        results = _lookup(conn, list(unique), prompt_version=prompt_version)
         missing = [e for k, e in unique.items() if k not in results]
         usage = {"calls": 0, "tokens_in": 0, "tokens_out": 0, "sent": 0, "error": ""}
         if missing:
-            from openai import OpenAI
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            if provider == "anthropic":
+                from anthropic import Anthropic
+                client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), max_retries=0)
+            else:
+                from openai import OpenAI
+                client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             batches = [missing[i:i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
 
             def run(batch: list[dict]):
                 try:
-                    return batch, *_call(client, batch), ""
+                    return batch, *_call(client, batch, provider=provider, model=model), ""
                 except Exception as exc:  # noqa: BLE001
                     return batch, None, 0, 0, str(exc)
 
@@ -248,13 +334,13 @@ def _extract(run_id: Any, kind: str, entries: list[dict], progress_cb=None) -> d
                     for n, e in enumerate(batch):
                         results[e["key"]] = _result(kind, e["text"], answers.get(str(n)) or {})
                         rows.append((e["key"], kind, json.dumps(results[e["key"]], ensure_ascii=False),
-                                     MODEL, PROMPT_VERSION))
+                                     model, prompt_version))
                     with database._LOCK:
                         conn.executemany("INSERT OR REPLACE INTO ai_field_cache(key, kind, result_json, model, "
                                          "prompt_version) VALUES (?, ?, ?, ?, ?)", rows)
                         conn.commit()
                     usage["sent"] += len(batch)
-        cost = round(usage["tokens_in"] * PRICE_IN + usage["tokens_out"] * PRICE_OUT, 5)
+        cost = round(usage["tokens_in"] * price_in + usage["tokens_out"] * price_out, 5)
         with database._LOCK:
             conn.execute("INSERT INTO ai_field_usage(run_id, kind, items, cached, sent, calls, tokens_in, tokens_out, "
                          "cost_usd, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -271,11 +357,25 @@ def _extract(run_id: Any, kind: str, entries: list[dict], progress_cb=None) -> d
 # --------------------------------------------------------------------------- #
 
 def extract_brands(rows: list, run_id: int = 0, progress_cb=None) -> dict[int, dict]:
-    """Vendor rows (SourceRow-like: row_idx, upc, brand, title) -> {row_idx: {brand, product_type, model, size,
-    pack_info, attrs}}.  Rows without a title are skipped.  Results are saved once per product."""
-    keyed = [(r.row_idx, vendor_key(getattr(r, "upc", ""), getattr(r, "brand", ""), r.title), r.title)
-             for r in rows if getattr(r, "title", "")]
-    results = _extract(run_id, "vendor", [{"key": k, "text": t} for _, k, t in keyed], progress_cb)
+    """Extract row fields and Amazon keywords, including manufacturer+MPN for untitled rows."""
+    keyed = []
+    for row in rows:
+        title = str(getattr(row, "title", "") or "").strip()
+        brand = str(getattr(row, "brand", "") or "").strip()
+        mpn = str(getattr(row, "itemid", "") or getattr(row, "mpn", "") or "").strip()
+        key = vendor_key(getattr(row, "upc", ""), brand, title, mpn)
+        if not key:
+            continue
+        keyed.append((row.row_idx, key, {
+            "text": title or "Untitled product",
+            "manufacturer": brand,
+            "mpn": mpn,
+        }))
+    results = _extract(
+        run_id, "vendor",
+        [{"key": key, **entry} for _, key, entry in keyed],
+        progress_cb,
+    )
     out = {row_idx: results[key] for row_idx, key, _ in keyed if key in results}
     log.info("[brand_extractor] %d/%d vendor rows have AI fields for run %s", len(out), len(keyed), run_id)
     return out

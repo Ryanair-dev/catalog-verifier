@@ -19,6 +19,7 @@ from services.analytics.matching_core.matching.normalize import (
     candidate_part_number,
     brands_match,
     candidate_brand_matches,
+    mpns_match,
     normalize_upc,
     upc_matches,
 )
@@ -195,16 +196,32 @@ def score_pair(
     offer, candidate = build_pair(
         source, normalized, extracted=extracted, sources=sources,
     )
-    result = score_models(offer, candidate, method=method, mode=mode)
-    # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
-    barcode_ok = bool(
-        offer.upc and candidate.upc
-        and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+    mpn_brand_match = bool(
+        offer.mpn and candidate.mpn
+        and mpns_match(offer.mpn, candidate.mpn)
+        and candidate_brand_matches(offer.brand, candidate.brand, candidate.manufacturer)
     )
-    gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
-            if unified_attrs_enabled() else None)
-    if gate:
-        result = apply_gate(result, gate)
+    if mpn_brand_match:
+        result = MatchResult(
+            offer_id=offer.offer_id,
+            asin=candidate.asin,
+            confidence=100.0,
+            verdict=Verdict.VERIFIED,
+            signals={"mpn": 100.0, "brand": 100.0},
+            reasons=["mpn_brand_match"],
+        )
+        gate = None
+    else:
+        result = score_models(offer, candidate, method=method, mode=mode)
+        # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
+        barcode_ok = bool(
+            offer.upc and candidate.upc
+            and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+        )
+        gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
+                if unified_attrs_enabled() else None)
+        if gate:
+            result = apply_gate(result, gate)
     # UPC differs, but brand + exact part number + title match: a likely match that needs a check.  With the
     # run's LLM verifier on it stays approved (the verifier audits every approval; flagged -> Review); without
     # it, nobody checks it, so it goes to Review.
@@ -217,6 +234,7 @@ def score_pair(
             "reasons": list(result.reasons) + ["upc_unconfirmed_needs_check"],
         })
     scores = result_to_scores(result, method, offer, candidate)
+    scores["mpn_brand_match"] = mpn_brand_match
     scores["upc_unconfirmed"] = upc_unconfirmed
     if "mpn_field_conflict" in result.reasons:
         scores["mpn_field_conflict"] = True        # shown as "Item ID / MPN mismatch"
@@ -247,7 +265,7 @@ def score_pair(
 
 # Shown at the end of every score's explanation ("Matcher build ..."), so an export always tells which code
 # scored it.  Bump it with every scoring change.
-MATCHER_BUILD = "2026-11-09a (manufacturer brand signal and matching-MPN review)"
+MATCHER_BUILD = "2026-11-10a (matching brand and MPN is decisive)"
 
 
 @lru_cache(maxsize=512)
@@ -274,7 +292,7 @@ def build_pair(
     extracted = extracted or {}
     offer = Offer(
         offer_id=str(source.get("row_idx", "")),
-        title=str(source.get("title") or ""),
+        title=str(extracted.get("keyword_specs") or source.get("title") or ""),
         raw_text=str(source.get("title") or ""),
         brand=str(source.get("brand") or extracted.get("brand") or "") or None,
         upc=str(source.get("upc") or "") or None,
@@ -288,6 +306,7 @@ def build_pair(
     candidate = Candidate(
         asin=str(normalized.get("asin") or ""),
         title=str(normalized.get("title") or ""),
+        matching_title=str(normalized.get("matching_title") or "") or None,
         brand=str(normalized.get("brand") or normalized.get("manufacturer") or "") or None,
         manufacturer=str(normalized.get("manufacturer") or "") or None,
         upc=str(normalized.get("upc") or normalized.get("ean") or normalized.get("gtin") or "") or None,
@@ -343,7 +362,12 @@ def result_to_scores(
         if reason.endswith("_mismatch")
     ]
     explanation: dict[str, Any]
-    if method == "weighted":
+    if "mpn_brand_match" in reasons:
+        explanation = {
+            "summary": "Brand and MPN match; verified at 100. Other matching rules were not applied.",
+            "factors": ["Brand matches", "MPN matches"],
+        }
+    elif method == "weighted":
         names = (("upc", "UPC"), ("mpn", "part number"), ("brand", "brand"), ("title", "title"))
         used = [(label, signals[key]) for key, label in names if key in signals]
         set_aside = "upc_unconfirmed" in reasons           # UPC differs, left out (brand + part no + title)

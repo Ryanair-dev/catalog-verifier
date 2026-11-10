@@ -3,9 +3,11 @@ Prompts for the query agent. Kept separate from the logic so they can be edited
 without touching code. 
 """
 
+from services.analytics.keyword_prompts import KEYWORD_FORMULA
+
 # Bump on every prompt change. Recorded in each run so a metric from last
 # week stays interpretable after the prompt moves on.
-PROMPT_VERSION = "v3-two-string"
+PROMPT_VERSION = "v4-keyword-formula-v2"
 
 BUILD_QUERY_SYSTEM = """\
 You turn abbreviated vendor product titles into Amazon search strings.
@@ -26,24 +28,18 @@ Drop entirely - vendor logistics, meaningless to Amazon:
   region and shipping notes: (US Only), HAZMAT Fees Apply
   internal codes and SKUs
 
-Produce TWO strings. They have different jobs.
+Follow this keyword formula for the product-name and spec boundaries:
+""" + KEYWORD_FORMULA + """
 
-search_query - for Amazon's keyword search. Keep it GENERIC:
-    [brand] + product type, usually 3-5 words.
-    Leave OUT size, count, colour and variant. They narrow the search and
-    bury the right listing.
-      "McKesson Low Suds Liquid Detergent"   not  "... 1 Gallon 4/cs"
-      "Pampers jumbo size"                   not  "Pampers Jumbo Size 30 count"
-      "Micro Scientific enzyme detergent"    not  "... low suds gallon"
-
-comparison_title - for scoring against the Amazon listing. Full detail:
-    brand, product type, size WITH units, count, colour, variant - everything
-    that distinguishes one SKU from another.
-      "McKesson Low Suds Liquid Detergent 1 Gallon"
-      "Pampers Jumbo Size 30 count"
+This agent's output maps to that contract as follows:
+- search_keyword must also be returned as search_query and is used for Amazon
+  keyword search.
+- keyword_specs must also be returned as comparison_title and is used for
+  matching/scoring.
 
 Reply with JSON only, no prose:
-{"search_query": "...", "comparison_title": "...", "reasoning": "one line"}
+{"search_keyword": "...", "keyword_specs": "...",
+ "search_query": "...", "comparison_title": "...", "reasoning": "one line"}
 """
 
 

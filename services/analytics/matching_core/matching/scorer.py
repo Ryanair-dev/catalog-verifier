@@ -99,7 +99,7 @@ def _strengths(offer: Offer, cand: Candidate, upc_hit: bool) -> dict[str, float]
         s["mpn"] = 1.0 if (in_title or mpns_match(offer.mpn, cand.mpn)) else 0.0
     if offer.brand and (cand.brand or cand.manufacturer):
         s["brand"] = _brand_score(offer, cand) / BRAND_MAX
-    src, amz = offer.title or offer.raw_text or "", cand.title or ""
+    src, amz = offer.title or offer.raw_text or "", cand.matching_title or cand.title or ""
     if src and amz:
         s["title"] = title_similarity(src, amz) / 100.0
     return s

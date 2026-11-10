@@ -2469,6 +2469,21 @@ html { scrollbar-width: thin; scrollbar-color: var(--grey-200) transparent; }
   padding-top: 10px;
   padding-bottom: 10px;
 }
+#analytics-run-thead-row .analytics-keyword-spec-column,
+#analytics-run-candidates-body .analytics-keyword-spec-column {
+  width: 280px;
+  min-width: 280px;
+  max-width: 280px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+#analytics-run-thead-row .analytics-amazon-title-column,
+#analytics-run-candidates-body .analytics-amazon-title-column {
+  width: 360px;
+  min-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 /* ---------- Universal Library — top-level type tabs ------------------- */
 

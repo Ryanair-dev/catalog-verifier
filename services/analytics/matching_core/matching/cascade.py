@@ -51,7 +51,7 @@ MIN_ATTRS_FOR_ALL = 3
 
 def _fuzzy(offer: Offer, cand: Candidate) -> float:
     src = offer.title or offer.raw_text or ""
-    amz = cand.title or ""
+    amz = cand.matching_title or cand.title or ""
     if not src or not amz:
         return 0.0
     return title_similarity(src, amz)

@@ -202,6 +202,7 @@ def init_db() -> None:
             scoring_method TEXT DEFAULT 'weighted',
             use_query_agent INTEGER DEFAULT 0,
             use_llm_verifier INTEGER DEFAULT 0,
+            clean_amazon_titles INTEGER DEFAULT 0,
             total_catalog_items INTEGER DEFAULT 0,
             total_candidates_found INTEGER DEFAULT 0,
             verified_count INTEGER DEFAULT 0,
@@ -308,6 +309,10 @@ def init_db() -> None:
         if not _column_exists(conn, "analytics_runs", "use_llm_verifier"):
             conn.execute(
                 "ALTER TABLE analytics_runs ADD COLUMN use_llm_verifier INTEGER DEFAULT 0"
+            )
+        if not _column_exists(conn, "analytics_runs", "clean_amazon_titles"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN clean_amazon_titles INTEGER DEFAULT 0"
             )
         # additive migrations — AI title reader as a run option, finished search tiers (resume),
         # AI provider notices for the run page (out of credits, rate limit, bad key, outage)
