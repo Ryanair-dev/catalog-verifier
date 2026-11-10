@@ -15,7 +15,6 @@ Flow
 """
 from __future__ import annotations
 
-import io
 import json as _json
 from typing import Any, Optional
 

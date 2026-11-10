@@ -26,7 +26,7 @@ from services.analytics.matching_core.matching.attribute_compare import (
     compare_attributes,
     summarize,
 )
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     base_mpn,
     candidate_brand_matches,
     mpns_match,

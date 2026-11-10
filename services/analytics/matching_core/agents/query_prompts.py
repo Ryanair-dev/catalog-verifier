@@ -3,7 +3,7 @@ Prompts for the query agent. Kept separate from the logic so they can be edited
 without touching code. 
 """
 
-from services.analytics.keyword_prompts import KEYWORD_FORMULA
+from services.analytics.matching_core.agents.keyword_prompts import KEYWORD_FORMULA
 
 # Bump on every prompt change. Recorded in each run so a metric from last
 # week stays interpretable after the prompt moves on.

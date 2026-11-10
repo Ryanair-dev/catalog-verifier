@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import sqlite3
 import sys
 from collections import Counter, defaultdict
 from typing import Any

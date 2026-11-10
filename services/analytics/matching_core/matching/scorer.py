@@ -9,7 +9,7 @@ from services.analytics.matching_core.matching.attributes import (
     linear_size_mismatch,
     size_mismatch,
 )
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     base_mpn,
     candidate_brand_matches,
     candidate_brand_similarity,

@@ -15,7 +15,7 @@ from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
     score as score_classifier,
 )
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     candidate_part_number,
     brands_match,
     candidate_brand_matches,
@@ -41,7 +41,7 @@ from services.analytics.matching_core.matching.attr_extract import extract_vendo
 from services.analytics.matching_core.matching.lexicon import gender_tokens as _ur_gender_tokens
 from services.analytics.matching_core.matching.lexicon import get_lexicon as _ur_get_lexicon
 from services.analytics.matching_core.matching.lexicon import variant_boxes_for as _ur_variant_boxes_for
-from services.analytics.matching_core.matching.normalize import brands_match as _ur_brands_match
+from services.analytics.data_cleaning.normalize import brands_match as _ur_brands_match
 from services.analytics.matching_core.matching.variation import compare_boxes as _ur_compare_boxes
 
 _log = logging.getLogger(__name__)

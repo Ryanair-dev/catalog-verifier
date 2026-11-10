@@ -7,7 +7,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from services.analytics.keyword_prompts import AMAZON_TITLE_CLEANER_PROMPT
+from services.analytics.matching_core.agents.keyword_prompts import AMAZON_TITLE_CLEANER_PROMPT
 
 log = logging.getLogger(__name__)
 

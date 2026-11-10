@@ -36,7 +36,7 @@ from services import database
 from services.analytics.matching_core.adapter import build_pair, score_pair
 from services.analytics.matching_core.models import MatchResult, Verdict
 from services.analytics.parser import SourceRow
-from services.analytics.matching_core.matching.normalize import normalize_text
+from services.analytics.data_cleaning.normalize import normalize_text
 from services.analytics.brand_extractor import enabled as brand_extractor_enabled, extract_brands
 from services.spapi import get_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
@@ -2119,7 +2119,7 @@ def _run_pipeline(
             attempted_amazon_titles.update(titles)
             _update_progress(run_id, phase=f"Cleaning Amazon titles (0/{len(titles)})")
             try:
-                from services.analytics.amazon_title_cleaner import (
+                from services.analytics.data_cleaning.amazon_title_cleaner import (
                     clean_amazon_titles as clean_titles,
                 )
 

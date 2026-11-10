@@ -22,7 +22,7 @@ import requests
 from rapidfuzz import fuzz
 
 from .auth import WalmartTokenManager, SVC_NAME
-from services.analytics.matcher import _size_mismatch  # reused, see best_match()
+from services.analytics.old_matcher import _size_mismatch  # reused, see best_match()
 
 log = logging.getLogger(__name__)
 

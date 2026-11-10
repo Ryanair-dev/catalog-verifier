@@ -12,7 +12,7 @@ from services.analytics.matching_core.matching.attributes import (
     linear_size_mismatch,
     size_mismatch,
 )
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     base_mpn,
     mpns_match,
     brands_match,

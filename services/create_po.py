@@ -33,7 +33,7 @@ from services.sellercloud.catalog_index import CatalogIndex
 
 # Reuse the Analytics engine's brand normalisation so "NIVEA MEN" ≈ "NIVEA",
 # "Parker Labs" ≈ "Parker Laboratories" — same rules everywhere.
-from services.analytics.matcher import _normalize_brand as _norm_brand, _brands_match
+from services.analytics.old_matcher import _normalize_brand as _norm_brand, _brands_match
 try:
     from rapidfuzz import fuzz as _fuzz
 except ImportError:  # pragma: no cover

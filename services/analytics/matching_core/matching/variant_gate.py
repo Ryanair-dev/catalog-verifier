@@ -11,7 +11,7 @@ from services.analytics.matching_core.matching.attr_extract import extract_amazo
 from services.analytics.matching_core.matching.flags import category_check_enabled
 from services.analytics.matching_core.matching.product_line import index_for
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, variant_boxes_for
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     candidate_brand_matches,
     candidate_brand_similarity,
     candidate_part_number,

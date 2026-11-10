@@ -39,7 +39,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from services.analytics.keyword_prompts import KEYWORD_FORMULA
+from services.analytics.matching_core.agents.keyword_prompts import KEYWORD_FORMULA
 
 log = logging.getLogger(__name__)
 
@@ -421,7 +421,7 @@ def _json(text: Any) -> dict:
 
 def report(run_id: int, limit: int = 0) -> None:
     from services.analytics.matching_core.adapter import score_pair
-    from services.analytics.matching_core.matching.normalize import normalize_text
+    from services.analytics.data_cleaning.normalize import normalize_text
 
     conn = _db()
     try:

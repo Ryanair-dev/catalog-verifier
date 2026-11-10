@@ -48,8 +48,6 @@ from services.analytics.runner import (
     _tier1_upc,
     _tier2_itemid,
     _tier3_title,
-    _normalize_source_rows,
-    normalize_amazon_item,
     AUTO_APPROVE,
     REVIEW_FLOOR,
 )
@@ -642,7 +640,7 @@ def get_run_detail(
         "llm_verifier": verifier_stats,
     }
     if run_d.get("clean_amazon_titles"):
-        from services.analytics.amazon_title_cleaner import run_usage
+        from services.analytics.data_cleaning.amazon_title_cleaner import run_usage
         run_d["amazon_title_cleaning_usage"] = run_usage(run_id)
     # AI provider problems during the run (out of credits, rate limit, bad key, outage) for the run page banner
     try:

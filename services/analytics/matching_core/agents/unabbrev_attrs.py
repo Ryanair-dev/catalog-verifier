@@ -1,32 +1,5 @@
 """
 Unabbreviation agent for ATTRIBUTE EXTRACTION (not for search).
-
-Problem: vendor titles like "OXO GG SS Peeler BLK" or "KWS 916 SN PRIV LEVER" hide their attributes in
-abbreviations, so the attribute reader (attr_extract.py) cannot see "black", "stainless steel",
-"satin nickel", "privacy".
-
-How it works (the LLM never writes the title itself, so it cannot add information):
-  1. Pick the vendor rows whose title has abbreviation-looking words (BLK, GG, SS, WHT, PRIV, BAT. ...).
-  2. Send them to the same Anthropic model the query agent uses, 20 titles per call.
-     The model returns PAIRS only:  {"from": "BLK", "to": "Black"}.
-  3. The code checks every pair: "from" must be a word that really is in the title, "to" must be a short
-     plain phrase.  Bad pairs are dropped.
-  4. The code applies the pairs to the title  ->  "OXO Good Grips Stainless Steel Peeler Black".
-  5. The result is saved on the vendor row:  analytics_catalog_rows.data_json["ai_unabbrev"]
-       {"expanded_title", "pairs", "dropped", "model", "prompt_version", "at"}
-     attr_extract.py (v10) reads it as an extra, low-trust source called "ai_title" when the switch
-     MATCH_AI_TITLE_ATTRS=1 is set.  Values from it are marked "soft": they may send a pair to Review,
-     never to Rejected (needs the matching check in variant_gate.py).
-
-Commands (repo root):
-  uv run python -m services.analytics.matching_core.agents.unabbrev_attrs --run 12 --list
-        which rows would be sent (no LLM call, free)
-  uv run python -m services.analytics.matching_core.agents.unabbrev_attrs --run 12 --dry-run
-        call the LLM and print the expansions, write nothing (costs tokens)
-  uv run python -m services.analytics.matching_core.agents.unabbrev_attrs --run 12
-        call the LLM and save the expansions on the vendor rows; then Re-score the run
-  options: --all (send every row, not only abbreviated ones), --force (redo rows that already have one),
-           --limit N (first N rows only)
 """
 from __future__ import annotations
 

@@ -21,7 +21,7 @@ from services.analytics.matching_core.matching.attr_extract import (
     size_relation,
 )
 from services.analytics.matching_core.matching.lexicon import colors_relation, get_lexicon, norm
-from services.analytics.matching_core.matching.normalize import barcode_forms, normalize_upc
+from services.analytics.data_cleaning.normalize import barcode_forms, normalize_upc
 from services.analytics.matching_core.matching.variation import _count_value, compare_boxes, varying_boxes
 
 FILE_VERSION = "2026-10-29 vendor_families v4.2 (variant words from the lexicon, shared barcode matching)"

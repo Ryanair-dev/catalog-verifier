@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import base64
 import datetime
-import io
 import logging
 import os
 import uuid
 from functools import lru_cache
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
 
 from services import azure_sql
 from services import create_po as cp
