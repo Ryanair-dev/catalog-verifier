@@ -196,11 +196,20 @@ def score_pair(
     offer, candidate = build_pair(
         source, normalized, extracted=extracted, sources=sources,
     )
+    mpn_same = bool(offer.mpn and candidate.mpn and mpns_match(offer.mpn, candidate.mpn))
     mpn_brand_match = bool(
-        offer.mpn and candidate.mpn
-        and mpns_match(offer.mpn, candidate.mpn)
-        and candidate_brand_matches(offer.brand, candidate.brand, candidate.manufacturer)
+        mpn_same and candidate_brand_matches(offer.brand, candidate.brand, candidate.manufacturer)
     )
+    # A sub-brand learned from Amazon (services/analytics/brand_families.py: Hygea -> PDI) counts as the
+    # brand here, and ONLY here: same exact MPN + learned sub-brand = same item.
+    family = None
+    if mpn_same and not mpn_brand_match:
+        try:
+            from services.analytics.brand_families import family_pair
+            family = family_pair(offer.brand, candidate.brand, candidate.manufacturer)
+        except Exception:  # noqa: BLE001 - no learned pairs available: the rule works as before
+            family = None
+        mpn_brand_match = bool(family)
     if mpn_brand_match:
         result = MatchResult(
             offer_id=offer.offer_id,
@@ -235,6 +244,12 @@ def score_pair(
         })
     scores = result_to_scores(result, method, offer, candidate)
     scores["mpn_brand_match"] = mpn_brand_match
+    if family:
+        scores["brand_family"] = f"{family[0]} → {family[1]}"      # shown in the reason; listed on the run page
+        explanation = scores.get("explanation")
+        if isinstance(explanation, dict):
+            explanation["summary"] = (f"Brand (learned sub-brand {family[0]} → {family[1]}) and MPN match; "
+                                      "verified at 100. Other matching rules were not applied.")
     scores["upc_unconfirmed"] = upc_unconfirmed
     if "mpn_field_conflict" in result.reasons:
         scores["mpn_field_conflict"] = True        # shown as "Item ID / MPN mismatch"

@@ -663,9 +663,12 @@ def _audit_run_approvals(
     run_id: int,
     scoring_method: str,
     mode: str,
+    stop_event: "threading.Event | None" = None,
+    progress_cb: Any = None,
 ) -> int:
     """Audit final scorer approvals and downgrade only explicitly flagged pairs.
-    Returns the number of approvals audited."""
+    Returns the number of approvals audited.  stop_event (post-run button): stop after the current pair.
+    progress_cb(done, total): called per pair so the run page can show a bar."""
     from services.analytics.matching_core.agents.verification_agent import (
         apply_audit,
         create_approval_auditor,
@@ -738,28 +741,35 @@ def _audit_run_approvals(
     if not pending:
         return 0
     auditor = create_approval_auditor()
-    with database._LOCK, _with_conn() as conn:
-        for item in pending:
-            audit_result = auditor.audit(
-                item["offer"], item["candidate"], item["result"],
-            )
-            if audit_result.error:
-                log.warning("LLM verifier failed for run %s ASIN %s: %s", run_id, item["asin"], audit_result.error)
-                hit = _ai_error_kind(audit_result.error)
-                if hit and hit[0] in _AI_STOP_KINDS:
-                    log.warning("LLM verifier stopped for run %s: %s %s", run_id, hit[1], hit[0])
-                    break                                  # every further call would fail the same way
-            audit = audit_result.as_record()
-            adjusted = apply_audit(item["result"], audit_result)
-            data = item["data"]
-            data["verification_audit"] = audit
-            verdict = adjusted.verdict.value
-            confidence = adjusted.confidence
-            if adjusted.used_agent:
-                data["scores"]["llm_verifier_flagged"] = True
-            data["scores"]["reasons"] = adjusted.reasons
-            data["scores"]["confidence_score"] = confidence
-            data["scores"]["verdict"] = verdict
+    audited = 0
+    if progress_cb:
+        progress_cb(0, len(pending))
+    # Now started from the run page (after the run): the AI call happens OUTSIDE the DB lock and each pair is
+    # written on its own, so the page can keep polling and shows verdicts change while the audit works.
+    for item in pending:
+        if stop_event is not None and stop_event.is_set():
+            break
+        audit_result = auditor.audit(
+            item["offer"], item["candidate"], item["result"],
+        )
+        if audit_result.error:
+            log.warning("LLM verifier failed for run %s ASIN %s: %s", run_id, item["asin"], audit_result.error)
+            hit = _ai_error_kind(audit_result.error)
+            if hit and hit[0] in _AI_STOP_KINDS:
+                log.warning("LLM verifier stopped for run %s: %s %s", run_id, hit[1], hit[0])
+                break                                  # every further call would fail the same way
+        audit = audit_result.as_record()
+        adjusted = apply_audit(item["result"], audit_result)
+        data = item["data"]
+        data["verification_audit"] = audit
+        verdict = adjusted.verdict.value
+        confidence = adjusted.confidence
+        if adjusted.used_agent:
+            data["scores"]["llm_verifier_flagged"] = True
+        data["scores"]["reasons"] = adjusted.reasons
+        data["scores"]["confidence_score"] = confidence
+        data["scores"]["verdict"] = verdict
+        with database._LOCK, _with_conn() as conn:
             conn.execute(
                 "UPDATE analytics_candidates SET confidence=?, verdict=?, data_json=? "
                 "WHERE run_id=? AND row_idx=? AND asin=? "
@@ -769,8 +779,13 @@ def _audit_run_approvals(
                     run_id, item["row_idx"], item["asin"],
                 ),
             )
+        audited += 1
+        if progress_cb:
+            progress_cb(audited, len(pending))
+        if audited % 10 == 0:
+            _recompute_run_counts(run_id)
     _recompute_run_counts(run_id)
-    return len(pending)
+    return audited
 
 def _log_run_timing(run_id: int, pages_cap: int, timings: dict) -> None:
     """Remember how long each stage took, so /estimate can learn from real runs."""
@@ -1301,6 +1316,15 @@ def _rescore_pipeline(
     are forced to not_approved regardless of confidence.
     """
     try:
+        # Sub-brands learned from this run's Amazon listings (brand_families.py), BEFORE the rescore, so the
+        # brand + MPN rule already uses them below (also for runs made before this existed).
+        try:
+            from services.analytics.brand_families import learn_sub_brands
+            _update_progress(run_id, phase="Learning sub-brands from Amazon listings")
+            learn_sub_brands(run_id)
+        except Exception:
+            log.exception("Sub-brand learning failed for run %s (rescore continues without it)", run_id)
+
         # CHANGED: the AI title reader (abbreviations + attributes) for rows where the rules are not enough.
         # Runs BEFORE the rows are loaded below, so this rescore already scores with what it found.
         try:
@@ -2061,10 +2085,9 @@ def _run_pipeline(
 
         # Claude steps the user ticked: check once that Claude answers at all.  If it cannot (no credits, usage
         # limit, bad key, not reachable) the run page says so at once and those steps are skipped for this run.
+        # (the LLM query fallback and approval verifier are run-page actions now, not part of the search)
         claude_steps = [name for on, name in ((use_ai_reader, "AI title reader"),
-                                              (clean_amazon_titles, "Amazon title cleanup"),
-                                              (use_query_agent, "LLM query fallback"),
-                                              (use_llm_verifier, "LLM approval verifier")) if on]
+                                              (clean_amazon_titles, "Amazon title cleanup")) if on]
         if claude_steps:
             _update_progress(run_id, status="Searching", phase="Checking the AI provider (Claude)…")
             problem = _ping_anthropic()
@@ -2207,6 +2230,28 @@ def _run_pipeline(
                 for row_idx, fields in ai_extracted.items():
                     extracted_brands.setdefault(row_idx, {}).update(fields)
             _save_extracted_brands(run_id, extracted_brands)
+            # MERGED with the AI title reader: the keyword step's abbreviation pairs + attributes become the
+            # same data_json["ai_unabbrev"] record the reader used to write, so the matcher reads them LAST,
+            # exactly as before, with no extra AI call.  Cached results are written too (the record check is
+            # by prompt version, so a resumed run does not rewrite what it already has).
+            if ai_extracted:
+                try:
+                    from services.analytics.brand_extractor import PROMPT_VERSION as _kw_prompt_version
+                    from services.analytics.brand_extractor import _selected_provider
+                    from services.analytics.matching_core.agents.attr_ai import record_from_keyword_extraction
+                    _kw_model = _selected_provider()[1]
+                    _rows_by_idx = {r.row_idx: r for r in original_source_rows}
+                    for row_idx, fields in ai_extracted.items():
+                        r = _rows_by_idx.get(row_idx)
+                        if r is None:
+                            continue
+                        record_from_keyword_extraction(
+                            run_id, row_idx, r.title, r.itemid or "", fields,
+                            model=_kw_model, prompt_version=_kw_prompt_version,
+                        )
+                except Exception as exc:
+                    log.exception("Could not keep keyword-step abbreviations for run %s", run_id)
+                    _note_step_crash(run_id, "AI reads vendor titles", exc)
             if _handle_control():
                 return
  
@@ -2318,36 +2363,28 @@ def _run_pipeline(
             if _handle_control():
                 return
  
-        if use_query_agent and "agent" not in tiers_done:
-            _t0 = time.monotonic()
-            _update_progress(run_id, phase="LLM query fallback")
-            with _ai_step(run_id, "LLM query fallback"):
-                comparison_titles, agent_rows = _run_query_agent_fallback(
-                    run_id, source_rows, candidates_by_row, extracted_brands, marketplace,
-                )
-            _clean_candidate_titles()
-            fallback_rows = [row for row in source_rows if row.row_idx in agent_rows]
-            if fallback_rows:
-                scored_rows = [
-                    replace(row, title=comparison_titles.get(row.row_idx) or row.title)
-                    for row in fallback_rows
-                ]
-                _vet_and_store(
-                    run_id, scored_rows, candidates_by_row, extracted_brands,
-                    max_rank, min_rank, mode,
-                    "Scoring query-agent candidates", scoring_method,
-                )
-                if _handle_control():
-                    return
-            timings["agent"] = (time.monotonic() - _t0, len(agent_rows))
-            _mark_tier_done(run_id, "agent")
- 
-        if use_llm_verifier:
-            _t0 = time.monotonic()
-            _update_progress(run_id, phase="Auditing approved matches with LLM")
-            with _ai_step(run_id, "LLM approval verifier"):
-                _n_audited = _audit_run_approvals(run_id, scoring_method, mode)
-            timings["verifier"] = (time.monotonic() - _t0, _n_audited or 0)
+        # Sub-brands learned from Amazon: one MPN on a PDI listing AND a Hygea listing -> Hygea is a PDI brand.
+        # Pairs learned earlier were already used while scoring; rows that a NEW pair changes are scored again.
+        try:
+            from services.analytics.brand_families import learn_sub_brands, rows_to_rescore
+            _update_progress(run_id, phase="Learning sub-brands from Amazon listings")
+            if learn_sub_brands(run_id):
+                _rows = rows_to_rescore(run_id)
+                if _rows:
+                    _vet_and_store(
+                        run_id, [r for r in source_rows if r.row_idx in _rows],
+                        candidates_by_row, extracted_brands, max_rank, min_rank, mode,
+                        "Scoring again with learned sub-brands", scoring_method,
+                    )
+        except Exception:
+            log.exception("Sub-brand learning failed for run %s (run continues without it)", run_id)
+        if _handle_control():
+            return
+
+        # MOVED: the LLM query fallback and the LLM approval verifier no longer run inside the search.  Once the
+        # run is Complete, the run page offers them as buttons ("Find missing with AI", "AI audit approvals"),
+        # so the user first sees what the normal search found and chooses whether to spend on the rest
+        # (start_post_run_ai below).
  
         # Each tier vetted the rows it touched (with the full set of candidates
         # accumulated so far), so every row that produced a candidate has been
@@ -2359,11 +2396,13 @@ def _run_pipeline(
             run_family_pass(run_id)
         except Exception:
             log.exception("Family pass failed for run %d", run_id)
-        # unknown color names of this run -> suggestions for the word library (only with the AI title reader on)
-        if use_ai_reader:
+        # unknown color names of this run -> suggestions for the word library.  Part of the AI title reader,
+        # which is now folded into vendor keyword generation, so it runs for keyword runs too (it needs an
+        # Anthropic key; suggest_color_names simply returns without one).
+        if use_ai_reader or ai_clean_titles:
             try:
                 from services.analytics.matching_core.agents.attr_ai import suggest_color_names
-                with _ai_step(run_id, "AI title reader"):
+                with _ai_step(run_id, "AI reads vendor titles" if ai_clean_titles else "AI title reader"):
                     suggest_color_names(run_id)
             except Exception as exc:
                 log.exception("Color-name suggestions failed for run %s", run_id)
@@ -2398,7 +2437,6 @@ def _run_query_agent_fallback(
 ) -> tuple[dict[int, str], set[int]]:
     """Use the matcher query agent only when regular retrieval found no candidates."""
     from services.analytics.matching_core.agents.query_agent import create_query_agent
-    from services.analytics.matching_core.models import Offer
  
     fallback_rows = [row for row in source_rows if not candidates_by_row.get(row.row_idx)]
     if not fallback_rows:
@@ -2407,45 +2445,352 @@ def _run_query_agent_fallback(
     comparison_titles: dict[int, str] = {}
     processed_rows: set[int] = set()
     for row in fallback_rows:
-        offer = Offer(
-            offer_id=str(row.row_idx),
-            title=row.title or None,
-            raw_text=row.title or None,
-            brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
-            upc=row.upc or None,
-            mpn=row.itemid or None,
-        )
-        try:
-            candidates, trace = agent.run(offer)
-            hit = _ai_error_kind((trace or {}).get("error"))
-            if hit and hit[0] in _AI_STOP_KINDS:
-                log.warning("Query agent stopped for run %s: %s %s (%s)", run_id, hit[1], hit[0], trace.get("error"))
-                _save_query_agent_result(run_id, row.row_idx, trace)
-                processed_rows.add(row.row_idx)
-                break                                      # every further row would fail the same way
-        except Exception as exc:
-            trace = {
-                "used_agent": True,
-                "error": f"{type(exc).__name__}: {exc}"[:500],
-                "candidates_found": 0,
-            }
-            log.exception("Query agent failed for run %s row %s", run_id, row.row_idx)
-            _save_query_agent_result(run_id, row.row_idx, trace)
-            processed_rows.add(row.row_idx)
-            continue
- 
+        comparison, fatal = _agent_search_row(agent, run_id, row, extracted_brands, candidates_by_row)
         processed_rows.add(row.row_idx)
-        trace["scoring_title"] = trace.get("comparison_title") or row.title
-        if trace.get("comparison_title"):
-            comparison_titles[row.row_idx] = trace["comparison_title"]
-        _save_query_agent_result(run_id, row.row_idx, trace)
-        # CHANGED: the agent's unabbreviation step also read the title's attributes: keep them on the row
-        # (checked against the title), so the attribute reader can use them without a second call
-        try:
-            from services.analytics.matching_core.agents.attr_ai import record_from_agent_trace
-            record_from_agent_trace(run_id, row.row_idx, "", row.itemid or "", trace)
-        except Exception:
-            log.exception("Could not keep the agent's attributes for run %s row %s", run_id, row.row_idx)
-        for candidate in candidates:
-            candidates_by_row.setdefault(row.row_idx, []).append((candidate, "Agent"))
+        if comparison:
+            comparison_titles[row.row_idx] = comparison
+        if fatal:
+            break                                      # every further row would fail the same way
     return comparison_titles, processed_rows
+
+
+def _agent_search_row(
+    agent: Any,
+    run_id: int,
+    row: SourceRow,
+    extracted_brands: dict[int, dict],
+    candidates_by_row: dict[int, list[tuple[dict, str]]],
+) -> tuple[str, bool]:
+    """Run the query agent for ONE row: save its trace, keep its title reading on the row, append the
+    candidates it found.  Returns (comparison title or "", fatal) — fatal = a provider error that retrying
+    cannot help (out of credits, usage limit, bad key), so the caller should stop."""
+    from services.analytics.matching_core.models import Offer
+
+    offer = Offer(
+        offer_id=str(row.row_idx),
+        title=row.title or None,
+        raw_text=row.title or None,
+        brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
+        upc=row.upc or None,
+        mpn=row.itemid or None,
+    )
+    try:
+        candidates, trace = agent.run(offer)
+        hit = _ai_error_kind((trace or {}).get("error"))
+        if hit and hit[0] in _AI_STOP_KINDS:
+            log.warning("Query agent stopped for run %s: %s %s (%s)", run_id, hit[1], hit[0], trace.get("error"))
+            _save_query_agent_result(run_id, row.row_idx, trace)
+            return "", True
+    except Exception as exc:
+        trace = {
+            "used_agent": True,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "candidates_found": 0,
+        }
+        log.exception("Query agent failed for run %s row %s", run_id, row.row_idx)
+        _save_query_agent_result(run_id, row.row_idx, trace)
+        return "", False
+ 
+    trace["scoring_title"] = trace.get("comparison_title") or row.title
+    comparison = str(trace.get("comparison_title") or "")
+    _save_query_agent_result(run_id, row.row_idx, trace)
+    # CHANGED: the agent's unabbreviation step also read the title's attributes: keep them on the row
+    # (checked against the title), so the attribute reader can use them without a second call
+    try:
+        from services.analytics.matching_core.agents.attr_ai import record_from_agent_trace
+        record_from_agent_trace(run_id, row.row_idx, "", row.itemid or "", trace)
+    except Exception:
+        log.exception("Could not keep the agent's attributes for run %s row %s", run_id, row.row_idx)
+    for candidate in candidates:
+        candidates_by_row.setdefault(row.row_idx, []).append((candidate, "Agent"))
+    return comparison, False
+
+# --------------------------------------------------------------------------- #
+# Post-run AI actions (run page buttons, after the run is Complete)
+#   "fallback" = LLM query fallback for the rows the normal search found nothing for
+#   "verifier" = LLM approval verifier for the scorer's approvals
+# They used to be wizard options that ran inside the search; now the user sees what the normal search found
+# first and decides whether to spend on the rest.  Same pattern as the Eligibility check: own status columns
+# (post_ai_*), own progress bar on the run page, own Stop; the run itself stays Complete.
+# --------------------------------------------------------------------------- #
+
+POST_AI_STEPS = ("fallback", "verifier")
+POST_AI_LABELS = {"fallback": "LLM query fallback", "verifier": "LLM approval verifier"}
+# Same per-unit assumptions the wizard estimate used (Claude Sonnet 4.6, $3 / $15 per 1M tokens):
+#   query fallback ~2,000 input + 150 output tokens per row it searches (up to 2 rounds -> high = x2)
+#   verifier       ~500 input + 60 output tokens per approval audited
+POST_AI_FALLBACK_COST_ROW = (2000 * 3 + 150 * 15) / 1_000_000
+POST_AI_VERIFIER_COST_PAIR = (500 * 3 + 60 * 15) / 1_000_000
+
+_POST_AI_THREADS: dict[int, threading.Thread] = {}
+_POST_AI_STOP: dict[int, threading.Event] = {}
+
+
+def post_run_ai_running(run_id: int) -> bool:
+    t = _POST_AI_THREADS.get(int(run_id))
+    return bool(t and t.is_alive())
+
+
+def _set_post_ai(run_id: int, **fields: Any) -> None:
+    allowed = ("post_ai_step", "post_ai_status", "post_ai_done", "post_ai_total", "post_ai_message")
+    cols = [(f"post_ai_{k}" if not k.startswith("post_ai_") else k, v) for k, v in fields.items()]
+    cols = [(k, v) for k, v in cols if k in allowed]
+    if not cols:
+        return
+    with database._LOCK, _with_conn() as conn:
+        conn.execute(
+            f"UPDATE analytics_runs SET {', '.join(k + '=?' for k, _ in cols)} WHERE id=?",
+            [v for _, v in cols] + [run_id],
+        )
+
+
+def clear_orphan_post_ai(run_id: int) -> bool:
+    """The DB says a post-run AI step is running but no thread owns it (server restarted): mark it stopped.
+    Returns True when something was cleared."""
+    if post_run_ai_running(run_id):
+        return False
+    with database._connect() as conn:
+        row = conn.execute("SELECT post_ai_status FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    if row and (row[0] or "") == "running":
+        _set_post_ai(run_id, status="stopped", message="Stopped (the server restarted while it was running)")
+        return True
+    return False
+
+
+def _load_source_rows(run_id: int) -> list[SourceRow]:
+    """The run's vendor rows rebuilt from analytics_catalog_rows (same as resume_run does)."""
+    with _with_conn() as conn:
+        rows = conn.execute(
+            "SELECT row_idx, data_json FROM analytics_catalog_rows WHERE run_id=? ORDER BY row_idx",
+            (run_id,),
+        ).fetchall()
+    out: list[SourceRow] = []
+    for r in rows:
+        try:
+            d = json.loads(r["data_json"] or "{}")
+        except (ValueError, TypeError):
+            d = {}
+        out.append(SourceRow(
+            row_idx=r["row_idx"], upc=d.get("upc") or "", itemid=d.get("itemid") or "",
+            title=d.get("title") or "", search_title=d.get("search_title") or "",
+            brand=d.get("brand") or "", raw=d.get("raw") or {},
+        ))
+    return out
+
+
+def _agent_tried_rows(run_id: int) -> dict[int, bool]:
+    """{row_idx: had_error} for rows the query agent already searched."""
+    out: dict[int, bool] = {}
+    with _with_conn() as conn:
+        rows = conn.execute(
+            "SELECT row_idx, query_agent_json FROM analytics_catalog_rows "
+            "WHERE run_id=? AND query_agent_json IS NOT NULL",
+            (run_id,),
+        ).fetchall()
+    for r in rows:
+        try:
+            trace = json.loads(r["query_agent_json"] or "null")
+        except (TypeError, ValueError):
+            trace = None
+        if isinstance(trace, dict) and trace.get("used_agent"):
+            out[int(r["row_idx"])] = bool(trace.get("error"))
+    return out
+
+
+def _fallback_targets(run_id: int, include_tried: bool = False) -> tuple[list[SourceRow], int, int]:
+    """(rows to send, rows with no candidates, rows skipped because the agent already searched them)."""
+    with _with_conn() as conn:
+        found = {int(r[0]) for r in conn.execute(
+            "SELECT DISTINCT row_idx FROM analytics_candidates WHERE run_id=?", (run_id,)).fetchall()}
+    tried = _agent_tried_rows(run_id)
+    not_found = [r for r in _load_source_rows(run_id) if r.row_idx not in found]
+    targets = [r for r in not_found
+               if include_tried or r.row_idx not in tried or tried[r.row_idx]]   # errors are retried
+    return targets, len(not_found), len(not_found) - len(targets)
+
+
+def _verifier_pending_count(run_id: int) -> int:
+    """Approvals the verifier would audit (same filter as _audit_run_approvals)."""
+    with _with_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM analytics_candidates WHERE run_id=? AND verdict='verified' "
+            "AND (review_status IS NULL OR review_status='') "
+            "AND COALESCE(json_extract(data_json,'$.scores.scorer_verdict'),'')='verified' "
+            "AND COALESCE(json_extract(data_json,'$.scores.mpn_brand_match'),0)=0 "
+            "AND COALESCE(json_extract(data_json,'$.verification_audit.audited'),0)=0",
+            (run_id,),
+        ).fetchone()
+    return int(row[0] if row else 0)
+
+
+def post_run_ai_estimate(run_id: int, include_tried: bool = False) -> dict[str, Any]:
+    targets, not_found, skipped = _fallback_targets(run_id, include_tried)
+    pairs = _verifier_pending_count(run_id)
+    return {
+        "fallback": {
+            "not_found_rows": not_found,
+            "already_tried": skipped,
+            "rows_to_send": len(targets),
+            "cost_usd": round(len(targets) * POST_AI_FALLBACK_COST_ROW, 4),
+            "cost_usd_high": round(len(targets) * POST_AI_FALLBACK_COST_ROW * 2, 4),
+        },
+        "verifier": {
+            "approvals_to_audit": pairs,
+            "cost_usd": round(pairs * POST_AI_VERIFIER_COST_PAIR, 4),
+        },
+        "running": post_run_ai_running(run_id),
+        "anthropic_key": bool(os.getenv("ANTHROPIC_API_KEY")),
+    }
+
+
+def start_post_run_ai(run_id: int, step: str, include_tried: bool = False) -> tuple[bool, str]:
+    """Start one post-run AI step in a background thread.  (False, reason) when it cannot start."""
+    if step not in POST_AI_STEPS:
+        return False, f"step must be one of {', '.join(POST_AI_STEPS)}"
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return False, "Set ANTHROPIC_API_KEY in .env to use the LLM steps"
+    clear_orphan_post_ai(run_id)
+    if post_run_ai_running(run_id):
+        return False, "An AI step is already running for this run"
+    from services.analytics.ai_check import is_running as _ai_check_running
+    if _ai_check_running(run_id):
+        return False, "The AI check of Review items is running for this run; wait for it to finish"
+    with _with_conn() as conn:
+        row = conn.execute("SELECT status FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    if not row:
+        return False, f"Run {run_id} not found"
+    if (row[0] or "") != "Complete":
+        return False, f"Run is {row[0]} — the AI steps run on a Complete run"
+    stop = threading.Event()
+    _POST_AI_STOP[int(run_id)] = stop
+    _set_post_ai(run_id, step=step, status="running", done=0, total=0,
+                 message=f"{POST_AI_LABELS[step]}: starting…")
+    target = _post_fallback_job if step == "fallback" else _post_verifier_job
+    args = (run_id, stop, include_tried) if step == "fallback" else (run_id, stop)
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    _POST_AI_THREADS[int(run_id)] = thread
+    thread.start()
+    return True, ""
+
+
+def stop_post_run_ai(run_id: int) -> bool:
+    """Ask the running step to stop after the current row / pair.  Returns True when one was running."""
+    ev = _POST_AI_STOP.get(int(run_id))
+    if ev is not None:
+        ev.set()
+    running = post_run_ai_running(run_id)
+    if not running:
+        clear_orphan_post_ai(run_id)
+    return running
+
+
+def _run_settings(run_id: int) -> dict[str, Any]:
+    with _with_conn() as conn:
+        row = conn.execute("SELECT * FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    return dict(row) if row else {}
+
+
+def _finish_post_ai(run_id: int, step: str, stopped: bool, message: str) -> None:
+    """Family pass again (new candidates / changed verdicts), counts, and the final status line."""
+    try:
+        from services.analytics.family_pass import run_family_pass
+        run_family_pass(run_id)
+    except Exception:
+        log.exception("Family pass after %s failed for run %d", step, run_id)
+    _recompute_run_counts(run_id)
+    run = _run_settings(run_id)
+    total = int(run.get("total_catalog_items") or 0)
+    _update_progress(run_id, phase="Done", done=total, total=total)       # _vet_and_store wrote its own phase
+    _set_post_ai(run_id, status="stopped" if stopped else "done", message=message)
+
+
+def _post_fallback_job(run_id: int, stop: threading.Event, include_tried: bool = False) -> None:
+    step = "fallback"
+    try:
+        from services.analytics.matching_core.agents.query_agent import create_query_agent
+        run = _run_settings(run_id)
+        targets, _not_found, _skipped = _fallback_targets(run_id, include_tried)
+        _set_post_ai(run_id, total=len(targets), done=0,
+                     message=f"Searching {len(targets):,} rows with no candidates")
+        with database._LOCK, _with_conn() as conn:          # the run page shows the query-agent stats
+            conn.execute("UPDATE analytics_runs SET use_query_agent=1 WHERE id=?", (run_id,))
+        if not targets:
+            _finish_post_ai(run_id, step, False, "Nothing to search: every row has candidates")
+            return
+        candidates_by_row: dict[int, list[tuple[dict, str]]] = {}
+        extracted = _load_extracted_brands(run_id)
+        agent = create_query_agent(get_catalog_api(run.get("marketplace") or "US"))
+        found = done = 0
+        with _ai_step(run_id, POST_AI_LABELS[step]):
+            for row in targets:
+                if stop.is_set():
+                    break
+                comparison, fatal = _agent_search_row(agent, run_id, row, extracted, candidates_by_row)
+                if candidates_by_row.get(row.row_idx):
+                    if run.get("clean_amazon_titles"):
+                        _clean_titles_for(run_id, candidates_by_row[row.row_idx])
+                    # scored at once, so the row leaves the "Not found" list while the step keeps going
+                    _vet_and_store(
+                        run_id, [replace(row, title=comparison or row.title)], candidates_by_row, extracted,
+                        int(run.get("max_rank") or 0), int(run.get("min_rank") or 0),
+                        run.get("vetting_mode") or "cpg", "AI search: scoring",
+                        run.get("scoring_method") or "weighted",
+                    )
+                    found += 1
+                done += 1
+                _set_post_ai(run_id, done=done,
+                             message=f"Searched {done:,}/{len(targets):,} · {found:,} found candidates")
+                if fatal:
+                    break
+        stopped = stop.is_set() or done < len(targets)
+        _finish_post_ai(run_id, step, stopped,
+                        f"{'Stopped' if stopped else 'Done'}: searched {done:,} of {len(targets):,} rows, "
+                        f"{found:,} found candidates")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Post-run query fallback failed for run %s", run_id)
+        _note_step_crash(run_id, POST_AI_LABELS[step], exc)
+        _set_post_ai(run_id, status="error", message=f"{type(exc).__name__}: {exc}"[:300])
+
+
+def _clean_titles_for(run_id: int, items: list[tuple[dict, str]]) -> None:
+    """Amazon item-name extraction for the agent's new candidates, when the run has that option on."""
+    titles = [(it.get("title") or "").strip() for it, _ in items
+              if (it.get("title") or "").strip() and not it.get("matching_title")]
+    if not titles:
+        return
+    try:
+        from services.analytics.data_cleaning.amazon_title_cleaner import clean_amazon_titles
+        with _ai_step(run_id, "Amazon title cleanup"):
+            cleaned = clean_amazon_titles(titles, run_id=run_id)
+        for it, _ in items:
+            t = (it.get("title") or "").strip()
+            if t in cleaned:
+                it["matching_title"] = cleaned[t]
+    except Exception as exc:  # noqa: BLE001 - the original titles are used
+        log.exception("Amazon-title cleanup failed for run %s (post-run search)", run_id)
+        _note_step_crash(run_id, "Amazon title cleanup", exc)
+
+
+def _post_verifier_job(run_id: int, stop: threading.Event) -> None:
+    step = "verifier"
+    try:
+        run = _run_settings(run_id)
+        with database._LOCK, _with_conn() as conn:          # the run page shows the verifier stats
+            conn.execute("UPDATE analytics_runs SET use_llm_verifier=1 WHERE id=?", (run_id,))
+        state = {"total": 0}
+
+        def _progress(done: int, total: int) -> None:
+            state["total"] = total
+            _set_post_ai(run_id, done=done, total=total, message=f"Audited {done:,}/{total:,} approvals")
+
+        with _ai_step(run_id, POST_AI_LABELS[step]):
+            n = _audit_run_approvals(run_id, run.get("scoring_method") or "weighted",
+                                     run.get("vetting_mode") or "cpg", stop_event=stop, progress_cb=_progress)
+        stopped = stop.is_set() or n < state["total"]
+        _finish_post_ai(run_id, step, stopped,
+                        f"{'Stopped' if stopped else 'Done'}: audited {n:,} of {state['total']:,} approvals"
+                        if state["total"] else "Nothing to audit: no unaudited approvals")
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Post-run approval verifier failed for run %s", run_id)
+        _note_step_crash(run_id, POST_AI_LABELS[step], exc)
+        _set_post_ai(run_id, status="error", message=f"{type(exc).__name__}: {exc}"[:300])

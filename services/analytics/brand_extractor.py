@@ -10,7 +10,9 @@ What it reads
   when that evidence is really written in the text, so a made-up value is dropped.
 
 Where the results go
-  - vendor rows: the run's extracted_json, as before (brand, product_type, ...) plus "attrs";
+  - vendor rows: the run's extracted_json, as before (brand, product_type, ...) plus "attrs" and "expansions";
+    the expansions + attrs are also written to the row as the data_json["ai_unabbrev"] record the AI title
+    reader used to write (attr_ai.record_from_keyword_extraction), so the matcher reads them the same way;
   - listings: attached to the Amazon item as "ai_attrs" when the pair is scored.
   attr_extract.py reads both LAST: they only fill attributes the rules left empty.
 
@@ -43,10 +45,10 @@ from services.analytics.matching_core.agents.keyword_prompts import KEYWORD_FORM
 
 log = logging.getLogger(__name__)
 
-FILE_VERSION = "2026-11-09 brand_extractor v3 (keyword formula, attributes with evidence, cache)"
+FILE_VERSION = "2026-11-10 brand_extractor v4 (merged with the AI title reader: expansions for the matcher)"
 OPENAI_MODEL = "gpt-4o-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-PROMPT_VERSION = "fields-keywords-v3"
+PROMPT_VERSION = "fields-keywords-v4-expansions"
 LISTING_PROMPT_VERSION = "fields-v2"
 BATCH_SIZE = 20                 # texts per call
 MAX_WORKERS = 4                 # parallel calls
@@ -88,6 +90,10 @@ For "vendor" items ALSO return:
   pack_info     the pack count if listed (e.g. "pack of 3"); null if single
   search_keyword  the short Amazon search keyword
   keyword_specs   the same keyword with only useful size/unit-count specs appended
+  expansions    every abbreviation or code of the text you decoded, as pairs; "from" = the token exactly as
+                written in the text, "to" = the plain text it stands for.  Examples: BLK -> Black,
+                SS -> Stainless Steel, SN -> Satin Nickel, GG -> Good Grips, PRIV -> Privacy, LG -> Large,
+                CT -> Count.  Leave brand names, model numbers and ordinary words out; an empty list is fine.
 
 Follow this formula for vendor keyword fields:
 """ + KEYWORD_FORMULA + """
@@ -96,6 +102,7 @@ Reply with a JSON object only:
 {"items": [{"id": "0", "brand": "Kwikset", "product_type": "door lever", "model": "Tustin", "size": null,
             "pack_info": null, "search_keyword": "Kwikset Tustin Door Lever",
             "keyword_specs": "Kwikset Tustin Door Lever",
+            "expansions": [{"from": "SN", "to": "Satin Nickel"}, {"from": "LVR", "to": "Lever"}],
             "attributes": {"finish": {"value": "satin nickel", "evidence": "SN"}}},
            {"id": "1", "attributes": {"color": {"value": "black", "evidence": "Black"}}}]}
 """
@@ -222,6 +229,15 @@ def _result(kind: str, text: str, raw: dict) -> dict:
         for field in VENDOR_FIELDS:
             value = (raw or {}).get(field)
             out[field] = str(value).strip() if value not in (None, "", "null") else ""
+        # abbreviation pairs for the matcher (the former AI title reader's job); checked again, word by word
+        # against the title, in attr_ai.record_from_keyword_extraction before anything reads them
+        pairs: list[dict[str, str]] = []
+        for p in (raw or {}).get("expansions") or []:
+            src = str((p or {}).get("from") or "").strip() if isinstance(p, dict) else ""
+            dst = re.sub(r"\s+", " ", str((p or {}).get("to") or "")).strip() if isinstance(p, dict) else ""
+            if src and dst and len(src) <= 30 and len(dst) <= 60 and dst.lower() != src.rstrip(".").lower():
+                pairs.append({"from": src, "to": dst})
+        out["expansions"] = pairs
     return out
 
 
@@ -245,7 +261,7 @@ def _call(
             if provider == "anthropic":
                 response = client.messages.create(
                     model=model,
-                    max_tokens=3000,
+                    max_tokens=6000,          # the answer now also holds expansions for 20 items
                     system=_SYSTEM,
                     messages=[{"role": "user", "content": payload}],
                 )

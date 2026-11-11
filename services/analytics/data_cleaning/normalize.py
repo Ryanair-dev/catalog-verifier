@@ -265,13 +265,24 @@ def candidate_brand_matches(
     brand: str | None,
     candidate_brand: str | None,
     candidate_manufacturer: str | None = None,
+    use_learned: bool = True,
 ) -> bool:
-    """Treat the Amazon brand or manufacturer as the candidate's brand signal."""
-    return any(
+    """Treat the Amazon brand or manufacturer as the candidate's brand signal.
+    use_learned: a sub-brand learned from Amazon (brand_families.py: Sani Professional -> PDI) also counts as
+    the same brand, in every scorer.  brand_families itself passes False, to tell real matches from learned."""
+    if any(
         brands_match(brand, value)
         for value in (candidate_brand, candidate_manufacturer)
         if value
-    )
+    ):
+        return True
+    if not use_learned or not brand:
+        return False
+    try:
+        from services.analytics.brand_families import family_pair
+        return family_pair(brand, candidate_brand, candidate_manufacturer) is not None
+    except Exception:  # noqa: BLE001 - no learned pairs available: plain comparison only
+        return False
 
 
 def candidate_brand_similarity(

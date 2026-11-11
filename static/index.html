@@ -799,7 +799,7 @@
               <p id="analytics-run-subtitle" class="view-subtitle"></p>
             </div>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap justify-end" style="min-width:0;">
             <span id="analytics-run-status-pill" class="ms-pill">
               <span class="ms-pill-dot"></span> <span id="analytics-run-status-text">—</span>
             </span>
@@ -880,6 +880,7 @@
             </div>
           </div>
 
+
           <!-- Summary counts -->
           <div id="analytics-run-summary-row" class="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div class="summary-stat">
@@ -918,6 +919,76 @@
               <div class="summary-stat-value" id="analytics-run-stat-rejected" style="color: #b91c1c;">0</div>
             </div>
           </div>
+
+          <!-- AI tools: optional AI steps after the run (moved down from the header, next to the results) -->
+          <div id="analytics-run-ai-toolbar" class="hidden">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-xs" style="font-weight:700;color:#475569;margin-right:4px;">AI tools</span>
+                <button id="analytics-run-ai-fallback" class="btn btn-secondary text-xs hidden" title="LLM query fallback: let Claude rebuild the search for the rows the normal search found nothing for">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><path d="M11 8v6M8 11h6"/></svg>
+                  Find missing with AI
+                </button>
+                <button id="analytics-run-ai-verify" class="btn btn-secondary text-xs hidden" title="LLM approval verifier: Claude double-checks the scorer's approvals; flagged ones move to Review">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                  AI audit approvals
+                </button>
+                <button id="analytics-run-ai-check" class="btn btn-secondary text-xs hidden" title="AI check: Claude suggests approve / reject for each Review item. Nothing changes until you click Apply.">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                  AI check Review items
+                </button>
+                <button id="analytics-run-ai-check-apply" class="btn btn-primary text-xs hidden" title="Turn the AI check's suggestions into verdicts: approve → Approved, reject → Not Approved; uncertain stays in Review">
+                  Apply AI decisions
+                </button>
+                <button id="analytics-run-ai-check-stop" class="btn btn-danger text-xs hidden" title="Stop the AI check (suggestions found so far are kept)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                  Stop AI check
+                </button>
+                <button id="analytics-run-post-ai-stop" class="btn btn-danger text-xs hidden" title="Stop the AI step after the current row (what it already did is kept)">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                  Stop AI
+                </button>
+            </div>
+          </div>
+          <!-- Post-run AI step progress (LLM query fallback / approval verifier, started from the buttons above) -->
+          <div id="analytics-run-post-ai-card" class="run-progress-card hidden" style="background:linear-gradient(135deg,#f5f3ff 0%,#ede9fe 100%); border-color:#c4b5fd;">
+            <div class="rp-header">
+              <div class="rp-left">
+                <span class="rp-dot" style="background:#7c3aed;box-shadow:0 0 0 3px #ddd6fe;"></span>
+                <div>
+                  <div id="analytics-run-post-ai-phase" class="rp-phase" style="color:#5b21b6;">AI step…</div>
+                  <div id="analytics-run-post-ai-sub" class="rp-sub"></div>
+                </div>
+              </div>
+              <div class="rp-right">
+                <div id="analytics-run-post-ai-counts" class="rp-counts" style="color:#7c3aed;">0 / 0</div>
+              </div>
+            </div>
+            <div class="rp-track" style="background:#ddd6fe;">
+              <div class="rp-fill" id="analytics-run-post-ai-bar" style="width:0%;background:#7c3aed;"></div>
+            </div>
+          </div>
+          <!-- AI check of Review items: progress (suggestions are saved when it finishes or is stopped) -->
+          <div id="analytics-run-ai-check-card" class="run-progress-card hidden" style="background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%); border-color:#fcd34d;">
+            <div class="rp-header">
+              <div class="rp-left">
+                <span class="rp-dot" style="background:#d97706;box-shadow:0 0 0 3px #fde68a;"></span>
+                <div>
+                  <div class="rp-phase" style="color:#92400e;">AI check of Review items…</div>
+                  <div class="rp-sub">Suggestions appear when it finishes; nothing changes until you click Apply AI decisions.</div>
+                </div>
+              </div>
+              <div class="rp-right">
+                <div id="analytics-run-ai-check-counts" class="rp-counts" style="color:#d97706;">0 / 0</div>
+              </div>
+            </div>
+            <div class="rp-track" style="background:#fde68a;">
+              <div class="rp-fill" id="analytics-run-ai-check-bar" style="width:0%;background:#d97706;"></div>
+            </div>
+          </div>
+          <div id="analytics-run-ai-check-result" class="hidden" style="margin:0;padding:8px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;font-size:0.82rem;color:#92400e;"></div>
+          <!-- Sub-brands learned from Amazon (same MPN with PDI and Hygea -> Hygea is a PDI brand) -->
+          <div id="analytics-run-brands-card" class="hidden" style="margin:0;padding:8px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;font-size:0.82rem;color:#166534;"></div>
+          <div id="analytics-run-post-ai-result" class="hidden" style="margin:0;padding:8px 14px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;font-size:0.82rem;color:#5b21b6;"></div>
 
           <!-- Candidates table -->
           <div class="card">
@@ -994,6 +1065,35 @@
               <div id="analytics-run-pagination" style="display:flex;align-items:center;gap:4px;padding:10px 4px;flex-wrap:wrap;"></div>
               <div id="analytics-run-candidates-empty" class="hidden empty-state" style="padding: 32px 12px;">
                 <div class="text-sm" style="color: #6b7480;">No candidates yet. This table fills up as the search finishes.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Vendor rows with no candidate (live: shrinks while "Find missing with AI" runs) -->
+          <div id="analytics-run-notfound-card" class="card hidden">
+            <div class="card-body p-0">
+              <div class="flex items-center justify-between gap-3 px-4 py-3 border-b" style="border-color:#edf0f5;background:#fafbfc;">
+                <button id="analytics-run-notfound-toggle" type="button" class="flex items-center gap-2 text-sm font-semibold" style="color:#334155;background:none;border:none;cursor:pointer;">
+                  <span id="analytics-run-notfound-caret">▸</span>
+                  Not found <span class="run-tab-count" id="analytics-run-notfound-count">0</span>
+                  <span id="analytics-run-notfound-note" class="text-xs" style="font-weight:400;color:#94a3b8;"></span>
+                </button>
+                <button id="analytics-run-notfound-ai" class="btn btn-secondary text-xs hidden">Find these with AI…</button>
+              </div>
+              <div id="analytics-run-notfound-wrap" class="overflow-auto hidden" style="max-height:40vh;">
+                <table class="results-table">
+                  <thead>
+                    <tr>
+                      <th>Row</th>
+                      <th>Source UPC / Item ID</th>
+                      <th>Vendor Title</th>
+                      <th>Brand</th>
+                      <th>Search Keyword</th>
+                      <th>AI search</th>
+                    </tr>
+                  </thead>
+                  <tbody id="analytics-run-notfound-body"></tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -3071,24 +3171,15 @@
             <div class="flex flex-wrap gap-x-8 gap-y-3 mt-2">
               <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
                 <input type="checkbox" id="awiz-title-ai-clean" style="margin-top:2px;" />
-                <span><b>Generate vendor search keywords</b> <span id="awiz-ai-cost-hint" style="display:none; margin-left:4px; padding:1px 6px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span><br />Creates <b>Search Keyword</b> and <b>Search Keyword + Spec</b>, expands product wording, and extracts brand, size and model. Uses the first for Title search and the second for matching on all searches. Both appear in results and exports. Uses Claude Haiku, or OpenAI GPT-4o-mini when there is no Anthropic key.</span>
+                <span><b>AI vendor title reader &amp; search keywords</b> <span id="awiz-ai-cost-hint" style="display:none; margin-left:4px; padding:1px 6px; background:#fef9c3; color:#854d0e; border:1px solid #fde68a; border-radius:4px; font-weight:600; white-space:nowrap;"></span><br />Reads every vendor title once: creates <b>Search Keyword</b> and <b>Search Keyword + Spec</b>, extracts brand, size and model, and decodes abbreviations and codes the word lists miss (e.g. SN = satin nickel). The keywords drive Title search and matching; the decoded words and attributes are used when scoring. Uses Claude Haiku, or OpenAI GPT-4o-mini when there is no Anthropic key.</span>
               </label>
               <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
                 <input type="checkbox" id="awiz-amazon-title-cleaner" style="margin-top:2px;" />
                 <span><b>Extract item names from Amazon titles</b><br />Removes marketing and listing clutter, keeping the brand, product type, and key identifying details. The extracted name appears beside the original in results and exports; uses Claude.</span>
               </label>
-              <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
-                <input type="checkbox" id="awiz-ai-reader" style="margin-top:2px;" />
-                <span><b>AI title reader (abbreviations)</b><br />Decodes abbreviations and codes in vendor titles where the word lists are not enough (e.g. SN = satin nickel). Uses Anthropic.</span>
-              </label>
-              <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
-                <input type="checkbox" id="awiz-query-agent" style="margin-top:2px;" />
-                <span><b>LLM query fallback</b><br />Only expands/searches rows where normal retrieval found no candidates. Uses Anthropic.</span>
-              </label>
-              <label class="flex items-start gap-2 text-xs cursor-pointer" style="color:#475569; max-width:360px;">
-                <input type="checkbox" id="awiz-llm-verifier" style="margin-top:2px;" />
-                <span><b>LLM approval verifier</b><br />Audits scorer-approved candidates; flagged approvals move to Review. Uses Anthropic.</span>
-              </label>
+            </div>
+            <div class="text-xs mt-3" style="color:#64748b;">
+              <b>LLM query fallback</b> and <b>LLM approval verifier</b> are now on the run page: when the run finishes you see what was found and what was not, then choose whether to run them.
             </div>
           </div>
           <div id="awiz-run-estimate" class="mb-4 p-3 rounded-lg text-xs"

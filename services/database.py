@@ -322,6 +322,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE analytics_runs ADD COLUMN tiers_done TEXT DEFAULT '[]'")
         if not _column_exists(conn, "analytics_runs", "ai_notices"):
             conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_notices TEXT DEFAULT '[]'")
+        # additive migration — post-run AI actions from the run page (LLM query fallback / approval verifier)
+        for _col, _ddl in (("post_ai_step", "TEXT"), ("post_ai_status", "TEXT"),
+                           ("post_ai_done", "INTEGER DEFAULT 0"), ("post_ai_total", "INTEGER DEFAULT 0"),
+                           ("post_ai_message", "TEXT")):
+            if not _column_exists(conn, "analytics_runs", _col):
+                conn.execute(f"ALTER TABLE analytics_runs ADD COLUMN {_col} {_ddl}")
 
         # additive migration — brand column/text saved at wizard time for rescore pre-population
         if not _column_exists(conn, "analytics_runs", "brand_col"):

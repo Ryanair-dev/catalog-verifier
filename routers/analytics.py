@@ -41,6 +41,10 @@ from services.analytics import parse_source_rows, start_analytics_run
 from pydantic import BaseModel
 from services.analytics.runner import (
     _clean_search_query,
+    clear_orphan_post_ai,
+    post_run_ai_estimate,
+    start_post_run_ai,
+    stop_post_run_ai,
     request_pause,
     request_stop,
     resume_run,
@@ -48,6 +52,8 @@ from services.analytics.runner import (
     _tier1_upc,
     _tier2_itemid,
     _tier3_title,
+    _normalize_source_rows,
+    normalize_amazon_item,
     AUTO_APPROVE,
     REVIEW_FLOOR,
 )
@@ -649,6 +655,42 @@ def get_run_detail(
         notices = []
     run_d["ai_notices"] = notices if isinstance(notices, list) else []
 
+    # Post-run AI step left "running" by a server restart -> stopped, so the page does not spin forever
+    if run_d.get("post_ai_status") == "running" and clear_orphan_post_ai(run_id):
+        run_d["post_ai_status"] = "stopped"
+
+    # Vendor rows with NO candidate yet (the run page's "Not found" list; shrinks live while the AI search
+    # runs).  Only on the full load, like catalog_rows.
+    not_found: dict[str, Any] | None = None
+    if not verdict:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            nf_rows = conn.execute(
+                "SELECT r.row_idx, r.data_json, r.extracted_json, r.query_agent_json "
+                "FROM analytics_catalog_rows r WHERE r.run_id=? AND NOT EXISTS ("
+                "  SELECT 1 FROM analytics_candidates c WHERE c.run_id=r.run_id AND c.row_idx=r.row_idx) "
+                "ORDER BY r.row_idx",
+                (run_id,),
+            ).fetchall()
+        nf_list: list[dict[str, Any]] = []
+        for r in nf_rows[:1000]:
+            try:
+                d = json.loads(r["data_json"] or "{}")
+                ext = json.loads(r["extracted_json"] or "{}") or {}
+                trace = json.loads(r["query_agent_json"] or "null")
+            except (TypeError, ValueError):
+                d, ext, trace = {}, {}, None
+            agent = ""
+            if isinstance(trace, dict) and trace.get("used_agent"):
+                agent = "error" if trace.get("error") else "tried"
+            nf_list.append({
+                "row_idx": r["row_idx"], "upc": d.get("upc") or "", "itemid": d.get("itemid") or "",
+                "title": d.get("title") or "", "brand": d.get("brand") or "",
+                "search_keyword": ext.get("search_keyword") or "",
+                "agent": agent, "agent_error": (trace or {}).get("error") if agent == "error" else "",
+            })
+        not_found = {"count": len(nf_rows), "rows": nf_list}
+
     resp: dict[str, Any] = {
         "run": run_d,
         "catalog_rows": catalog_rows,
@@ -656,6 +698,14 @@ def get_run_detail(
         "ai_verdict_counts": ai_verdict_counts,
         "asin_conflicts": asin_conflicts,
     }
+    if not_found is not None:
+        resp["not_found"] = not_found
+        try:                                   # sub-brands this run learned or used (brand_families.py)
+            from services.analytics.brand_families import pairs_for_run
+            resp["learned_brands"] = pairs_for_run(run_id)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not list learned sub-brands for run %s", run_id)
+            resp["learned_brands"] = []
     if ai_filtered_count is not None:
         resp["ai_filtered_count"] = ai_filtered_count
     return resp
@@ -1103,6 +1153,9 @@ def start_ai_check_endpoint(run_id: int, body: dict = Body(...)) -> dict[str, An
 
     if ai_check_running(run_id):
         return {"ok": True, "already_running": True}
+    from services.analytics.runner import post_run_ai_running
+    if post_run_ai_running(run_id):
+        raise HTTPException(status_code=400, detail="Another AI step is running for this run; wait for it to finish")
 
     # Reset the "applied" flag so the Apply button becomes available again after a re-check.
     with database._LOCK, database._connect() as conn:
@@ -1191,6 +1244,49 @@ def stop_eligibility_endpoint(run_id: int) -> dict[str, Any]:
                 )
             return {"ok": True, "orphan_cleared": True}
     return {"ok": True, "was_running": running}
+
+
+# ── Learned sub-brands (Hygea -> PDI ...) ─────────────────────────────────────
+@router.post("/brand_families/remove")
+def remove_brand_family(body: dict = Body(...)) -> dict[str, Any]:
+    """Body: {"sub_key": "hygea", "parent_key": "pdi"}.  The pair is never used or learned again;
+    re-score a run to apply it there."""
+    from services.analytics.brand_families import remove_pair
+    sub_key = str(body.get("sub_key") or "").strip()
+    parent_key = str(body.get("parent_key") or "").strip()
+    if not sub_key or not parent_key:
+        raise HTTPException(status_code=400, detail="sub_key and parent_key are required")
+    if not remove_pair(sub_key, parent_key):
+        raise HTTPException(status_code=404, detail="No such learned sub-brand")
+    return {"ok": True}
+
+
+# ── Post-run AI actions: LLM query fallback / LLM approval verifier ───────────
+# Used to be wizard options that ran inside the search; now buttons on a Complete run.
+
+@router.get("/runs/{run_id}/post_ai/estimate")
+def post_ai_estimate(run_id: int, include_tried: bool = False) -> dict[str, Any]:
+    """Rows / approvals each step would send and the estimated cost."""
+    with database._connect() as conn:
+        if not conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone():
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return post_run_ai_estimate(run_id, include_tried=bool(include_tried))
+
+
+@router.post("/runs/{run_id}/post_ai")
+def start_post_ai(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """Body: {"step": "fallback" | "verifier", "include_tried": false}"""
+    step = str(body.get("step") or "").strip().lower()
+    ok, reason = start_post_run_ai(run_id, step, include_tried=bool(body.get("include_tried")))
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    return {"ok": True, "started": True, "step": step}
+
+
+@router.post("/runs/{run_id}/post_ai/stop")
+def stop_post_ai(run_id: int) -> dict[str, Any]:
+    """Stop the running post-run AI step after its current row / approval."""
+    return {"ok": True, "was_running": stop_post_run_ai(run_id)}
 
 
 @router.post("/runs/{run_id}/ai_check/apply")
