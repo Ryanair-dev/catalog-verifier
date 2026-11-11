@@ -5046,14 +5046,14 @@
     if (!pairs.length) return;
     const runId = state.analyticsRun.id;
     box.innerHTML =
-      `<div style="font-weight:700;margin-bottom:4px;">Sub-brands learned from Amazon</div>` +
-      `<div style="color:#15803d;margin-bottom:6px;">The same MPN was listed with both brands, so they count as the same brand. Remove one if it is wrong.</div>` +
+      `<div style="font-weight:700;margin-bottom:4px;">Learned brands</div>` +
+      `<div style="color:#15803d;margin-bottom:6px;">These count as the same brand: learned from Amazon (the same MPN listed with both brands) or confirmed by AI. Remove one if it is wrong.</div>` +
       pairs.map(p => {
         const removed = p.status === "removed";
         const where = p.learned_in_run === runId ? "learned in this run" : `learned in run ${p.learned_in_run}`;
         return `<div style="display:flex;align-items:center;gap:8px;margin:2px 0;${removed ? "opacity:0.55;" : ""}">
           <b>${escapeHtml(p.sub_brand)} → ${escapeHtml(p.parent_brand)}</b>
-          <span style="color:#4b5563;">(MPN ${escapeHtml(p.evidence_mpn || "")}, ${escapeHtml(where)}${p.used_in_this_run ? ", used here" : ""})</span>
+          <span style="color:#4b5563;">(${p.source === "ai" ? "AI: " + escapeHtml(p.note || "same brand family") : "MPN " + escapeHtml(p.evidence_mpn || "")}, ${escapeHtml(where)}${p.used_in_this_run ? ", used here" : ""})</span>
           ${removed ? '<span style="color:#991b1b;">removed — re-score to apply</span>'
             : `<button type="button" class="btn btn-secondary text-xs" data-brand-remove="${escapeHtml(p.sub_key)}|${escapeHtml(p.parent_key)}" style="padding:1px 8px;">Remove</button>`}
         </div>`;

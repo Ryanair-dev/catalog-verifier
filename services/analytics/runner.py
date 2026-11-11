@@ -1319,9 +1319,16 @@ def _rescore_pipeline(
         # Sub-brands learned from this run's Amazon listings (brand_families.py), BEFORE the rescore, so the
         # brand + MPN rule already uses them below (also for runs made before this existed).
         try:
-            from services.analytics.brand_families import learn_sub_brands
+            from services.analytics.brand_families import ask_ai_about_brands, learn_sub_brands
             _update_progress(run_id, phase="Learning sub-brands from Amazon listings")
             learn_sub_brands(run_id)
+            try:
+                _update_progress(run_id, phase="AI brand check")
+                with _ai_step(run_id, "AI brand check"):
+                    ask_ai_about_brands(run_id)
+            except Exception as exc:
+                log.exception("AI brand check failed for run %s (rescore continues without it)", run_id)
+                _note_step_crash(run_id, "AI brand check", exc)
         except Exception:
             log.exception("Sub-brand learning failed for run %s (rescore continues without it)", run_id)
 
@@ -2366,9 +2373,18 @@ def _run_pipeline(
         # Sub-brands learned from Amazon: one MPN on a PDI listing AND a Hygea listing -> Hygea is a PDI brand.
         # Pairs learned earlier were already used while scoring; rows that a NEW pair changes are scored again.
         try:
-            from services.analytics.brand_families import learn_sub_brands, rows_to_rescore
+            from services.analytics.brand_families import ask_ai_about_brands, learn_sub_brands, rows_to_rescore
             _update_progress(run_id, phase="Learning sub-brands from Amazon listings")
-            if learn_sub_brands(run_id):
+            _new_pairs = learn_sub_brands(run_id)
+            # pairs Amazon cannot teach (no listing says "Essity"): ask Claude once (BRAND_AI_CHECK=0 = off)
+            try:
+                _update_progress(run_id, phase="AI brand check")
+                with _ai_step(run_id, "AI brand check"):
+                    _new_pairs = _new_pairs + ask_ai_about_brands(run_id)
+            except Exception as exc:
+                log.exception("AI brand check failed for run %s (run continues without it)", run_id)
+                _note_step_crash(run_id, "AI brand check", exc)
+            if _new_pairs:
                 _rows = rows_to_rescore(run_id)
                 if _rows:
                     _vet_and_store(

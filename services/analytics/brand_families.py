@@ -13,6 +13,10 @@ How a pair is learned (after a run's search, and at the start of a re-score):
        two companies use by accident (fuel pump vs wipes) teaches nothing;
      - the brand is not a placeholder ("Generic", "Unbranded" ...);
      - the pair was not removed by a person before.
+AI brand check (ask_ai_about_brands): Amazon cannot teach a pair when no listing uses the vendor's brand (vendor
+file says "Essity", every listing says "JOBST").  Then Claude is asked once per pair, "same brand family?"
+(same brand, sub-brand / product line, or owner; NOT sister brands or distributors).  Only a high-confidence
+yes is saved (source 'ai', with the reason); every answer is cached, so no pair is asked twice.
 Where it is used: a sub-brand IS the same brand, in every scorer (data_cleaning.normalize.candidate_brand_matches):
 brand agreement, brand points, the variant check and the brand + MPN rule.
 Saved in table brand_families (all runs, all vendors).  The run page lists the pairs a run learned or used,
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -36,6 +41,12 @@ PLACEHOLDER_BRANDS = frozenset({
     "generic", "unbranded", "unknown", "none", "na", "nobrand", "other", "various", "assorted",
     "notapplicable", "brandless", "oem",
 })
+
+# AI brand check: for brand pairs Amazon cannot teach (no listing says "Essity", so "JOBST -> Essity" is never
+# seen), ask Claude once per pair whether the two names are the same brand family.  On by default when an
+# Anthropic key is set; BRAND_AI_CHECK=0 turns it off.  One call per run at most, answers kept forever.
+AI_MODEL = os.getenv("BRAND_AI_MODEL", "claude-sonnet-4-6")
+AI_MAX_PAIRS = 40
 
 _TABLE_READY = False
 _CACHE: dict[str, Any] = {"at": None, "pairs": {}}          # at=None: not loaded / cleared
@@ -62,6 +73,19 @@ def _db() -> sqlite3.Connection:
                     vendor_title TEXT, amazon_title TEXT, title_similarity REAL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP, removed_at TEXT,
                     PRIMARY KEY (sub_key, parent_key))
+            """)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(brand_families)").fetchall()}
+            if "source" not in cols:            # 'amazon' = learned from listings, 'ai' = confirmed by Claude
+                conn.execute("ALTER TABLE brand_families ADD COLUMN source TEXT DEFAULT 'amazon'")
+            if "note" not in cols:              # the AI's one-line reason
+                conn.execute("ALTER TABLE brand_families ADD COLUMN note TEXT")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS brand_ai_answers (
+                    vendor_key TEXT NOT NULL, amazon_key TEXT NOT NULL,
+                    vendor_brand TEXT, amazon_brand TEXT,
+                    same_family INTEGER, confidence TEXT, relation TEXT, model TEXT, run_id INTEGER,
+                    asked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (vendor_key, amazon_key))
             """)
             conn.commit()
         _TABLE_READY = True
@@ -263,6 +287,151 @@ def rows_to_rescore(run_id: int) -> set[int]:
 
 
 # --------------------------------------------------------------------------- #
+# AI brand check (Claude): pairs Amazon cannot teach
+# --------------------------------------------------------------------------- #
+
+_AI_SYSTEM = """You check brand ownership for product matching (vendor catalog vs. Amazon listings).
+For each pair, decide if the two names are the SAME BRAND FAMILY, meaning one of these is true:
+  - they are the same brand (other spelling, abbreviation or old name), or
+  - one is a product line or sub-brand of the other (Sani-Cloth is a PDI brand), or
+  - one is the company that owns the other (Essity owns JOBST; BSN medical owns Leukoplast).
+NOT the same family:
+  - sister brands that only share an owner (JOBST and Leukoplast are both Essity brands, but they are
+    different brands, so the answer is false),
+  - a distributor, retailer or store brand next to a manufacturer brand (McKesson, Medline, Amazon Basics),
+    unless it really owns that brand,
+  - two unrelated brands.
+Answer only from what you know for sure. If you are not sure, answer false with confidence "low".
+Reply with JSON only, no other text:
+{"answers": [{"i": 0, "same_family": true, "confidence": "high", "relation": "JOBST is a brand of Essity (via BSN medical)"}]}
+"""
+
+
+def _ai_pairs(run_id: int) -> list[dict]:
+    """(vendor brand, Amazon brand) pairs of this run worth asking about: the plain comparison says different,
+    the Amazon brand is a real brand, and the listing looks like the vendor product (exact MPN, or a title
+    at least MIN_TITLE_SIMILARITY similar).  Most-seen pairs first, at most AI_MAX_PAIRS."""
+    from services.analytics.data_cleaning.normalize import (
+        candidate_brand_matches, candidate_part_number, mpns_match, title_similarity,
+    )
+    conn = _db()
+    try:
+        cat = {int(r["row_idx"]): (_json(r["data_json"]), _json(r["extracted_json"])) for r in conn.execute(
+            "SELECT row_idx, data_json, extracted_json FROM analytics_catalog_rows WHERE run_id=?", (run_id,)).fetchall()}
+        cands = conn.execute("SELECT row_idx, data_json FROM analytics_candidates WHERE run_id=?", (run_id,)).fetchall()
+        asked = {(r[0], r[1]) for r in conn.execute("SELECT vendor_key, amazon_key FROM brand_ai_answers").fetchall()}
+        known = set()
+        for r in conn.execute("SELECT sub_key, parent_key FROM brand_families").fetchall():
+            known |= {(r[0], r[1]), (r[1], r[0])}
+    finally:
+        conn.close()
+    pairs: dict[tuple[str, str], dict] = {}
+    for c in cands:
+        d, ext = cat.get(int(c["row_idx"]), ({}, {}))
+        vendor_brand = str(d.get("brand") or ext.get("brand") or "").strip()
+        amz = _json(c["data_json"]).get("amazon") or {}
+        amazon_brand = str(amz.get("brand") or "").strip()
+        vk, ak = _key(vendor_brand), _key(amazon_brand)
+        if not vk or not ak or vk == ak or ak in PLACEHOLDER_BRANDS or vk in PLACEHOLDER_BRANDS:
+            continue
+        if (vk, ak) in asked or (vk, ak) in known:
+            continue
+        if candidate_brand_matches(vendor_brand, amazon_brand, amz.get("manufacturer"), use_learned=False):
+            continue
+        vendor_title = str(d.get("title") or "")
+        same_mpn = bool(d.get("itemid")) and mpns_match(str(d.get("itemid")), candidate_part_number(amz))
+        if not same_mpn and title_similarity(vendor_title, amz.get("title")) < MIN_TITLE_SIMILARITY:
+            continue
+        p = pairs.setdefault((vk, ak), {"vendor_key": vk, "amazon_key": ak, "vendor_brand": vendor_brand,
+                                        "amazon_brand": amazon_brand, "seen": 0,
+                                        "vendor_title": vendor_title[:160], "amazon_title": str(amz.get("title") or "")[:160]})
+        p["seen"] += 1
+    return sorted(pairs.values(), key=lambda p: -p["seen"])[:AI_MAX_PAIRS]
+
+
+def _parse_answers(text: str) -> list[dict]:
+    text = re.sub(r"^```(?:json)?|```$", "", (text or "").strip(), flags=re.M).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except ValueError:
+        return []
+    answers = data.get("answers") if isinstance(data, dict) else None
+    return [a for a in (answers or []) if isinstance(a, dict)]
+
+
+def ask_ai_about_brands(run_id: int, client: Any = None) -> list[dict]:
+    """Ask Claude about this run's brand pairs that are not known yet (one call).  Every answer is cached, so a
+    pair is never asked twice.  A "same family" answer with high confidence becomes a learned pair (source
+    'ai'), used exactly like a pair learned from Amazon and removable on the run page.  Returns the new pairs."""
+    if os.getenv("BRAND_AI_CHECK", "1").strip() == "0":
+        return []
+    if client is None:
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return []
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), max_retries=2)
+    pairs = _ai_pairs(run_id)
+    if not pairs:
+        return []
+    msg = json.dumps([{"i": n, "vendor_brand": p["vendor_brand"], "amazon_brand": p["amazon_brand"],
+                       "example_vendor_title": p["vendor_title"], "example_amazon_title": p["amazon_title"]}
+                      for n, p in enumerate(pairs)], ensure_ascii=False)
+    resp = client.messages.create(model=AI_MODEL, max_tokens=4000, system=_AI_SYSTEM,
+                                  messages=[{"role": "user", "content": msg}])
+    text = "".join(getattr(b, "text", "") for b in (resp.content or []))
+    usage = getattr(resp, "usage", None)
+    log.info("AI brand check, run %s: %d pairs, tokens in %s / out %s", run_id, len(pairs),
+             getattr(usage, "input_tokens", "?"), getattr(usage, "output_tokens", "?"))
+    by_i = {}
+    for a in _parse_answers(text):
+        try:
+            by_i[int(a.get("i"))] = a
+        except (TypeError, ValueError):
+            continue
+    if not by_i:
+        log.warning("AI brand check, run %s: no usable answer (%s)", run_id, text[:200])
+        return []
+
+    from services import database
+    learned: list[dict] = []
+    conn = _db()
+    try:
+        with database._LOCK:
+            for n, p in enumerate(pairs):
+                a = by_i.get(n)
+                if not a:
+                    continue                                 # not answered: may be asked again next run
+                same = a.get("same_family") is True
+                conf = str(a.get("confidence") or "").lower()
+                relation = str(a.get("relation") or "").strip()[:300]
+                conn.execute(
+                    "INSERT OR REPLACE INTO brand_ai_answers(vendor_key, amazon_key, vendor_brand, amazon_brand, "
+                    "same_family, confidence, relation, model, run_id) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (p["vendor_key"], p["amazon_key"], p["vendor_brand"], p["amazon_brand"], int(same), conf,
+                     relation, AI_MODEL, run_id))
+                if same and conf == "high":
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO brand_families(sub_key, parent_key, sub_brand, parent_brand, status, "
+                        "run_id, vendor_title, amazon_title, source, note) VALUES (?,?,?,?, 'active', ?,?,?, 'ai', ?)",
+                        (p["amazon_key"], p["vendor_key"], p["amazon_brand"], p["vendor_brand"], run_id,
+                         p["vendor_title"], p["amazon_title"], relation))
+                    if cur.rowcount:
+                        learned.append({"sub_brand": p["amazon_brand"], "parent_brand": p["vendor_brand"],
+                                        "note": relation})
+            conn.commit()
+    finally:
+        conn.close()
+    if learned:
+        _invalidate()
+        log.info("Run %s: AI confirmed brands: %s", run_id,
+                 ", ".join(f"{p['sub_brand']} = {p['parent_brand']}" for p in learned))
+    return learned
+
+
+# --------------------------------------------------------------------------- #
 # Run page: list + remove
 # --------------------------------------------------------------------------- #
 
@@ -285,6 +454,8 @@ def pairs_for_run(run_id: int) -> list[dict]:
                 "sub_key": r["sub_key"], "parent_key": r["parent_key"], "status": r["status"],
                 "evidence_mpn": r["evidence_mpn"], "evidence_asin": r["evidence_asin"],
                 "learned_in_run": r["run_id"], "used_in_this_run": label in used,
+                "source": (r["source"] if "source" in r.keys() else None) or "amazon",
+                "note": (r["note"] if "note" in r.keys() else "") or "",
             })
     return out
 
