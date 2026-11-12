@@ -7,6 +7,23 @@ User uploads a vendor catalog, SP-API searches Amazon for matching ASINs across 
 
 ## Architecture
 
+### Vendor search keywords
+
+The optional **Generate vendor search keywords** AI helper runs through
+`services/analytics/brand_extractor.py`. Its shared formula lives in
+`services/analytics/keyword_formula.py` and is also used by the Claude query
+fallback in `matching_core/agents/query_prompts.py`. It generates `search_keyword`
+(short brand + product name without specs) and `keyword_specs` (the same name
+with useful size and unit-count details). The first is used by Tier 3 Title
+search; the second is used as the offer title for candidate scoring. The
+original vendor title remains in the source row for display and other checks.
+Results are cached by prompt version, saved with the run, displayed under the
+vendor title, and included in the workbook export when the helper is enabled.
+
+The formula's family-level web research and Claude-for-Excel `execute_office_js`
+steps are not part of this in-app helper: it uses the app's row-level SP-API
+search and does not add workbook family verification.
+
 ### Scoring engine (`services/analytics/matcher.py`)
 
 This is a **separate scorer** from the verify-flow `services/confidence.py` (see `docs/features/verify_scan.md`). Do not confuse the two.
@@ -98,6 +115,8 @@ When `category_mismatch=True`, `scores["category_mismatch"] = True` is stored in
 
 `_normalize_brand(brand)` + `_brands_match(src, amz)` (in `matcher.py`) treat brand strings as equal when they differ only by spacing/punctuation ("Shea Moisture"="SheaMoisture"), corporate suffix ("Cardinal Health"="Cardinal" — `_BRAND_NOISE_WORDS` strips inc/llc/ltd/corp/co/health/healthcare/medical/pharma/labs/industries/products/brands/group/holdings/international/usa/global/the/…), prefix containment (≥5 chars), or minor spelling (fuzzy ≥88 on normalized forms: "Moleskine"="Moleskin"). A `_brands_match` hit sets `brand_score=BRAND_MAX` and `brand_confirmed=True`. Plain fuzzy ≥90 also sets `brand_confirmed=True`. `brand_confirmed` is returned in the scores dict.
 
+In the matching-core scorers, an Amazon `manufacturer` matching the vendor brand is also full brand agreement (same weight as the Amazon `brand` field). If the Amazon brand differs but its MPN matches the vendor MPN, the brand difference is sent to Review instead of hard-rejecting the candidate. Other hard mismatches still reject it.
+
 #### Same-item confirmation floors (analytics)
 
 Computed in `calculate_confidence` AFTER the brand+title VERIFIED_FLOOR and BEFORE the hard-reject caps (so contradictions still override). `_size_match(src, amz, size_attr)` = positive counterpart to `_size_mismatch`: True when both sides have a parseable size (volume/weight/linear inches·cm·mm) agreeing within 10% (same per-unit/pack division as `_size_mismatch`); returned as `size_match`.
@@ -165,6 +184,10 @@ Stored in `analytics_catalog_rows.extracted_json` (additive migration). Used by:
 - **Rescore**: loads stored extracted fields — no re-extraction needed
 
 Only runs when **both** `OPENAI_API_KEY` is present **and** the `ai_clean_titles` checkbox is checked. Skipped gracefully if either is missing. Runs in parallel (4 workers, 20 titles per GPT-4o-mini call).
+
+#### Amazon candidate title cleanup (optional AI helper)
+
+The **Extract item names from Amazon titles** checkbox in the wizard's **AI helpers** section extracts a concise core product name from unique titles across every search tier with Claude Haiku, removing marketing claims and listing clutter while preserving key identifiers and variant/pack details. The extracted value is stored separately as `matching_title` and affects fuzzy title similarity only; the raw Amazon title remains the displayed source for variant, size, and identifier checks. The results table displays **Extracted item name** beside the original listing title, and exports include both **Amazon Title** and **Amazon Item Name**. Extraction is deduplicated across tiers and persists with candidates when a run is resumed. If it fails, the run continues with original titles and records an AI notice.
 
 #### 3-tier SP-API search
 
@@ -236,6 +259,27 @@ Candidate ORDER BY: `confidence DESC, row_idx, asin` — all tabs default to hig
 - **Runs-list pagination**: the "Past Analytics Runs" board paginates client-side 10/page (`state.analyticsRunsList`), separate from the per-run candidate table's own (also 10/page) pagination.
 
 ## Changelog
+
+**2026-11-10** — Made a matching vendor/Amazon brand and structured MPN decisive: such pairs are verified at 100 without applying scorer, variant, or optional LLM-verifier demotions. The family pass also preserves these exact pairs; unmatched brand/MPN pairs continue through the existing rules. Verified with focused runtime assertions and `git diff --check`; rescore existing runs to apply this rule to saved candidates.
+
+**2026-11-10** — Simplified Offer Analysis results by showing only **Search Keyword + Spec** (when vendor keyword generation is enabled), removing the separate **Search Keyword** column. Set the **Amazon Item Name** column to a 360px minimum width so cleaned names remain readable; the table can scroll horizontally as needed. Search behavior, matching, scoring, exports, and the original-title disclosure are unchanged. Verified with `git diff --check`; hard-refresh the page to load the updated table and styles.
+
+**2026-11-09** — Integrated the `keyword.md` formula into the existing vendor-title extractor and Claude query fallback, rather than adding a second agent. The existing helper now creates **Search Keyword** and **Search Keyword + Spec**, uses the keyword for Title search and the keyword-plus-spec string for matching, and handles blank titles with manufacturer + MPN. Vendor extraction cache reads are prompt-version-aware; Anthropic Haiku is used when configured, with GPT-4o-mini as fallback. The two values are visible in Offer Analysis results and in all workbook sheets, while original vendor titles remain unchanged. The Claude query agent now follows the same shared rules and no longer sends the unsupported `temperature` parameter. Missing AI credentials are shown as a run notice; family-level web verification and the Claude-for-Excel workflow remain outside the in-app agent. Verification: all 24 tests passed, updated Python modules compiled, and `git diff --check` passed. Restart the backend and hard-refresh the page before running a new analysis. Existing runs need a fresh extraction (a new run with this helper enabled); rescore alone cannot generate keywords that were not saved previously.
+
+**2026-11-09** — Clarified that the Amazon helper must extract a concise core item name, not merely polish the listing title. Tightened the Claude instructions with explicit removal rules and examples; renamed the wizard option and export column to **Extract item names from Amazon titles** / **Amazon Item Name**; and displayed the extracted item name in the Offer Analysis results UI with the original title collapsed under a disclosure. Fixed the title column's minimum width so the item name remains readable in the wide results table. Verified the served UI and existing run 107 export, and ran focused cleaner tests and diff checks. Hard-refresh the page to see the layout change; restart the backend before running new title extraction.
+
+**2026-11-09** — Investigated the user's attached export after they reported titles were not cleaned. Run 107 had cleanup enabled and contained changed cleaned titles for 352 candidates, but the Excel exporter included only the preserved original title, making cleanup invisible in the workbook. Added a **Cleaned Amazon Title** export column for runs that enabled cleanup while retaining the original **Amazon Title**. Verified the existing run's export contains both values; restart the backend to use the updated export.
+
+**2026-11-09** — Fixed Amazon-title cleanup failing with the installed Anthropic SDK because `Messages.create()` no longer accepts `temperature`. Removed the unsupported argument and made the focused test mock use an explicit compatible method signature. Verified with the Amazon-title-cleaner tests and `git diff --check`; restart the backend before retrying cleanup for a new run.
+
+**2026-11-09** — Added the requested Amazon-side title cleanup option directly to the Offer Analysis wizard's existing **AI helpers** panel.
+- Added **Clean Amazon candidate titles for readability**; it works independently of the vendor-title helper and applies to candidates from UPC, Item ID, Title, and query-agent searches.
+- Claude Haiku cleans unique titles before scoring. The cleaned title is used only for fuzzy title similarity; the original stays available to display and for hard mismatch/variant checks. The option persists on pause/resume; API failures leave the original title in use and are shown as AI notices.
+- Verification: focused tests, app import, disposable migration check, and diff checks passed. No live AI search was performed. Reload the page for the checkbox and restart the backend before starting a run.
+
+**2026-11-09** — User reported valid PDI Offer Analysis pairs rejected because the Amazon brand label differed, despite matching MPNs. Updated matching-core scoring so Amazon's `manufacturer` field earns the full brand signal when it matches the vendor brand. A different Amazon brand no longer hard-rejects a candidate when its MPN matches; it is sent to Review, while other hard mismatches still apply. Added focused regression tests for manufacturer brand credit, matching-MPN review, and preserving brand rejection without an MPN match. Verified with the focused tests and MCP-free matcher checks. Restart the backend and rescore the affected run (or run a new one) to apply the change to previously saved results.
+
+**2026-11-09** — Before merging, user asked to restore Offer Analysis search behavior to `main` after ASIN `B01E6BEGBM` was not found. The UPC, Item ID, and Title search functions were already identical; restored the `main` retrieval setup by searching original catalog text, using one Catalog API client, and restoring the original all-or-nothing AI title-cleaning condition. Matcher scoring changes remain in place. Verified with compile and diff checks; needs a backend restart and a fresh run to test the search change.
 
 **2026-10-26** — Teams webhook finally live: fixed the payload-shape mismatch flagged in the 2026-10-23 entry below, and `TEAMS_WEBHOOK_URL` is now configured.
 - Continuation of the 2026-10-23 webhook setup, which shipped the code but had no real URL to test against. This session walked the user live through Power Automate (Teams' classic Incoming Webhook connector is fully retired in this tenant — "Workflows" is the only option). The "When a Teams webhook request is received" / generic "When an HTTP request is received" Direct API trigger types both generated unsigned `environment.api.powerplatform.com` URLs that require OAuth (`401 DirectApiAuthorizationRequired`) — confirmed live via curl, twice, with two different workflow IDs. The **"Post to a channel when a webhook request is received"** template, however, generates a properly SAS-signed URL (`...?api-version=1&sp=...&sv=1.0&sig=...`) that posts anonymously.

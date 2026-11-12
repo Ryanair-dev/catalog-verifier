@@ -32,7 +32,6 @@ than one brand) → fall back to the PO's vendor name instead.
 """
 from __future__ import annotations
 
-import datetime as dt
 import io
 import logging
 import re

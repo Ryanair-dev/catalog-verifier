@@ -253,7 +253,6 @@ def _call_claude(client, source: dict, batch: list[dict]) -> list[dict]:
                 max_tokens=512,
                 system=_SYSTEM,
                 messages=[{"role": "user", "content": msg}],
-                temperature=0,
             )
             raw    = resp.content[0].text if resp.content else "{}"
             parsed = _extract_json(raw)

@@ -1,0 +1,1 @@
+"""Catalog Verifier MCP tools."""

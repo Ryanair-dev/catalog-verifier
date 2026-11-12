@@ -2396,6 +2396,10 @@ html { scrollbar-width: thin; scrollbar-color: var(--grey-200) transparent; }
   background: var(--purple-500); color: #fff;
 }
 
+.analytics-reason-details[open] .analytics-reason-preview {
+  display: none;
+}
+
 /* ---------- AI verdict filter pills ----------------------------------- */
 .ai-filter-pill {
   padding: 3px 9px;
@@ -2464,6 +2468,21 @@ html { scrollbar-width: thin; scrollbar-color: var(--grey-200) transparent; }
   vertical-align: middle;
   padding-top: 10px;
   padding-bottom: 10px;
+}
+#analytics-run-thead-row .analytics-keyword-spec-column,
+#analytics-run-candidates-body .analytics-keyword-spec-column {
+  width: 280px;
+  min-width: 280px;
+  max-width: 280px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+#analytics-run-thead-row .analytics-amazon-title-column,
+#analytics-run-candidates-body .analytics-amazon-title-column {
+  width: 360px;
+  min-width: 360px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ---------- Universal Library — top-level type tabs ------------------- */

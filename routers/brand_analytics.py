@@ -55,8 +55,6 @@ from services.analytics.brand_runner import (
 
 router = APIRouter()
 
-_HDR_FONT = Font(bold=True)
-
 
 # --------------------------------------------------------------------------- #
 # DB helpers
