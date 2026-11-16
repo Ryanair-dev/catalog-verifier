@@ -1,27 +1,3 @@
-"""
-Sub-brands learned from Amazon itself (Hygea -> PDI, Sani Professional -> PDI ...).
-
-Why: the "brand + MPN = same item" rule needs the Amazon brand to match the vendor's brand.  Many listings use a
-sub-brand instead ("Hygea" for a PDI product), so the rule did not fire and correct items went to Review.
-
-How a pair is learned (after a run's search, and at the start of a re-score):
-  one MPN of the vendor file appears on Amazon with the vendor's brand (PDI) AND with another brand (Hygea)
-  -> Hygea is learned as a sub-brand of PDI.  Safety checks, all required:
-     - the Amazon MPN is the SAME as the vendor row's MPN (exact, mpns_match);
-     - the MPN is a real code (not a short number like "100");
-     - the sub-brand listing's title is similar to the vendor title (>= MIN_TITLE_SIMILARITY), so a part number
-       two companies use by accident (fuel pump vs wipes) teaches nothing;
-     - the brand is not a placeholder ("Generic", "Unbranded" ...);
-     - the pair was not removed by a person before.
-AI brand check (ask_ai_about_brands): Amazon cannot teach a pair when no listing uses the vendor's brand (vendor
-file says "Essity", every listing says "JOBST").  Then Claude is asked once per pair, "same brand family?"
-(same brand, sub-brand / product line, or owner; NOT sister brands or distributors).  Only a high-confidence
-yes is saved (source 'ai', with the reason); every answer is cached, so no pair is asked twice.
-Where it is used: a sub-brand IS the same brand, in every scorer (data_cleaning.normalize.candidate_brand_matches):
-brand agreement, brand points, the variant check and the brand + MPN rule.
-Saved in table brand_families (all runs, all vendors).  The run page lists the pairs a run learned or used,
-with a Remove button; a removed pair is never learned again.
-"""
 from __future__ import annotations
 
 import json
@@ -436,24 +412,40 @@ def ask_ai_about_brands(run_id: int, client: Any = None) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 def pairs_for_run(run_id: int) -> list[dict]:
-    """Pairs this run learned, plus pairs its candidates used (scores.brand_family), active or removed."""
+    """Pairs that matter for this run, active or removed: learned in it, used by its brand + MPN rule
+    (scores.brand_family), or simply present in it - the run's vendor brand and one of its Amazon
+    brands are the two sides of the pair.  A pair learned in an EARLIER run is listed too, because
+    it still changes this run's brand agreement (that is how JOBST counts as Essity)."""
     conn = _db()
     try:
         used = {str(r[0]) for r in conn.execute(
             "SELECT DISTINCT json_extract(data_json,'$.scores.brand_family') FROM analytics_candidates "
             "WHERE run_id=? AND json_extract(data_json,'$.scores.brand_family') IS NOT NULL", (run_id,)).fetchall()}
+        amazon_keys = {_key(r[0]) for r in conn.execute(
+            "SELECT DISTINCT json_extract(data_json,'$.amazon.brand') FROM analytics_candidates WHERE run_id=?",
+            (run_id,)).fetchall() if r[0]}
+        vendor_keys = set()
+        for r in conn.execute("SELECT data_json, extracted_json FROM analytics_catalog_rows WHERE run_id=?",
+                              (run_id,)).fetchall():
+            d, ext = _json(r["data_json"]), _json(r["extracted_json"])
+            vendor_keys.add(_key(d.get("brand") or ext.get("brand")))
+        vendor_keys.discard("")
         rows = conn.execute("SELECT * FROM brand_families ORDER BY created_at").fetchall()
     finally:
         conn.close()
     out = []
     for r in rows:
         label = f"{r['sub_brand']} → {r['parent_brand']}"
-        if r["run_id"] == run_id or label in used:
+        in_run = ((r["sub_key"] in amazon_keys and r["parent_key"] in vendor_keys)
+                  or (r["parent_key"] in amazon_keys and r["sub_key"] in vendor_keys))
+        if label in used:
+            in_run = True
+        if r["run_id"] == run_id or in_run:
             out.append({
                 "sub_brand": r["sub_brand"], "parent_brand": r["parent_brand"],
                 "sub_key": r["sub_key"], "parent_key": r["parent_key"], "status": r["status"],
                 "evidence_mpn": r["evidence_mpn"], "evidence_asin": r["evidence_asin"],
-                "learned_in_run": r["run_id"], "used_in_this_run": label in used,
+                "learned_in_run": r["run_id"], "used_in_this_run": in_run,
                 "source": (r["source"] if "source" in r.keys() else None) or "amazon",
                 "note": (r["note"] if "note" in r.keys() else "") or "",
             })
