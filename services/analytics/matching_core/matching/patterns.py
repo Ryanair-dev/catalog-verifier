@@ -64,6 +64,59 @@ GARMENT_NORM = {
     "xxxl": "XXXL", "3xl": "XXXL", "xxxlarge": "XXXL", "3xlarge": "XXXL",
 }
 
+# Full-calf sizes (compression wear, e.g. JOBST): "XLFC", "X-Large Full Calf", "Large Full Calf".
+# A full-calf size is its own product, so it gets its own code (XLFC is not XL).
+FULL_CALF_RE = re.compile(
+    r"\b(?:(xxl|2xl|xl|l|m|s)fc"
+    r"|(xx-?large|2x-?large|x-?large|extra[\s-]?large|large|medium|small)[\s-]+full[\s-]+calf)\b",
+    re.IGNORECASE,
+)
+_FULL_CALF_LETTERS = {"xxl": "XXL", "2xl": "XXL", "xl": "XL", "l": "L", "m": "M", "s": "S"}
+
+# A lone S / M / L counts as a size only where a size is written: "- M / Regular", "- L -", "Size: L".
+# Never "(S)" (Morakniv: stainless), "1 L" (litre) or "10 m" (metre).
+SIZE_SLOT_RE = re.compile(r"(?:(?<=[-\u2013|,]\s)|(?<=[-\u2013|,])|\b[Ss]ize:?\s+)([SML])(?=\s*(?:/|[-\u2013|,]|$))")
+
+
+def full_calf_sizes(text: str) -> list[str]:
+    """'X-Large Full Calf' -> ['XLFC']."""
+    out: list[str] = []
+    for m in FULL_CALF_RE.finditer(text or ""):
+        if m.group(1):
+            base = _FULL_CALF_LETTERS[m.group(1).lower()]
+        else:
+            base = GARMENT_NORM.get(m.group(2).lower().replace("-", "").replace(" ", ""), "")
+        code = f"{base}FC" if base else ""
+        if code and code not in out:
+            out.append(code)
+    return out
+
+
+def garment_relation(a: set[str], b: set[str]) -> str | None:
+    """'match' / 'mismatch', None if a side has no size. Full calf must match full calf (LFC is not L)."""
+    if not a or not b:
+        return None
+    a_fc = {x for x in a if x.endswith("FC")}
+    b_fc = {x for x in b if x.endswith("FC")}
+    if a_fc or b_fc:
+        return "match" if (a_fc & b_fc) else "mismatch"
+    return "match" if (a & b) else "mismatch"
+
+
+def garment_sizes(text: str) -> list[str]:
+    """All garment sizes in the text: full calf (XLFC), size words (Medium, XL), lone S/M/L in a size position."""
+    text = text or ""
+    found = full_calf_sizes(text)
+    rest = FULL_CALF_RE.sub(" ", text)          # 'X-Large Full Calf' is XLFC, not also XL
+    for m in GARMENT_SIZE_RE.finditer(rest):
+        code = GARMENT_NORM.get(m.group(1).lower().replace("-", "").replace(" ", ""))
+        if code and code not in found:
+            found.append(code)
+    for m in SIZE_SLOT_RE.finditer(rest):
+        if m.group(1) not in found:
+            found.append(m.group(1))
+    return found
+
 
 # --- fractions ---
 UNICODE_FRACS = {

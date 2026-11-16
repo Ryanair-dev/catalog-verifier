@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from services.analytics.matching_core.matching.patterns import (
-    GARMENT_NORM,
-    GARMENT_SIZE_RE,
+    garment_relation,
+    garment_sizes,
     SIZE_RE,
     VOLUME_TO_ML,
     WEIGHT_RE,
@@ -38,13 +38,8 @@ def _extract_weight_g(text: str) -> float | None:
 
 
 def _garment_sizes(text: str) -> set[str]:
-    out: set[str] = set()
-    for m in GARMENT_SIZE_RE.finditer(text or ""):
-        key = m.group(1).lower().replace("-", "").replace(" ", "")
-        norm = GARMENT_NORM.get(key)
-        if norm:
-            out.add(norm)
-    return out
+    # shared reader: size words, full-calf sizes (XLFC) and lone S/M/L in a size position
+    return set(garment_sizes(text))
 
 
 def _both_titles(offer: Offer, cand: Candidate) -> tuple[str, str]:
@@ -68,13 +63,10 @@ def size_mismatch(offer: Offer, cand: Candidate) -> bool:
 
 
 def apparel_size_mismatch(offer: Offer, cand: Candidate) -> bool:
-    """True when both sides state a garment size (S/M/L/XL…) and the sets are
-    disjoint. 'Large' vs 'Large/X-Large' overlaps -> not a mismatch."""
+    """True when both sides state a garment size (S/M/L/XL…, XLFC) and they differ.
+    'Large' vs 'Large/X-Large' overlaps -> not a mismatch; L vs LFC (full calf) is one."""
     src, amz = _both_titles(offer, cand)
-    s, a = _garment_sizes(src), _garment_sizes(amz)
-    if not s or not a:
-        return False
-    return s.isdisjoint(a)
+    return garment_relation(_garment_sizes(src), _garment_sizes(amz)) == "mismatch"
 
 
 from services.analytics.matching_core.matching.patterns import (
