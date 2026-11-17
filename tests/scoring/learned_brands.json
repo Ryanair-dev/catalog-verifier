@@ -1,0 +1,46 @@
+[
+ {
+  "sub_brand": "BSN Medical",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "Cover-Roll",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "Hypafix",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "JOBST",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "Leukoplast",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "Leukotape",
+  "parent_brand": "Essity"
+ },
+ {
+  "sub_brand": "Hygea",
+  "parent_brand": "PDI"
+ },
+ {
+  "sub_brand": "Nice 'N Clean",
+  "parent_brand": "PDI"
+ },
+ {
+  "sub_brand": "SANI CLOTH",
+  "parent_brand": "PDI"
+ },
+ {
+  "sub_brand": "Sani Professional",
+  "parent_brand": "PDI"
+ },
+ {
+  "sub_brand": "Wipemart",
+  "parent_brand": "PDI"
+ }
+]

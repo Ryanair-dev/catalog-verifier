@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs the scoring tests before every git push. Turn on once per copy of the repo:
+#     git config core.hooksPath githooks
+# Skip it once (only if you know why):  git push --no-verify
+
+PY=python
+[ -x .venv/Scripts/python.exe ] && PY=.venv/Scripts/python.exe
+[ -x .venv/bin/python ] && PY=.venv/bin/python
+
+echo "Running the scoring tests before push..."
+if ! "$PY" -m pytest -q tests/scoring; then
+    echo ""
+    echo "Scoring tests FAILED: the push was stopped."
+    echo "Fix the change, or, if the change is really better, save a new baseline on purpose:"
+    echo "    python scripts/build_scoring_tests.py --baseline"
+    exit 1
+fi
