@@ -1,4 +1,12 @@
 """Shared code for the scoring tests: load the test pairs, score them offline, compare with the baseline.
+
+Files next to this one:
+  anchors.json          the 50-100 sure pairs, each with a category        (made by scripts/build_scoring_tests.py)
+  learned_brands.json   frozen copy of the learned sub-brands (JOBST -> Essity, Hygea -> PDI, ...)
+  baseline.json         the verdict every pair got when the baseline was saved
+
+Offline on purpose: a temporary database holds only the frozen learned brands, and nothing calls Amazon or
+Claude.  So the result is the same on every PC and on GitHub.
 """
 from __future__ import annotations
 
@@ -39,7 +47,12 @@ def use_scoring_db(folder: Path) -> Path:
     if database.DB_PATH.exists():
         database.DB_PATH.unlink()
     database.init_db()
-    import services.analytics.brand_families as bf
+    try:
+        import services.analytics.brand_families as bf
+    except ModuleNotFoundError:
+        # older code without sub-brand learning: score it the way that code works, without learned brands
+        print("note: this code has no sub-brand learning; scoring without learned brands")
+        return database.DB_PATH
     bf._db().close()                                    # creates the brand tables
     brands = json.loads(BRANDS.read_text(encoding="utf-8")) if BRANDS.is_file() else []
     with database._connect() as conn:
