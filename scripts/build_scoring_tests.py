@@ -24,7 +24,16 @@ import harness  # noqa: E402
 
 SKIP_SOURCES = {"ndc_live", "oakridge_live"}
 BETA_SOURCES = {"pdi_live", "essity_live"}   # the tester's hand-checked lists: all of their correct pairs go in
-DOUBTFUL = {("essity_live_7705604", "B0012XUR0M"), ("essity_live_7237801", "B07HMXKKS6")}
+# Pairs whose label we do not trust (checked by eye).  Kept here, not deleted from anchors.json by hand,
+# so a rebuild with --anchors never brings them back.
+LEAVE_OUT_PAIRS = {
+    ("essity_live_7705604", "B0012XUR0M"),   # vendor says Opaque, the listing is Relief (asked the tester)
+    ("essity_live_7237801", "B07HMXKKS6"),   # vendor says Transparent, the listing is regular Hypafix
+    ("oxo_0", "B0CP6CTSLY"),                 # labeled correct: 4 cup GLASS cup vs the angled Tritan cup
+    ("oxo_0", "B00GJSROHO"),                 # labeled correct: 4-piece mini beaker SET vs one 4 cup cup
+    ("oxo_0", "B0C7Q6Q6ZG"),                 # labeled correct: 4-piece cups AND spoons set vs one 4 cup cup
+}
+LEAVE_OUT_OFFERS = {"injinji_9", "injinji_10", "injinji_11"}   # "Liner Crew" with no size/color/UPC: labels disagree
 PER_CATEGORY = 12
 TRUSTED_GUESS = {"bundle", "other_size_or_color", "other_brand", "other_product_same_brand"}
 DEFAULT_BRANDS = [("Hygea", "PDI"), ("SANI CLOTH", "PDI"), ("Sani Professional", "PDI"),
@@ -76,7 +85,8 @@ def pick_anchors(eval_set: Path) -> list[dict]:
     beta: list[dict] = []
     by_cat: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        if r.get("_source") in SKIP_SOURCES or (r["offer"].get("offer_id"), r["candidate"].get("asin")) in DOUBTFUL:
+        if (r.get("_source") in SKIP_SOURCES or r["offer"].get("offer_id") in LEAVE_OUT_OFFERS
+                or (r["offer"].get("offer_id"), r["candidate"].get("asin")) in LEAVE_OUT_PAIRS):
             continue
         cat = category(r)
         human = r.get("_confidence_in_label") == "human_verified"

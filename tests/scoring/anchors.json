@@ -1119,27 +1119,6 @@
  },
  {
   "offer": {
-   "offer_id": "injinji_9",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B01N7SY9C5",
-   "upc": "760172011791",
-   "mpn": "333379",
-   "title": "Injinji Women's Liner + Hiker Crew Socks (X-Small/Small, Maroon)",
-   "brand": "INJINJI"
-  },
-  "is_match": false,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "bundle"
- },
- {
-  "offer": {
    "offer_id": "pdi_live_D43600",
    "upc": "",
    "mpn": "D43600",
@@ -1187,27 +1166,6 @@
  },
  {
   "offer": {
-   "offer_id": "injinji_11",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B01N7SY9C5",
-   "upc": "760172011791",
-   "mpn": "333379",
-   "title": "Injinji Women's Liner + Hiker Crew Socks (X-Small/Small, Maroon)",
-   "brand": "INJINJI"
-  },
-  "is_match": false,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "bundle"
- },
- {
-  "offer": {
    "offer_id": "pdi_live_D43600",
    "upc": "",
    "mpn": "D43600",
@@ -1225,27 +1183,6 @@
   "_source": "pdi_live",
   "_confidence_in_label": "answer_key_inferred",
   "_found_via": "run_export",
-  "category": "bundle"
- },
- {
-  "offer": {
-   "offer_id": "injinji_11",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B01MUBHENA",
-   "upc": "760172011777",
-   "mpn": "333378",
-   "title": "Injinji Men's Liner + Hiker Crew Socks (Small/Medium, Charcoal)",
-   "brand": "INJINJI"
-  },
-  "is_match": false,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
   "category": "bundle"
  },
  {
@@ -2238,27 +2175,6 @@
  },
  {
   "offer": {
-   "offer_id": "injinji_9",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B0F3FNDBQC",
-   "upc": "760172027198",
-   "mpn": "060270",
-   "title": "Injinji Liner Crew Coolmax (Large, Ocean)",
-   "brand": "INJINJI"
-  },
-  "is_match": true,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "title_only"
- },
- {
-  "offer": {
    "offer_id": "morakniv_live_11824",
    "upc": "",
    "mpn": "11824",
@@ -2281,48 +2197,6 @@
   "_source": "morakniv_live",
   "_confidence_in_label": "human_verified",
   "_found_via": "mpn",
-  "category": "title_only"
- },
- {
-  "offer": {
-   "offer_id": "oxo_0",
-   "upc": "1050588V6UK",
-   "mpn": "1050588",
-   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
-   "brand": "OXO"
-  },
-  "candidate": {
-   "asin": "B0CP6CTSLY",
-   "upc": "840097707105",
-   "mpn": "11382000",
-   "title": "OXO Good Grips 4 Cup Glass Liquid Measuring Cup",
-   "brand": "OXO"
-  },
-  "is_match": true,
-  "_source": "oxo_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "title_only"
- },
- {
-  "offer": {
-   "offer_id": "injinji_9",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B0F3F3YLYY",
-   "upc": "760172027143",
-   "mpn": "060270",
-   "title": "Injinji Liner Crew Coolmax (Medium, Celestine)",
-   "brand": "INJINJI"
-  },
-  "is_match": true,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
   "category": "title_only"
  },
  {
@@ -2353,48 +2227,6 @@
  },
  {
   "offer": {
-   "offer_id": "oxo_0",
-   "upc": "1050588V6UK",
-   "mpn": "1050588",
-   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
-   "brand": "OXO"
-  },
-  "candidate": {
-   "asin": "B00GJSROHO",
-   "upc": "643345787535",
-   "mpn": "1263680",
-   "title": "OXO Good Grips 4-Piece Mini Measuring Beaker Set",
-   "brand": "OXO"
-  },
-  "is_match": true,
-  "_source": "oxo_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "title_only"
- },
- {
-  "offer": {
-   "offer_id": "injinji_9",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B0B8F5KS9F",
-   "upc": "760172018561",
-   "mpn": "060270",
-   "title": "Injinji Liner Crew Coolmax Socks (Medium, Dolomite)",
-   "brand": "INJINJI"
-  },
-  "is_match": true,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "title_only"
- },
- {
-  "offer": {
    "offer_id": "morakniv_live_11863",
    "upc": "",
    "mpn": "11863",
@@ -2410,6 +2242,84 @@
    "attributes": {
     "color": [
      "green"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12494",
+   "upc": "",
+   "mpn": "12494",
+   "title": "Companion HeavyDuty (C) Military Green Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B009NZVZ3E",
+   "upc": "",
+   "mpn": "M12495",
+   "title": "Morakniv Companion Heavy-Duty Carbon Steel Fixed-Blade Knife with Sheath, 4.1 Inch",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12495",
+   "upc": "",
+   "mpn": "12495",
+   "title": "Companion HeavyDuty (C) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B009XDR0NK",
+   "upc": "",
+   "mpn": "M11999",
+   "title": "Morakniv Companion Heavy-Duty Carbon Steel Fixed-Blade Knife with Sheath, 4.1 Inch",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_13507",
+   "upc": "",
+   "mpn": "13507",
+   "title": "Kansbol med Multi-Mount (S) Burnt Orange",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B07PTXZ9SR",
+   "upc": "",
+   "mpn": "FT02348",
+   "title": "Morakniv Kansbol Fixed Blade",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
     ]
    }
   },
@@ -2694,27 +2604,6 @@
  },
  {
   "offer": {
-   "offer_id": "injinji_10",
-   "upc": "TBA",
-   "mpn": "60270",
-   "title": "Liner Crew",
-   "brand": "INJINJI"
-  },
-  "candidate": {
-   "asin": "B00AK8EE4U",
-   "upc": "760172011647",
-   "mpn": "FBA_60270",
-   "title": "Injinji 2.0 Men's Liner Crew Toesocks, Gray, Medium",
-   "brand": "INJINJI"
-  },
-  "is_match": false,
-  "_source": "injinji_live",
-  "_confidence_in_label": "human_verified",
-  "_found_via": "keyword",
-  "category": "wrong_other"
- },
- {
-  "offer": {
    "offer_id": "oxo_0",
    "upc": "1050588V6UK",
    "mpn": "1050588",
@@ -2915,6 +2804,27 @@
    "upc": "719812041124",
    "mpn": "B00L9X1G1Y",
    "title": "OXO Good Grips 6-Piece Plastic Measuring Cups- White",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00L9X2CWQ",
+   "upc": "719812041100",
+   "mpn": "ZZP-875",
+   "title": "OXO Good Grips 6- Piece Plastic Measuring Cups",
    "brand": "OXO"
   },
   "is_match": false,

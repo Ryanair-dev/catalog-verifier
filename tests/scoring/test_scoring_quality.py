@@ -1,6 +1,12 @@
 """Scoring quality tests: the sure pairs in anchors.json must not get worse than the saved baseline.
 
     python -m pytest -q tests/scoring          # runs before every push and on every GitHub PR
+
+Three hard rules per scorer (cascade, weighted):
+  1. no NEW wrong approvals            (a wrong pair that was not approved is now approved)
+  2. no correct pair NEWLY rejected    (the tester's rule: correct pairs never land in Not Approved)
+  3. the weighted score is not lower   (wrong approval -10, correct rejected -3, anything in review -1)
+
 Better results pass.  To lock an improvement in, save a new baseline on purpose:
     python scripts/build_scoring_tests.py --baseline
 """
@@ -10,7 +16,7 @@ import json
 
 import pytest
 
-import tests.scoring.harness as harness  # tests/scoring/harness.py (pytest puts this folder on the path)
+import harness  # tests/scoring/harness.py (pytest puts this folder on the path)
 
 
 @pytest.fixture(scope="module")

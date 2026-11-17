@@ -19,8 +19,9 @@ BASELINE = HERE / "baseline.json"
 
 MATCHERS = ("cascade", "weighted")      # the classifier is left out: retraining changes it on purpose
 MODE = "medical"
-# What each outcome costs.  A correct pair that is approved costs nothing, a wrong pair rejected costs nothing.
-WEIGHTS = {"wrong_approved": -10, "correct_rejected": -3, "correct_review": -1, "wrong_review": 0}
+# What each outcome costs.  A correct pair approved and a wrong pair rejected cost nothing; anything in
+# Review costs one check by a clerk or the AI (-1), whether the pair is correct or wrong.
+WEIGHTS = {"wrong_approved": -10, "correct_rejected": -3, "correct_review": -1, "wrong_review": -1}
 
 
 def anchor_id(row: dict) -> str:
