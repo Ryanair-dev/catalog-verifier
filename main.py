@@ -259,7 +259,8 @@ app = FastAPI(
 )
 
 # Compress JSON/text responses ≥ 1 KB — big win for large scan result payloads.
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Level 6 instead of Starlette's default 9: ~1/3 less CPU on a 7 MB run page for ~2% more bytes.
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 
 def _cors_origins() -> list[str]:
     raw = os.getenv(

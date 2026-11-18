@@ -612,13 +612,18 @@ def get_run_detail(
             "WHERE run_id=? AND query_agent_json IS NOT NULL",
             (run_id,),
         ).fetchall()
-        # Only rows that carry an audit at all: a substring pre-filter in SQLite instead of
-        # parsing every candidate's data_json in Python (the loop below still checks each one).
-        audit_rows = conn.execute(
-            "SELECT data_json FROM analytics_candidates WHERE run_id=? "
-            "AND data_json LIKE '%\"verification_audit\"%'",
-            (run_id,),
-        ).fetchall()
+        # Verifier counts read every candidate's data_json, so they are kept per run until the
+        # run's fingerprint changes (the verifier recomputes run counts every 10 audits, which
+        # bumps updated_at).  Only rows that carry an audit at all are read (substring pre-filter).
+        fp_now = _FIXUPS_DONE.get(run_id)
+        cached_verifier = _VERIFIER_STATS.get(run_id)
+        audit_rows = None
+        if not (fp_now and cached_verifier and cached_verifier[0] == fp_now):
+            audit_rows = conn.execute(
+                "SELECT data_json FROM analytics_candidates WHERE run_id=? "
+                "AND data_json LIKE '%\"verification_audit\"%'",
+                (run_id,),
+            ).fetchall()
 
     query_stats = {
         "offers_attempted": 0, "offers_with_results": 0, "llm_calls": 0,
@@ -647,16 +652,21 @@ def get_run_detail(
         4,
     ) if query_stats["offers_attempted"] else 0.0
 
-    verifier_stats = {"approvals_audited": 0, "flagged": 0, "errors": 0}
-    for audit_row in audit_rows:
-        try:
-            data = json.loads(audit_row["data_json"] or "{}")
-            audit = data.get("verification_audit") or {}
-        except (TypeError, ValueError):
-            continue
-        verifier_stats["approvals_audited"] += int(bool(audit.get("audited")))
-        verifier_stats["flagged"] += int(bool(audit.get("flagged")))
-        verifier_stats["errors"] += int(bool(audit.get("error")))
+    if audit_rows is None:
+        verifier_stats = dict(cached_verifier[1])
+    else:
+        verifier_stats = {"approvals_audited": 0, "flagged": 0, "errors": 0}
+        for audit_row in audit_rows:
+            try:
+                data = json.loads(audit_row["data_json"] or "{}")
+                audit = data.get("verification_audit") or {}
+            except (TypeError, ValueError):
+                continue
+            verifier_stats["approvals_audited"] += int(bool(audit.get("audited")))
+            verifier_stats["flagged"] += int(bool(audit.get("flagged")))
+            verifier_stats["errors"] += int(bool(audit.get("error")))
+        if fp_now:
+            _VERIFIER_STATS[run_id] = (fp_now, dict(verifier_stats))
     run_d["agent_stats"] = {
         "query_agent": query_stats,
         "llm_verifier": verifier_stats,
@@ -752,6 +762,7 @@ _VERDICT_VALUES = {"verified", "review", "not_approved"}
 # scan every candidate's data_json, so they only run again when the run has changed since they last
 # ran in this process: {run_id: fingerprint after the clean-ups}.
 _FIXUPS_DONE: dict[int, str] = {}
+_VERIFIER_STATS: dict[int, tuple[str, dict]] = {}   # {run_id: (fingerprint, llm_verifier counts)}
 
 
 def _run_fingerprint(conn: sqlite3.Connection, run_id: int) -> str:
