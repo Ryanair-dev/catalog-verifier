@@ -20,15 +20,19 @@ CLI:  python -m services.sellercloud.catalog_index [--force] [Brand Name ...]
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .client import SellerCloudClient, get_sellercloud_client
+
+log = logging.getLogger(__name__)
 
 SLIM_KEYS = [
     "ID", "ProductID", "UPC", "ManufacturerSKU", "ManufacturerName", "ManufacturerID",
@@ -67,6 +71,17 @@ _SHADOW_SKU_RE = re.compile(r"_QY\d+|-FB[AM]|-C$", re.IGNORECASE)
 def _is_shadow_sku(pid: str) -> bool:
     """True when a ProductID looks like a shadow / kit / corporate SKU (never a real main)."""
     return bool(_SHADOW_SKU_RE.search(pid or ""))
+
+
+# A child (FBA/FBM shadow, plain or kit-variant) SKU is always MAIN + this exact
+# suffix: optional '_QY{n}' kit tag, then '-FBA'/'-FBM', optional company code
+# ('TRB' for Turba), optional collision digits (climbing '-FBA2', '-FBA3', ...).
+# Matched against the REMAINDER after an exact main-sku prefix (never a loose
+# substring/startswith on the whole SKU) so e.g. main 'ABC1' can't swallow an
+# unrelated main 'ABC10' or its own shadow 'ABC10-FBA'.
+_CHILD_SUFFIX_RE = re.compile(
+    r"^(?:_QY(?P<qty>\d+))?-FB(?P<ch>[AM])(?:TRB)?(?:\d*)$", re.IGNORECASE
+)
 
 
 def _pid(r: dict) -> str:
@@ -186,10 +201,25 @@ class CatalogIndex:
     def _mains(rows: list[dict]) -> list[dict]:
         # A main has no ShadowOf AND no shadow/kit marker in its SKU — the second
         # check catches kit shadows ('..._QY4-FBA') that the source stores with an
-        # empty ShadowOf and would otherwise be mistaken for mains.
-        return [r for r in rows
-                if not _norm(r.get("ShadowOf"))
-                and not _is_shadow_sku(_norm(r.get("ProductID") or r.get("ID")))]
+        # empty ShadowOf and would otherwise be mistaken for mains. A THIRD check
+        # (2026-10-07): a main is ALWAYS Merchant-fulfilled, never Amazon -- this
+        # catches a malformed/orphaned FBA shadow whose name follows none of the
+        # recognized suffix patterns at all (confirmed live: 'FBA195RLKL19.MISSING1',
+        # FulfilledBy=Amazon, ShadowOf='', a name matching no shadow regex) that would
+        # otherwise slip through both checks above and be mistaken for a main. Only
+        # enforced when FulfilledBy is actually populated, so this never affects the
+        # local snapshot path if that data isn't carried there.
+        out = []
+        for r in rows:
+            if _norm(r.get("ShadowOf")):
+                continue
+            if _is_shadow_sku(_norm(r.get("ProductID") or r.get("ID"))):
+                continue
+            fb = _norm(r.get("FulfilledBy")).upper()
+            if fb and fb != "MERCHANT":
+                continue
+            out.append(r)
+        return out
 
     # existence
     def main_by_upc(self, upc: str) -> list[dict]:
@@ -200,6 +230,37 @@ class CatalogIndex:
 
     def shadows_for_asin(self, asin: str) -> list[dict]:
         return self.by_asin.get(_key(asin), [])
+
+    def children_for_main(self, main_sku: str) -> list[dict]:
+        """All FBA/FBM shadow + kit-variant children of a Main SKU: each
+        `{sku, channel ('FBA'/'FBM'), pack_qty (from '_QY{n}', else 1), asin}`.
+        Anchored on an EXACT main_sku prefix + the known child-suffix pattern —
+        never a loose startswith on the whole SKU — so a different main that
+        happens to share a numeric prefix ('ABC10' vs 'ABC1') is never mistaken
+        for a child of this one."""
+        main_u = _key(main_sku)
+        if not main_u:
+            return []
+        n = len(main_u)
+        out: list[dict] = []
+        for sku_u, row in self.by_sku.items():
+            if not sku_u.startswith(main_u):
+                continue
+            rest = sku_u[n:]
+            if not rest:
+                continue
+            m = _CHILD_SUFFIX_RE.match(rest)
+            if not m:
+                continue
+            channel = "FBA" if (m.group("ch") or "").upper() == "A" else "FBM"
+            qty = int(m.group("qty")) if m.group("qty") else 1
+            out.append({
+                "sku": _pid(row) or sku_u,
+                "channel": channel,
+                "pack_qty": qty,
+                "asin": _norm(row.get("ASIN")),
+            })
+        return out
 
     def sku_exists(self, sku: str) -> bool:
         return _key(sku) in self.all_skus
@@ -241,6 +302,13 @@ def build_from_rows(rows: list[dict], *, built_at: float = 0.0) -> CatalogIndex:
         pid = _pid(r)
         if not pid:
             continue
+        # A Disabled SKU is not part of the real, current catalog at all -- never a
+        # main, a shadow to reuse, or a collision to avoid. Only the live Azure path
+        # carries a Status field at all (the local snapshot has none), so an absent
+        # Status never filters anything out -- this never touches the snapshot path.
+        status = _norm(r.get("Status")).upper()
+        if status and status != "ACTIVE":
+            continue
         by_sku[pid.upper()] = r
         all_skus.add(pid.upper())
 
@@ -263,8 +331,24 @@ def build_from_rows(rows: list[dict], *, built_at: float = 0.0) -> CatalogIndex:
         if bn and mn_disp:
             brand_manuf[bn][mn_disp] += 1
 
-        if not _norm(r.get("ShadowOf")):          # prefix learned from mains only
-            if (pfx := _lead_prefix(pid)):
+        # Prefix learned from mains only. Two real bugs fixed here (2026-10-07):
+        # (1) `not ShadowOf` alone isn't enough to mean "main" -- a kit/corporate
+        #     SKU (e.g. '..._QY12', '...-C') also has an EMPTY ShadowOf (the same
+        #     quirk _mains() already guards against), so without _is_shadow_sku
+        #     dozens of kit-variant rows of the SAME underlying product were each
+        #     counted as their own "main" vote, badly over-weighting whatever
+        #     prefix happened to repeat across them.
+        # (2) the counted prefix was the FULL leading-letter run with no cap, so
+        #     a brand whose MPNs commonly start with letters too (e.g. Torbot's
+        #     "TT410", "TS6011-00") got that swallowed into the "prefix"
+        #     ('TORTT410' -> lead run 'TORTT', not the real 3-char 'TOR' prefix
+        #     + MPN 'TT410') -- confirmed live: Torbot's real prefix is 'TOR'
+        #     for every single main, but 'TORTT' (MPN-contaminated) won the vote
+        #     because 14/25 Torbot items happen to have a "TT..." MPN. Capped to
+        #     [:3], matching the fixed-3-char convention this catalog actually
+        #     uses (same convention sc_reference.py's own build already applies).
+        if not _norm(r.get("ShadowOf")) and not _is_shadow_sku(pid):
+            if (pfx := _lead_prefix(pid)[:3]):
                 if bn:
                     brand_pfx[bn][pfx] += 1
                 if mn:
@@ -413,6 +497,111 @@ def local_index() -> CatalogIndex:
                                           built_at=float(blob.get("built_at", 0.0)))
         _LOCAL["key"] = key
     return _LOCAL["index"]
+
+
+# ── background staleness refresher ──────────────────────────────────────────
+# The snapshot was found 56 days stale on 2026-10-07 (ANH950685 and its FBA
+# shadow existed live in SellerCloud but were invisible to PO Analytics/
+# Create SKUs because nobody had re-run `--snapshot` since 2026-08-12), even
+# though the SOURCE file (SC data.xlsx) had itself been refreshed that same
+# morning. Reading the snapshot was never the slow part (~0.5-0.7s) — the
+# missing piece was anything that re-reads the source file on a schedule. This
+# closes that gap the same way sc_reference's Azure pull is already warmed in
+# main.py's lifespan: a daemon thread, best-effort, safe to call multiple times.
+_SNAPSHOT_CHECK_INTERVAL_HOURS = 6     # how often to check the snapshot's age
+_SNAPSHOT_MAX_AGE_HOURS = 24           # refresh once it's older than this
+_scheduler_thread: threading.Thread | None = None
+_scheduler_stop = threading.Event()
+_scheduler_running_now = False
+_LAST_RUN_SETTING_KEY = "catalog_index_scheduler_last_run"
+
+
+def _snapshot_age_hours() -> float:
+    if not SNAPSHOT_JSON.exists():
+        return float("inf")
+    return (time.time() - SNAPSHOT_JSON.stat().st_mtime) / 3600.0
+
+
+def _record_last_run(outcome: str, rows: int | None = None, error: str | None = None) -> None:
+    """Persists the outcome of the last actual refresh ATTEMPT (not every
+    no-op cycle where the snapshot was already fresh) -- for the Settings >
+    Tasks Running tab (services/sellercloud/catalog_index.scheduler_status,
+    routers/settings.py tasks_running())."""
+    try:
+        import datetime as _dt
+        import json as _json
+        from services import database
+        database.set_setting(_LAST_RUN_SETTING_KEY, _json.dumps({
+            "outcome": outcome, "rows": rows, "error": error,
+            "finished_at": _dt.datetime.utcnow().isoformat(),
+        }))
+    except Exception:  # noqa: BLE001
+        log.exception("[catalog_index] failed to persist last-run status")
+
+
+def scheduler_status() -> dict:
+    """Running state + last refresh-attempt outcome, for the Settings >
+    Tasks Running tab. Added 2026-10-27 -- this scheduler previously had no
+    public status function at all, unlike every other recurring scheduler
+    in this app."""
+    last_run = None
+    try:
+        import json as _json
+        from services import database
+        raw = database.get_setting(_LAST_RUN_SETTING_KEY)
+        if raw:
+            last_run = _json.loads(raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "running_now": _scheduler_running_now,
+        "snapshot_age_hours": round(_snapshot_age_hours(), 1),
+        "last_run": last_run,
+    }
+
+
+def _scheduler_loop() -> None:
+    global _scheduler_running_now
+    while not _scheduler_stop.is_set():
+        try:
+            age = _snapshot_age_hours()
+            if age > _SNAPSHOT_MAX_AGE_HOURS:
+                log.info("[catalog_index] snapshot is %.1fh old (> %dh) — refreshing", age, _SNAPSHOT_MAX_AGE_HOURS)
+                _scheduler_running_now = True
+                try:
+                    n = refresh_snapshot()
+                finally:
+                    _scheduler_running_now = False
+                _record_last_run("ok", rows=n)
+                log.info("[catalog_index] snapshot refreshed: %d rows", n)
+        except PermissionError:
+            # SC data.xlsx is open in Excel / being written by its own export job
+            # right now — harmless, just try again next cycle instead of crashing
+            # the whole scheduler thread.
+            _scheduler_running_now = False
+            _record_last_run("locked", error="snapshot source is locked (likely open in Excel)")
+            log.warning("[catalog_index] snapshot source is locked (likely open in "
+                        "Excel) — will retry in %dh", _SNAPSHOT_CHECK_INTERVAL_HOURS)
+        except Exception as exc:  # noqa: BLE001
+            _scheduler_running_now = False
+            _record_last_run("error", error=str(exc)[:300])
+            log.exception("[catalog_index] snapshot refresh failed")
+        _scheduler_stop.wait(_SNAPSHOT_CHECK_INTERVAL_HOURS * 3600)
+
+
+def start_scheduler() -> None:
+    """Idempotent — safe to call on every app startup."""
+    global _scheduler_thread
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        return
+    _scheduler_stop.clear()
+    _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True,
+                                         name="catalog-snapshot-refresh")
+    _scheduler_thread.start()
+
+
+def stop_scheduler() -> None:
+    _scheduler_stop.set()
 
 
 # ── CLI: build + smoke-test ────────────────────────────────────────────────

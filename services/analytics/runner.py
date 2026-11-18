@@ -36,7 +36,7 @@ from services.analytics.matcher import calculate_confidence
 from services.analytics.parser import SourceRow
 from services.analytics.product_categorizer import categorize, category_distance, UNKNOWN, MEDICAL
 from services.analytics.brand_extractor import extract_brands
-from services.spapi import get_catalog_api, sp_api_configured
+from services.spapi import get_multi_store_catalog_api, sp_api_configured
 from services.spapi.catalog import CatalogAPI
 
 log = logging.getLogger(__name__)
@@ -396,6 +396,31 @@ def _update_progress(
             f"UPDATE analytics_runs SET {', '.join(fields)} WHERE id=?",
             params,
         )
+
+
+def _notify_teams_complete(run_id: int) -> None:
+    """Best-effort Teams ping when an Offer Analysis run finishes -- per user
+    request 2026-10-23 ("Teams notification on Offer/Vendor/Brand Analytics
+    completion"). Never lets a notification failure affect the run itself."""
+    from services import teams_notify
+    if not teams_notify.is_configured():
+        return
+    try:
+        with _with_conn() as conn:
+            row = conn.execute(
+                "SELECT name, verified_count, review_count, not_approved_count, "
+                "total_candidates_found FROM analytics_runs WHERE id=?", (run_id,)
+            ).fetchone()
+        if not row:
+            return
+        name, verified, review, not_approved, total = row
+        teams_notify.send_teams_message(
+            f"✅ Offer Analysis run \"{name}\" is complete — "
+            f"{total} candidates found ({verified} verified, {review} review, "
+            f"{not_approved} not approved)."
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("[runner] Teams notification failed for run %s", run_id)
 
 
 def _upsert_candidate(
@@ -1145,7 +1170,7 @@ def _rescore_pipeline(
                 (run_id,),
             ).fetchall()
             cand_rows = conn.execute(
-                "SELECT row_idx, asin, sources, data_json "
+                "SELECT row_idx, asin, sources, data_json, review_status "
                 "FROM analytics_candidates WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
@@ -1226,6 +1251,22 @@ def _rescore_pipeline(
                 return
 
             row_idx = int(c["row_idx"])
+
+            # A manual or AI decision on this exact candidate (Approve/Discard,
+            # Apply AI Decisions, Pair Manager, the new ASIN-exclusivity cap,
+            # etc.) is a deliberate human-facing verdict and must survive a
+            # rescore untouched -- confirmed live (2026-09-29, "Pedifix Sales
+            # 52 Week" run) that rescore was silently overwriting confidence
+            # AND verdict for every candidate with zero regard for
+            # review_status, so 128 of that run's 210 "verified" candidates
+            # had review_status='ai-rejected' (a real AI rejection) sitting
+            # right back in the Approved bucket after the run's most recent
+            # rescore. `get_run_detail`'s own promotion/demotion logic already
+            # treats a non-empty review_status as sacrosanct in three separate
+            # places -- rescore is the one path that never did.
+            if (c["review_status"] or "").strip():
+                continue
+
             cat = catalog_map.get(row_idx, {})
             new_title = title_by_row.get(row_idx, cat.get("title", ""))
 
@@ -1615,7 +1656,13 @@ def _run_pipeline(
             source_rows = [r for r in source_rows if r.row_idx not in done_idxs]
             log.info("Resume run %s: %d rows remaining", run_id, len(source_rows))
 
-        api = get_catalog_api(marketplace)
+        # Round-robins UPC/ItemID/Title search across every configured SP-API
+        # store (Priority Pharmacy + Turba, when both are set up) — same
+        # public catalog data either way, just drawing from two independent
+        # per-store rate-limit buckets instead of one, so a long search run
+        # gets roughly double the sustained throughput. Falls back to a
+        # single store automatically when only one is configured.
+        api = get_multi_store_catalog_api(marketplace)
         total = len(source_rows)
         done = 0
         _update_progress(run_id, status="Searching", phase="Starting", done=0, total=total)
@@ -1751,6 +1798,7 @@ def _run_pipeline(
         _recompute_run_counts(run_id)
         clear_control(run_id)
         _update_progress(run_id, status="Complete", phase="Done", done=total, total=total)
+        _notify_teams_complete(run_id)
 
     except PermissionError as exc:  # SP-API 403 — auth / expired secret / roles
         log.error("Analytics run %s aborted — SP-API 403: %s", run_id, exc)

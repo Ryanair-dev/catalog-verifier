@@ -26,8 +26,10 @@ log = logging.getLogger(__name__)
 
 ENDPOINT = "https://sellingpartnerapi-na.amazon.com"
 _REPORT_TYPE = "GET_SALES_AND_TRAFFIC_REPORT"
-_CACHE_JSON = "sales_traffic_30d_json"
-_CACHE_AT = "sales_traffic_30d_at"
+# "_v2" (2026-10-28): the old keys hold maps built before repeat child-ASIN
+# rows were summed, so they're abandoned rather than served for another day.
+_CACHE_JSON = "sales_traffic_30d_v2_json"
+_CACHE_AT = "sales_traffic_30d_v2_at"
 _LOCK = threading.Lock()
 
 
@@ -100,7 +102,9 @@ def fetch_sales_traffic_units(days: int = 30, poll_timeout: int = 300) -> dict:
         asin = (row.get("childAsin") or row.get("parentAsin") or "").strip().upper()
         u = (row.get("salesByAsin") or {}).get("unitsOrdered")
         if asin and u is not None:
-            units[asin] = int(u)
+            # A child ASIN appears once per parent listing it belongs to --
+            # sum them (overwriting dropped 7,652 units across 92 ASINs).
+            units[asin] = units.get(asin, 0) + int(u)
     return units
 
 

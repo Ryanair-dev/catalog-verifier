@@ -1,0 +1,28 @@
+<!-- doc-check: seller-analytics-e56f -->
+# Seller Analytics
+
+## What this does
+
+Analyzes a competitor's (or your own) FULL Amazon seller ASIN catalog, producing the exact Offer Analytics template workbook (same shared Excel builder as `docs/features/offer_analytics.md`/`docs/features/vendor_offers.md`), just sourced from a Seller ID's ASIN roster instead of a vendor offer's UPC. Lives as a sub-tab inside the Toolbox (`#tools-tab-seller`) — see `docs/features/toolbox.md` for how it's positioned among the other Toolbox tabs.
+
+## Architecture
+
+- **`services/seller_analytics.py`** — `seller_lookup(seller_id)` is a quick identity check (name/ASIN count/FBA flag/rating) via Keepa's `/seller?storefront=1` endpoint (`keepa_api.seller_asins()`), which hands back the seller's complete CURRENT ASIN list directly — unlike Offer Analytics' own UPC→ASIN path, there's no "recovery pass" needed, since the seller ID itself is already a confirmed identity. `build_seller_template_xlsx(seller_id, roi_pct, live, on_progress, should_cancel)` does the full enrichment: Keepa `/product` (pricing/fees/rank/brand/category/dims) + our own SellerCloud catalog join (Main SKU / FBA SKU / OR33 / On order / FBA total / 30d sales, all reused directly from `services/vendor_offers_template_export.py`'s existing helpers — `_sku_data_by_asin`, `_fba_total_by_asin`, `_sellersnap_30d_by_asin`, `_last_po_by_sku`) + live SP-API (Approved/storage via `enrich_asins`). The one real difference from Offer Analytics: an ASIN we DON'T carry has no real vendor cost, so "Product Cost" becomes a computed **target cost** instead — the highest per-unit price that still clears a caller-chosen target ROI%, solved from the same Net Profit formula every other row uses (`Target Pack Cost = (BuyBoxCurrent - AllFees) / (1 + roi_pct/100)`, `Target Unit Cost = Target Pack Cost / amz pack`). An ASIN we DO carry (a Main SKU exists in SellerCloud) shows the real latest PO cost + vendor name instead, skipping the target-cost math entirely.
+- **`routers/seller_analytics.py`** — `POST /lookup` (the quick identity check), `POST /start` (launches the full export as a background job, survives a server restart via `job_persistence.register_relauncher("seller_analytics", ...)`), `GET /jobs/{id}` (poll), `GET /jobs/{id}/download` (xlsx). Mirrors the exact job-store/poll/download pattern every other long-running export in this app uses (PO Analytics, Offer Analytics, Vendor Offers).
+- **UI (`static/index.html` `#tools-tab-seller`, `static/app.js`)** — as of 2026-10-19, ONE card with a single "Run Analysis" button (`_saRunAll()`) that does lookup + export in one action (see Changelog) — not two separate boxes.
+
+## Changelog
+
+**2026-11-17b** — Gets the new "BB Fluctuation" column (shared layout + formula + red CF); see `docs/features/vendor_offers.md` 2026-11-17d.
+
+**2026-11-17** — Shares the vendor-offer export's new SKU behaviour: SKU / FBA SKU list every SKU (comma-separated, FBM tagged), a main derived from a shadow/kit is yellow, and "Inbound value" was removed. With no UPC per ASIN, the mains come from the ASIN's own SKUs. See `docs/features/vendor_offers.md` 2026-11-17b.
+
+**2026-11-10** — Sheet layout now shared with the vendor-offer export. The 3 hard-coded `insert_cols` calls were replaced by `vendor_offers_template_export.insert_template_cols(ws)`, because that export's `TEMPLATE_COLS` gained `FBA inbound` + `Inbound value` (after `FBA total`), and Seller Analytics imports the same `TEMPLATE_COLS`/`COL`/`L`. Without this its columns would have misaligned. Seller Analytics fills them too: `_fba_inbound_by_asin()`, and Inbound value = `FBA inbound × Product cost * amz pack` (here Product Cost is our own last cost). See `docs/features/vendor_offers.md` 2026-11-10b. Needs a restart (done 11:08).
+
+**Changes this session (2026-10-19) — merged "look up seller" and "run analysis" into one box/button:**
+- User: "Make both the run analysis and seller into one box. The information about the seller and all that is fine, but we need only one button to run the analysis meaning look up is not needed. After you make it in 1 box - we get the same label information of the seller + it starts exporting asins from keepa with all the data (please dont forget about the sku, fba sku, or33, on order, fba total, 30d sales)."
+- **Confirmed before touching anything**: the backend (`services/seller_analytics.py`) already pulled every column the user named (SKU, FBA SKU, OR33, On order, FBA total, 30d sales) from an earlier session — nothing to add there. This was purely a frontend merge of two existing, already-working endpoints (`/lookup` then `/start`) into one user action.
+- **`static/index.html`**: collapsed the two cards ("Seller" with its own Look-up button, and "Run Analysis" with its own ROI%+Run button) into one card — Seller ID + Target ROI% inputs side by side, one "Run Analysis" button. Removed `#sa-lookup-btn`/`#sa-lookup-error` entirely (the lookup result box `#sa-lookup-result` stays, now populated by the merged flow).
+- **`static/app.js`**: `_saLookupSeller()` and `_saStartRun()` merged into one `_saRunAll()` — calls `/lookup` first (shows the identity line, same as before), and ONLY on success immediately calls `/start` and begins polling; a lookup failure stops there and shows the error without ever attempting the export. `_pollSellerAnalytics`/`_downloadSellerAnalytics` unchanged.
+- **Verified**: FastAPI TestClient smoke test in the worktree confirmed `#sa-run-btn` present, `#sa-lookup-btn` fully gone, brace balance held; mirrored to the live checkout and confirmed it imports cleanly.
+- Scope: `static/index.html`, `static/app.js` only — no backend change. **No backend restart needed** — hard-refresh the browser tab.

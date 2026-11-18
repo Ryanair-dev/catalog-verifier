@@ -181,6 +181,11 @@
     scans: [],
     scanStatsCache: null,
 
+    // Offer Analysis — the "Past Analytics Runs" list (not an open run's
+    // own candidate table, which has its own server-side pagination under
+    // state.analyticsRun below).
+    analyticsRunsList: { rows: [], page: 1, pageSize: 10 },
+
     // active scan detail
     scan: null,
     results: [],
@@ -235,12 +240,14 @@
     brandAnalytics: {
       runs: [],
       runsPoll: null,
+      runsPage: 1,
+      runsPageSize: 10,
       run: {
         id: null,
         data: null,
         poll: null,
         page: 1,
-        pageSize: 50,
+        pageSize: 10,
         search: "",
         sortKey: "bsr",
         sortDir: "asc",
@@ -552,7 +559,9 @@
           msg = String(j.detail);
         }
       } catch {}
-      throw new Error(msg);
+      const err = new Error(msg);
+      err.status = resp.status;   // lets pollers tell "job gone" (404) from a blip
+      throw err;
     }
     const ct = resp.headers.get("content-type") || "";
     return ct.includes("application/json") ? resp.json() : resp.blob();
@@ -595,9 +604,10 @@
       "analytics-run":  $("#view-analytics-run"),
       "brand-analytics":     $("#view-brand-analytics"),
       "brand-analytics-run": $("#view-brand-analytics-run"),
-      "quick-search":   $("#view-quick-search"),
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
+      "walmart-catalog": $("#view-walmart-catalog"),
+      "reports":        $("#view-reports"),
     };
 
     // Views that are never shown directly via switchView (only via openXxxDetail)
@@ -627,11 +637,113 @@
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
     if (view === "create-po") initCreatePo();
     if (view === "vendor-offers") initVendorOffers();
+    if (view === "walmart-catalog" && typeof _refreshWalmartStatus === "function") _refreshWalmartStatus();
+    if (view === "reports") {
+      if (typeof _loadReportsPoPnlFilters === "function") _loadReportsPoPnlFilters();
+      if (typeof _loadReportsPoPnl === "function") _loadReportsPoPnl();
+    }
     // Tear down detail-view poll when leaving Analytics.
     if (view !== "analytics" && typeof _clearAnalyticsRunPoll === "function") {
       try { _clearAnalyticsRunPoll(); } catch {}
     }
     if (view !== "brand-analytics") _clearBARPoll();
+    // The manual-run poll is deliberately NOT cleared when leaving this view —
+    // the job keeps running server-side regardless of which sidebar tab is
+    // open, and killing the poll here would freeze the panel on whatever
+    // phase it last showed. _refreshPoaStatusNow() re-syncs on re-entry.
+  }
+
+  // ========================================================================
+  //  PO Analytics automation — per-tool automated-email recipients (2026-10-09)
+  //  Lives directly on the PO Analytics page (was a separate "Automation
+  //  Settings" page/nav-item — combined since there's only ever one
+  //  automation today; the backend endpoint stays generic by `tool` in case
+  //  another one is added later, each presumably on its own tool's page).
+  // ========================================================================
+
+  async function loadAutomationSettings() {
+    const container = $("#poa-automation-card");
+    if (!container) return;
+    container.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    let data;
+    try {
+      data = await api("/api/settings/automation");
+    } catch (e) {
+      container.innerHTML = `<div style="font-size:12px;color:#c0392b;">Couldn't load settings: ${e.message || e}</div>`;
+      return;
+    }
+    const tool = (data.tools || []).find(t => t.tool === "po_analytics");
+    container.innerHTML = "";
+    if (tool) container.appendChild(await _renderAutomationToolCard(tool));
+  }
+
+  // No on/off toggle (removed 2026-10-13c) and no default-recipients list
+  // (removed 2026-10-15 — every Add-PO submission now requires its own
+  // recipients, so there's no fallback list left to configure). Renamed
+  // "Automation Status" → "Status" and trimmed to just the watched/sent
+  // counts + a refresh button (2026-10-16) — the schedule-time line wasn't
+  // asked for and just added noise.
+  async function _renderAutomationToolCard(tool) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.style.cssText = "padding:16px;display:flex;flex-direction:column;gap:10px;";
+
+    let statusHtml = "";
+    if (tool.tool === "po_analytics") {
+      try {
+        const st = await api("/api/po-analytics/automation/status");
+        statusHtml = `<div class="auto-status-line" style="font-size:11px;color:#94a3b8;">
+          ${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched ·
+          ${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent
+        </div>`;
+      } catch { /* best-effort status line */ }
+    }
+
+    const refreshIconSvg = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`;
+    card.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div style="font-weight:600;font-size:14px;color:var(--navy-800,#1e293b);">Status</div>
+        <button class="icon-btn" data-act="check-now" data-tool="${tool.tool}" title="Refresh" style="width:28px;height:28px;flex:none;">${refreshIconSvg}</button>
+      </div>
+      ${statusHtml}
+      <span class="auto-save-feedback" style="font-size:11px;"></span>
+    `;
+
+    const checkBtn = card.querySelector('[data-act="check-now"]');
+    if (checkBtn) {
+      checkBtn.addEventListener("click", async () => {
+        checkBtn.disabled = true;
+        checkBtn.innerHTML = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1.2s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.3"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>`;
+        try {
+          const r = await api("/api/po-analytics/automation/check-now", { method: "POST" });
+          showToast(`Checked ${r.checked} items — ${r.due} due, ${r.sent} sent${r.errors.length ? `, ${r.errors.length} errored` : ""}.`,
+            r.errors.length ? "warning" : "success");
+        } catch (err) {
+          showToast(`Check failed: ${err.message || err}`, "error");
+        } finally {
+          checkBtn.disabled = false;
+          checkBtn.innerHTML = refreshIconSvg;
+          loadAutomationSettings();
+          _refreshPoaLists();
+        }
+      });
+    }
+
+    return card;
+  }
+
+  async function _refreshAutomationStatusLine(card) {
+    // Re-fetch just the watched/sent counts without rebuilding the whole card
+    // (keeps the recipients textarea/focus state intact).
+    try {
+      const st = await api("/api/po-analytics/automation/status");
+      const statusEl = card.querySelector(".auto-status-line");
+      if (statusEl) {
+        statusEl.textContent =
+          `${st.watched_pos} PO${st.watched_pos === 1 ? "" : "s"} watched · ` +
+          `${st.sent_pos} report${st.sent_pos === 1 ? "" : "s"} sent`;
+      }
+    } catch { /* best-effort */ }
   }
 
   // ========================================================================
@@ -644,6 +756,256 @@
     const f = document.getElementById("vendor-offers-frame");
     if (f && !f.getAttribute("src")) f.setAttribute("src", "/api/vendor-offers/page");
   }
+
+  // ========================================================================
+  //  Vendor Offers "Offer Analytics" export — driven from THIS (top) document,
+  //  not the embedded iframe's own script. switchView hides #view-vendor-offers
+  //  (and therefore the iframe) via display:none whenever another sidebar
+  //  section is opened, and browsers throttle/freeze JS timers in frames that
+  //  aren't being rendered — so a poll loop living inside the iframe stalled
+  //  the instant the user switched tabs, even though the export itself is a
+  //  genuine background thread on the server that kept running regardless.
+  //  This document is never hidden (only its child view divs are), so owning
+  //  the poll loop + download here means switching sections can't interrupt
+  //  it. price_desk.html's button delegates to these (same-origin, callable
+  //  directly as window.parent._voStartExport/...) when embedded, and falls
+  //  back to its own original self-contained logic when opened standalone
+  //  (e.g. visiting /api/vendor-offers/page directly in its own tab).
+  //
+  //  Moving the poll loop here fixed the "switched sidebar section" case, but
+  //  NOT the case where the user leaves the whole BROWSER TAB (switches tabs,
+  //  the OS/browser suspends or discards a backgrounded tab, the laptop
+  //  sleeps, ...) — that can freeze or wipe this document's own JS state too,
+  //  including the in-memory _voExportJob var, with no way to recover it.
+  //  The server-side job (routers/vendor_offers.py _ANALYTICS_JOBS) is
+  //  unaffected either way — it's a real background thread, kept for 1h
+  //  after completion — so the fix is to persist the job id to localStorage
+  //  (survives a reload/tab-discard) and resume checking it on boot, plus
+  //  replace the auto-triggered a.click() download (easy to miss or lose if
+  //  it fires while the tab isn't actually being watched) with a persistent
+  //  on-screen "Download" button that just sits there until clicked.
+  // ========================================================================
+  let _voExportJob = null;   // {id, filename} while a job is running
+  const VO_EXPORT_STORAGE_KEY = "vo_export_job_v1";
+
+  function _voSaveJobToStorage(job) {
+    try { localStorage.setItem(VO_EXPORT_STORAGE_KEY, JSON.stringify(job)); } catch {}
+  }
+  function _voClearJobStorage() {
+    try { localStorage.removeItem(VO_EXPORT_STORAGE_KEY); } catch {}
+  }
+  function _voLoadJobFromStorage() {
+    try {
+      const raw = localStorage.getItem(VO_EXPORT_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  function _voHideReadyBar() {
+    document.getElementById("vo-export-ready-bar")?.remove();
+  }
+
+  // A persistent (non-auto-dismissing) download prompt — unlike showToast,
+  // this stays on screen until the user clicks Download or dismisses it, so
+  // coming back to the tab minutes/hours later still shows it.
+  function _voShowReadyBar(job) {
+    _voHideReadyBar();
+    const bar = document.createElement("div");
+    bar.id = "vo-export-ready-bar";
+    bar.style.cssText = [
+      "position:fixed", "bottom:20px", "right:20px", "z-index:9999",
+      "background:#fff", "border:1px solid #e2e6ec", "border-radius:12px",
+      "box-shadow:0 8px 24px rgba(0,0,0,.15)", "padding:14px 16px",
+      "display:flex", "align-items:center", "gap:12px",
+      "font-family:Inter,system-ui,sans-serif", "font-size:14px",
+      "max-width:380px",
+    ].join(";");
+
+    const msg = document.createElement("span");
+    msg.style.flex = "1";
+    msg.textContent = `Offer Analytics export ready: ${job.filename || "offer_analytics.xlsx"}`;
+
+    const dlBtn = document.createElement("button");
+    dlBtn.type = "button";
+    dlBtn.textContent = "Download";
+    dlBtn.style.cssText = "background:#4d37a1;color:#fff;border:none;border-radius:8px;" +
+      "padding:8px 14px;font-weight:600;cursor:pointer;white-space:nowrap;";
+    dlBtn.addEventListener("click", () => _voDownloadReadyJob(job));
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.textContent = "×";
+    closeBtn.setAttribute("aria-label", "Dismiss");
+    closeBtn.style.cssText = "background:none;border:none;font-size:20px;line-height:1;" +
+      "cursor:pointer;color:#8a94a6;padding:0 2px;";
+    closeBtn.addEventListener("click", () => { _voHideReadyBar(); _voClearJobStorage(); });
+
+    bar.append(msg, dlBtn, closeBtn);
+    document.body.appendChild(bar);
+  }
+
+  async function _voDownloadReadyJob(job) {
+    try {
+      const dl = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}/download`);
+      if (!dl.ok) {
+        throw new Error(dl.status === 404
+          ? "This export has expired on the server — please re-run it."
+          : "download failed");
+      }
+      const blob = await dl.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = job.filename || "offer_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast("Offer Analytics export downloaded.", "success");
+      _voHideReadyBar();
+      _voClearJobStorage();
+    } catch (err) {
+      showToast("Download failed: " + (err.message || err), "error");
+    }
+  }
+
+  // Called once at boot. If a job was left running (or finished) when the
+  // tab was last active, pick it back up instead of losing it silently.
+  async function _voResumePendingExport() {
+    const saved = _voLoadJobFromStorage();
+    if (!saved || !saved.id) return;
+    try {
+      const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${saved.id}`);
+      if (!ps.ok) { _voClearJobStorage(); return; }   // expired / gone
+      const pj = await ps.json().catch(() => ({}));
+      if (pj.status === "complete") {
+        _voShowReadyBar(saved);
+      } else if (pj.status === "running") {
+        _voExportJob = saved;
+        _voPollExport();
+      } else {
+        _voClearJobStorage();   // error / cancelled while we were away
+      }
+    } catch { /* network hiccup on boot — just skip, no job state lost */ }
+  }
+
+  function _voFrameBtn() {
+    try {
+      return document.getElementById("vendor-offers-frame")
+        ?.contentDocument?.getElementById("btnExport") || null;
+    } catch { return null; }
+  }
+
+  function _voResetFrameBtn() {
+    const b = _voFrameBtn();
+    if (b) { b.disabled = false; b.textContent = "Export to Excel"; }
+  }
+
+  async function _voStartExport(opts) {
+    if (_voExportJob) return;   // already running
+    const btn = _voFrameBtn();
+    if (btn) btn.textContent = "Starting…";
+    try {
+      const start = await fetch("/api/vendor-offers/analytics-export/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(opts),
+      });
+      const sj = await start.json().catch(() => ({}));
+      if (!start.ok) throw new Error(sj.detail || start.statusText);
+      _voExportJob = { id: sj.job_id, filename: sj.filename };
+      _voSaveJobToStorage(_voExportJob);
+      _voPollExport();
+    } catch (err) {
+      showToast("Export failed: " + (err.message || err), "error");
+      _voExportJob = null;
+      _voResetFrameBtn();
+    }
+  }
+
+  function _voCancelExport() {
+    if (!_voExportJob) return;
+    const btn = _voFrameBtn();
+    if (btn) btn.textContent = "Cancelling…";
+    fetch(`/api/vendor-offers/analytics-export/jobs/${_voExportJob.id}/cancel`, { method: "POST" }).catch(() => {});
+    _voClearJobStorage();
+  }
+
+  function _voPollExport() {
+    const job = _voExportJob;
+    if (!job) return;
+    setTimeout(async () => {
+      if (_voExportJob !== job) return;   // superseded/already cleared
+      let pj;
+      try {
+        const ps = await fetch(`/api/vendor-offers/analytics-export/jobs/${job.id}`);
+        // A 404 specifically means the job is GONE (expired/evicted server-side,
+        // e.g. the TTL-from-start bug) -- that's terminal, not a network blip.
+        // Treating it as "transient and keep retrying" (the old behavior) made
+        // the button sit on "Cancel · <stale phase> X%" forever, looking like
+        // the export was still running when it had actually vanished.
+        if (ps.status === 404) {
+          showToast("That export is no longer available on the server "
+            + "(it may have expired) — please start it again.", "error");
+          _voExportJob = null;
+          _voClearJobStorage();
+          _voResetFrameBtn();
+          return;
+        }
+        pj = await ps.json().catch(() => ({}));
+        if (!ps.ok) throw new Error(pj.detail || ps.statusText);
+      } catch (err) {
+        _voPollExport();   // transient fetch error — keep trying, same as before
+        return;
+      }
+      if (pj.status === "cancelled") {
+        showToast("Export cancelled.", "info");
+        _voExportJob = null;
+        _voClearJobStorage();
+        _voResetFrameBtn();
+        return;
+      }
+      if (pj.status === "error") {
+        showToast("Export failed: " + (pj.error || "export failed"), "error");
+        _voExportJob = null;
+        _voClearJobStorage();
+        _voResetFrameBtn();
+        return;
+      }
+      if (pj.status === "complete") {
+        // Was: auto-trigger a.click() the instant this is detected — easy to
+        // miss (or never see fire at all) if the tab wasn't being watched.
+        // Now: a persistent on-screen button that stays until clicked, and
+        // _voResumePendingExport() can show the same thing on a later reload
+        // even if this exact poll never got to run (tab discarded, etc).
+        _voShowReadyBar(job);
+        if (pj.email_to && pj.email_to.length) {
+          if (pj.email_sent) {
+            showToast(`Also emailed to ${pj.email_to.join(", ")}.`, "success");
+          } else if (pj.email_error) {
+            showToast(`Export is ready, but the email failed to send: ${pj.email_error}`, "warning");
+          }
+        }
+        _voExportJob = null;
+        _voResetFrameBtn();
+        return;
+      }
+      // still running — reflect progress on the button whenever the frame happens
+      // to be visible; harmless (and cheap) to set even while it's hidden.
+      const btn = _voFrameBtn();
+      if (btn) {
+        if (pj.total) {
+          const pct = Math.round(pj.done / pj.total * 100);
+          const s = pj.eta_seconds;
+          const eta = s == null ? "" : (s >= 90 ? ` · ~${Math.ceil(s / 60)}m left` : ` · ~${s}s left`);
+          btn.textContent = `Cancel · ${pj.phase || "working"} ${pct}% (${pj.done}/${pj.total})${eta}`;
+        } else {
+          btn.textContent = `Cancel · ${pj.phase || "working"}…`;
+        }
+      }
+      _voPollExport();
+    }, 1500);
+  }
+
+  window._voStartExport = _voStartExport;
+  window._voCancelExport = _voCancelExport;
+  window._voIsExportRunning = () => !!_voExportJob;
 
   function initCreatePo() {
     const el = document.getElementById("view-create-po");
@@ -2493,6 +2855,7 @@
       _activePanel = null;
     }
     $("#panel-overlay")?.classList.remove("visible");
+    _stopTasksPoll();
   }
   $("#panel-overlay")?.addEventListener("click", _closeActivePanel);
 
@@ -2508,7 +2871,17 @@
   $("#abbr-close").addEventListener("click", () => _closeActivePanel());
 
   // Top-level library type tab switching
-  $$(".lib-type-tab").forEach(tab => {
+  // 2026-10-27: scoped to #abbr-panel -- this used to be a bare $$(".lib-type-tab")
+  // (every element with that class, anywhere in the document), which meant
+  // clicking ANY tab in Settings/Toolbox/Reports (they all reuse the same
+  // .lib-type-tab class for their own, separately-scoped tab bars) ALSO fired
+  // this handler and _switchLibTab(undefined) -- and since none of those
+  // other tabs carry a data-lib-type attribute at all, `t.dataset.libType
+  // === type` was `undefined === undefined` (true) for every single one of
+  // them, marking them ALL "active" at once. Reported: "when I open the side
+  // tab all the tabs are automatically highlighted... for both settings and
+  // toolbox."
+  $$("#abbr-panel .lib-type-tab").forEach(tab => {
     tab.addEventListener("click", () => {
       state.libActiveType = tab.dataset.libType;
       _switchLibTab(state.libActiveType);
@@ -2518,7 +2891,7 @@
   });
 
   function _switchLibTab(type) {
-    $$(".lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.libType === type));
+    $$("#abbr-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.libType === type));
     $("#lib-tab-abbreviations").classList.toggle("hidden", type !== "abbreviations");
     $("#lib-tab-brands").classList.toggle("hidden", type !== "brands");
     $("#lib-tab-manufacturers").classList.toggle("hidden", type !== "manufacturers");
@@ -2928,6 +3301,163 @@
       $("#prep-out-fee").value = Number(j.prep_out_fee);
     } catch {}
   }
+
+  // ── Settings > Tasks Running tab (2026-10-27) ─────────────────────────────
+  // Polls GET /api/settings/tasks-running (aggregates every background job/
+  // run/scheduler across the app) only while this tab is actually visible --
+  // _closeActivePanel() (shared by every side panel) stops the poll on close.
+  let _tasksPollTimer = null;
+  const TASKS_POLL_MS = 4000;
+
+  function _switchSettingsTab(tab) {
+    $$("#settings-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.settingsTab === tab));
+    $("#settings-tab-thresholds")?.classList.toggle("hidden", tab !== "thresholds");
+    $("#settings-tab-tasks")?.classList.toggle("hidden", tab !== "tasks");
+    if (tab === "tasks") {
+      _loadTasksRunning();
+      _stopTasksPoll();
+      _tasksPollTimer = setInterval(_loadTasksRunning, TASKS_POLL_MS);
+    } else {
+      _stopTasksPoll();
+    }
+  }
+  $$("#settings-panel .lib-type-tab").forEach(tab => {
+    tab.addEventListener("click", () => _switchSettingsTab(tab.dataset.settingsTab));
+  });
+
+  function _stopTasksPoll() {
+    if (_tasksPollTimer) { clearInterval(_tasksPollTimer); _tasksPollTimer = null; }
+  }
+
+  function _taskProgressBarHtml(done, total) {
+    if (total === null || total === undefined || total <= 0) return "";
+    const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+    return `<div style="background:#eef0f4;border-radius:6px;height:6px;overflow:hidden;margin-top:6px;">
+              <div style="background:var(--brand-600, #2563eb);height:100%;width:${pct}%;"></div>
+            </div>
+            <div class="text-xs" style="color:#9aa1ab;margin-top:2px;">${done ?? 0}/${total} (${pct}%)</div>`;
+  }
+
+  const _TASK_STATUS_COLORS = {
+    running: "#2563eb", complete: "#16a34a", done: "#16a34a", ok: "#16a34a",
+    error: "#dc2626", cancelled: "#9aa1ab", stopped: "#9aa1ab", idle: "#9aa1ab",
+  };
+
+  function _fmtTimestamp(value) {
+    // Job dicts store Unix epoch seconds (numbers); DB run-table columns
+    // and scheduler ISO strings are already date strings -- handle both.
+    if (value === null || value === undefined || value === "") return "";
+    const d = typeof value === "number" ? new Date(value * 1000) : new Date(value);
+    return isNaN(d.getTime()) ? "" : d.toLocaleString();
+  }
+
+  function _taskCardHtml(title, status, detail, done, total, startedAt, completedAt) {
+    const color = _TASK_STATUS_COLORS[(status || "").toLowerCase()] || "#6b7480";
+    const timeBits = [];
+    const startedStr = _fmtTimestamp(startedAt);
+    const completedStr = _fmtTimestamp(completedAt);
+    if (startedStr) timeBits.push(`Started ${startedStr}`);
+    if (completedStr) timeBits.push(`Finished ${completedStr}`);
+    return `<div style="border:1px solid #e2e6ec;border-radius:8px;padding:10px 12px;">
+              <div class="flex items-center justify-between" style="gap:8px;">
+                <div class="text-sm font-semibold" style="color:var(--navy-800);">${escapeHtml(title)}</div>
+                <span class="text-xs" style="color:${color};font-weight:600;text-transform:uppercase;white-space:nowrap;">${escapeHtml(status || "—")}</span>
+              </div>
+              ${detail ? `<div class="text-xs" style="color:#6b7480;margin-top:3px;">${escapeHtml(detail)}</div>` : ""}
+              ${timeBits.length ? `<div class="text-xs" style="color:#9aa1ab;margin-top:3px;">${escapeHtml(timeBits.join(" · "))}</div>` : ""}
+              ${_taskProgressBarHtml(done, total)}
+            </div>`;
+  }
+
+  function _schedulerCardHtml(s) {
+    const status = s.running_now ? "running" : "idle";
+    const parts = [];
+    if (s.next_run) parts.push(`Next: ${new Date(s.next_run).toLocaleString()}`);
+    if (s.summary) {
+      parts.push(s.summary);
+    } else if (s.last && s.last.results) {
+      const vendorParts = Object.entries(s.last.results)
+        .map(([vendor, r]) => {
+          if (r && typeof r.added === "number") return `${vendor} +${r.added}`;
+          if (r && r.status) return `${vendor}: ${r.status}`;
+          return null;
+        })
+        .filter(Boolean);
+      if (vendorParts.length) parts.push(vendorParts.join(", "));
+      if (s.last.errors && Object.keys(s.last.errors).length) {
+        parts.push(`errors: ${Object.keys(s.last.errors).join(", ")}`);
+      }
+    } else if (s.last_run) {
+      parts.push(`Last: ${s.last_run.outcome}${s.last_run.rows != null ? ` (${s.last_run.rows} rows)` : ""}${s.last_run.error ? ` — ${s.last_run.error}` : ""}`);
+    } else if (s.last_refresh_at) {
+      parts.push(`Last refresh: ${new Date(s.last_refresh_at * 1000).toLocaleString()}${s.last_refresh_rows != null ? ` (${s.last_refresh_rows} rows)` : ""}`);
+    }
+    return _taskCardHtml(s.feature, status, parts.join(" — "));
+  }
+
+  async function _loadTasksRunning() {
+    let data;
+    try {
+      data = await api("/api/settings/tasks-running");
+    } catch {
+      return;
+    }
+    const activeJobsEl = $("#tasks-jobs-active-list");
+    const recentJobsEl = $("#tasks-jobs-recent-list");
+    const runsEl = $("#tasks-runs-list");
+    const schedEl = $("#tasks-schedulers-list");
+    const allJobs = (data.jobs || []).filter(j => j.job_id);
+    const activeJobs = allJobs.filter(j => (j.status || "").toLowerCase() === "running");
+    const recentJobs = allJobs.filter(j => (j.status || "").toLowerCase() !== "running");
+    if (activeJobsEl) {
+      activeJobsEl.innerHTML = activeJobs.length
+        ? activeJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total, j.started_at, j.completed_at)).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">Nothing running right now.</div>`;
+    }
+    if (recentJobsEl) {
+      recentJobsEl.innerHTML = recentJobs.length
+        ? recentJobs.map(j => _taskCardHtml(j.feature, j.status, j.phase || "", j.done, j.total, j.started_at, j.completed_at)).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No recent jobs.</div>`;
+    }
+    if (runsEl) {
+      runsEl.innerHTML = (data.runs || []).length
+        ? data.runs.map(r => _taskCardHtml(
+            r.name ? `${r.feature}: ${r.name}` : r.feature, r.status, r.phase || "", r.done, r.total,
+            r.created_at, r.updated_at,
+          )).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No recent runs.</div>`;
+    }
+    if (schedEl) {
+      schedEl.innerHTML = (data.schedulers || []).length
+        ? data.schedulers.map(_schedulerCardHtml).join("")
+        : `<div class="text-xs" style="color:#9aa1ab;">No scheduler data.</div>`;
+    }
+    _loadSavedResults();
+  }
+  $("#tasks-refresh-btn")?.addEventListener("click", _loadTasksRunning);
+
+  // Finished export files kept on disk for 14 days (services/job_results.py) --
+  // still downloadable after the job left memory or the server restarted.
+  async function _loadSavedResults() {
+    const el = $("#tasks-saved-list");
+    if (!el) return;
+    let data;
+    try { data = await api("/api/settings/saved-results"); } catch { return; }
+    const rows = data.results || [];
+    el.innerHTML = rows.length
+      ? rows.map(r => {
+          const mb = r.size ? ` · ${(r.size / 1048576).toFixed(1)} MB` : "";
+          return `<div style="border:1px solid #e2e6ec;border-radius:8px;padding:10px 12px;">
+                    <div class="flex items-center justify-between" style="gap:8px;">
+                      <div class="text-sm font-semibold" style="color:var(--navy-800);word-break:break-all;">${escapeHtml(r.filename || r.job_id)}</div>
+                      <a class="text-xs" style="font-weight:600;white-space:nowrap;" href="/api/settings/saved-results/${encodeURIComponent(r.job_id)}/download">Download</a>
+                    </div>
+                    <div class="text-xs" style="color:#9aa1ab;margin-top:3px;">${escapeHtml(`${r.feature || ""} · Finished ${_fmtTimestamp(r.completed_at)}${mb}`)}</div>
+                  </div>`;
+        }).join("")
+      : `<div class="text-xs" style="color:#9aa1ab;">No saved files yet.</div>`;
+  }
+
   $("#open-settings-btn").addEventListener("click", () => { _openPanel("settings-panel"); loadPrepFee(); });
   $("#settings-close").addEventListener("click", () => _closeActivePanel());
   $("#settings-save").addEventListener("click", async () => {
@@ -3093,32 +3623,56 @@
     const file = e.target.files[0];
     if (!file) return;
     const resEl = $("#plib-import-result");
-    resEl.textContent = "Importing…";
+    resEl.textContent = "Uploading…";
     const fd = new FormData();
     fd.append("pairs_file", file, file.name);
-    let j;
+    let start;
     try {
-      j = await api("/api/pairs/library/import", { method: "POST", body: fd, form: true });
+      start = await api("/api/pairs/library/import", { method: "POST", body: fd, form: true });
     } catch (err) {
       resEl.textContent = "";
       showToast(`Import failed: ${err.message}`, "error", 8000);
       return;
     }
-    const bits = [
-      `${j.pairs_created} new`, `${j.pairs_updated} updated`,
-      `${j.ids_added} identifiers added`,
-    ];
-    if (j.blacklist_cleared)  bits.push(`${j.blacklist_cleared} unblacklisted`);
-    if (j.skipped_total)      bits.push(`${j.skipped_total} skipped`);
-    resEl.textContent = `Last import: ${j.rows} rows — ${bits.join(", ")}.`;
-    if (j.skipped_total) {
-      const first = (j.skipped || []).slice(0, 3)
-        .map(s => `row ${s.row}: ${s.reason}`).join("; ");
-      showToast(`Imported with ${j.skipped_total} skipped row(s) — ${first}`, "warning", 9000);
-    } else {
-      showToast(`Pair Library import complete — ${j.rows} rows processed.`, "success");
-    }
-    loadPairLibStats();
+    // The import itself runs as a background job (can take a while on a big
+    // file — a single long-lived request risks a reverse-proxy/tunnel
+    // timeout), so poll instead of expecting the POST to carry the result.
+    const poll = async () => {
+      let j;
+      try {
+        j = await api(`/api/pairs/library/import/jobs/${start.job_id}`);
+      } catch (err) {
+        setTimeout(poll, 2000);
+        return;
+      }
+      if (j.status === "running") {
+        resEl.textContent = j.total ? `Importing… ${j.done}/${j.total}` : "Importing…";
+        setTimeout(poll, 1000);
+        return;
+      }
+      if (j.status === "error") {
+        resEl.textContent = "";
+        showToast(`Import failed: ${j.error || "unknown error"}`, "error", 8000);
+        return;
+      }
+      const r = j.result || {};
+      const bits = [
+        `${r.pairs_created} new`, `${r.pairs_updated} updated`,
+        `${r.ids_added} identifiers added`,
+      ];
+      if (r.blacklist_cleared)  bits.push(`${r.blacklist_cleared} unblacklisted`);
+      if (r.skipped_total)      bits.push(`${r.skipped_total} skipped`);
+      resEl.textContent = `Last import: ${r.rows} rows — ${bits.join(", ")}.`;
+      if (r.skipped_total) {
+        const first = (r.skipped || []).slice(0, 3)
+          .map(s => `row ${s.row}: ${s.reason}`).join("; ");
+        showToast(`Imported with ${r.skipped_total} skipped row(s) — ${first}`, "warning", 9000);
+      } else {
+        showToast(`Pair Library import complete — ${r.rows} rows processed.`, "success");
+      }
+      loadPairLibStats();
+    };
+    poll();
   });
 
   // ---- Pair Library: export by brand ---------------------------------------
@@ -3417,10 +3971,14 @@
 
     // Pre-load library so the panel opens instantly the first time.
     loadLibrary();
+
+    // Pick back up any Offer Analytics export left running (or finished
+    // unnoticed) from before this tab was reloaded/discarded.
+    _voResumePendingExport();
   })();
 
   // ==========================================================================
-  //  Analytics tab (ROI & Cost)
+  //  Analytics tab (Offer Analysis)
   // ==========================================================================
   // Two entry points:
   //   1. "Vet Existing Listings"   — catalog has ASINs → straight to vetting.
@@ -3587,68 +4145,12 @@
       const r = await fetch("/api/analytics/runs");
       if (!r.ok) throw new Error("status " + r.status);
       const rows = await r.json();
-      if (!Array.isArray(rows) || rows.length === 0) {
-        body.innerHTML = `
-          <div class="empty-state" style="padding: 24px 12px;">
-            <div class="text-sm" style="color: #6b7480;">No runs yet — kick one off above.</div>
-          </div>`;
-        _clearAnalyticsRunsPoll();
-        return;
-      }
+      state.analyticsRunsList.rows = Array.isArray(rows) ? rows : [];
+      _renderAnalyticsRunsPage();
 
-      body.innerHTML = rows.map(r => {
-        const active = _runIsActive(r);
-        const pct = r.progress_total
-          ? Math.min(100, Math.round((r.progress_done / r.progress_total) * 100))
-          : 0;
-        const phase = r.progress_phase || r.status || "";
-        return `
-          <div class="analytics-run-row" data-run-id="${r.id}">
-            <div class="flex items-center justify-between gap-3">
-              <div class="flex-1 min-w-0">
-                <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
-                  ${escapeHtml(r.name || "Untitled run")}
-                  <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
-                </div>
-                <div class="text-xs mt-0.5" style="color: #6b7480;">
-                  ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
-                  <span style="color: var(--green-600);">${r.verified_count || 0} verified</span> ·
-                  <span style="color: #b58100;">${r.review_count || 0} review</span> ·
-                  <span style="color: #b91c1c;">${r.not_approved_count || 0} rejected</span>
-                </div>
-              </div>
-              <div class="text-xs text-right" style="color: ${active ? 'var(--purple-700)' : '#94a3b8'}; min-width: 130px;">
-                ${active ? `<span class="mini-spinner"></span> ${escapeHtml(phase)} ${pct}%` : escapeHtml(r.status || "")}
-              </div>
-              <button class="analytics-run-del" data-run-id="${r.id}" title="Delete run" aria-label="Delete run">✕</button>
-            </div>
-            ${active ? `
-              <div class="analytics-run-inline-bar"><div class="fill" style="width: ${pct}%"></div></div>
-            ` : ""}
-          </div>`;
-      }).join("");
-
-      // Wire row clicks → open detail view.
-      body.querySelectorAll(".analytics-run-row").forEach(el => {
-        el.addEventListener("click", () => {
-          const id = Number(el.dataset.runId);
-          if (id) openAnalyticsRunDetail(id);
-        });
-      });
-
-      // Wire per-row delete buttons. stopPropagation so the row click (which
-      // opens the run) doesn't also fire when deleting.
-      const _runNameById = Object.fromEntries(rows.map(rr => [rr.id, rr.name || "Untitled run"]));
-      body.querySelectorAll(".analytics-run-del").forEach(btn => {
-        btn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const id = Number(btn.dataset.runId);
-          if (id) _deleteAnalyticsRunFromBoard(id, _runNameById[id] || "this run");
-        });
-      });
-
-      // Keep polling while any run is active.
-      if (rows.some(_runIsActive)) {
+      // Keep polling while any run is active, regardless of which page of
+      // the list is currently shown.
+      if (state.analyticsRunsList.rows.some(_runIsActive)) {
         _schedAnalyticsRunsPoll();
       } else {
         _clearAnalyticsRunsPoll();
@@ -3661,6 +4163,123 @@
     }
   }
   $("#analytics-refresh-runs")?.addEventListener("click", loadAnalyticsRuns);
+
+  // Renders the currently-selected page of state.analyticsRunsList.rows —
+  // called on fresh load, on a pager click, and on every poll tick (so an
+  // active run's progress updates in place without resetting which page
+  // the user is looking at).
+  function _renderAnalyticsRunsPage() {
+    const body = $("#analytics-runs-body");
+    if (!body) return;
+    const all = state.analyticsRunsList.rows;
+    if (!all.length) {
+      body.innerHTML = `
+        <div class="empty-state" style="padding: 24px 12px;">
+          <div class="text-sm" style="color: #6b7480;">No runs yet — kick one off above.</div>
+        </div>`;
+      const pg = $("#analytics-runs-pagination");
+      if (pg) pg.innerHTML = "";
+      return;
+    }
+
+    const pageSize = state.analyticsRunsList.pageSize || 10;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    if (state.analyticsRunsList.page > totalPages) state.analyticsRunsList.page = totalPages;
+    if (state.analyticsRunsList.page < 1) state.analyticsRunsList.page = 1;
+    const page = state.analyticsRunsList.page;
+    const rows = all.slice((page - 1) * pageSize, page * pageSize);
+
+    body.innerHTML = rows.map(r => {
+      const active = _runIsActive(r);
+      const pct = r.progress_total
+        ? Math.min(100, Math.round((r.progress_done / r.progress_total) * 100))
+        : 0;
+      const phase = r.progress_phase || r.status || "";
+      return `
+        <div class="analytics-run-row" data-run-id="${r.id}">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex-1 min-w-0">
+              <div class="font-medium text-sm truncate" style="color: var(--purple-800);">
+                ${escapeHtml(r.name || "Untitled run")}
+                <span style="display:inline-block;margin-left:6px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:${r.vetting_mode === 'medical' ? '#dbeafe' : '#f0fdf4'};color:${r.vetting_mode === 'medical' ? '#1d4ed8' : '#166534'};">${r.vetting_mode === 'medical' ? 'Medical' : 'CPG'}</span>
+              </div>
+              <div class="text-xs mt-0.5" style="color: #6b7480;">
+                ${r.total_catalog_items || 0} items · ${r.total_candidates_found || 0} candidates ·
+                <span style="color: var(--green-600);">${r.verified_count || 0} verified</span> ·
+                <span style="color: #b58100;">${r.review_count || 0} review</span> ·
+                <span style="color: #b91c1c;">${r.not_approved_count || 0} rejected</span>
+              </div>
+            </div>
+            <div class="text-xs text-right" style="color: ${active ? 'var(--purple-700)' : '#94a3b8'}; min-width: 130px;">
+              ${active ? `<span class="mini-spinner"></span> ${escapeHtml(phase)} ${pct}%` : escapeHtml(r.status || "")}
+            </div>
+            <button class="analytics-run-del" data-run-id="${r.id}" title="Delete run" aria-label="Delete run">✕</button>
+          </div>
+          ${active ? `
+            <div class="analytics-run-inline-bar"><div class="fill" style="width: ${pct}%"></div></div>
+          ` : ""}
+        </div>`;
+    }).join("");
+
+    // Wire row clicks → open detail view.
+    body.querySelectorAll(".analytics-run-row").forEach(el => {
+      el.addEventListener("click", () => {
+        const id = Number(el.dataset.runId);
+        if (id) openAnalyticsRunDetail(id);
+      });
+    });
+
+    // Wire per-row delete buttons. stopPropagation so the row click (which
+    // opens the run) doesn't also fire when deleting.
+    const _runNameById = Object.fromEntries(all.map(rr => [rr.id, rr.name || "Untitled run"]));
+    body.querySelectorAll(".analytics-run-del").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.runId);
+        if (id) _deleteAnalyticsRunFromBoard(id, _runNameById[id] || "this run");
+      });
+    });
+
+    _renderAnalyticsRunsPagination(page, totalPages, all.length);
+  }
+
+  function _renderAnalyticsRunsPagination(page, totalPages, totalRows) {
+    const el = $("#analytics-runs-pagination");
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    const pageSize = state.analyticsRunsList.pageSize || 10;
+    const from = (page - 1) * pageSize + 1;
+    const to   = Math.min(page * pageSize, totalRows);
+
+    const pages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+        pages.push(p);
+      } else if (pages[pages.length - 1] !== "…") {
+        pages.push("…");
+      }
+    }
+    const btns = pages.map(p =>
+      p === "…"
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-btn${p === page ? " active" : ""}" data-pg="${p}">${p}</button>`
+    ).join("");
+
+    el.innerHTML = `
+      <span class="pg-info">Showing ${from}–${to} of ${totalRows}</span>
+      <button class="pg-btn" data-pg="${page - 1}" ${page <= 1 ? "disabled" : ""}>&#8249;</button>
+      ${btns}
+      <button class="pg-btn" data-pg="${page + 1}" ${page >= totalPages ? "disabled" : ""}>&#8250;</button>`;
+
+    el.querySelectorAll("button[data-pg]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.pg);
+        if (isNaN(p) || p < 1 || p > totalPages) return;
+        state.analyticsRunsList.page = p;
+        _renderAnalyticsRunsPage();
+      });
+    });
+  }
 
   // Delete a run straight from the board (no need to open it first). Confirms,
   // calls DELETE (which stops any active search + cascade-deletes its data),
@@ -3718,7 +4337,7 @@
     sortKey: "row_idx",
     sortDir: "asc",
     page: 1,
-    pageSize: 50,
+    pageSize: 10,
     progressHistory: [],
     lastPhase: null,
     rankMin: 0,
@@ -4233,13 +4852,120 @@
         eligBtn.disabled = false; eligBtn.style.opacity = "1";
       }
     }
+
+    // Filter Brands button — same visibility rule as Re-score/Eligibility
+    // (post-search cleanup, same as Brand Analytics' own Filter Categories).
+    const filterBrandsBtn = $("#analytics-run-filter-brands");
+    if (filterBrandsBtn) {
+      const s4 = (run.status || "").toLowerCase();
+      const canFilterBrands = s4 === "complete" || s4 === "paused" || s4 === "stopped" || s4 === "error";
+      filterBrandsBtn.classList.toggle("hidden", !canFilterBrands);
+    }
   }
+
+  // ---- Offer Analysis: Brand filter modal (mirrors Brand Analytics' own
+  //      category filter exactly, scoped to Amazon brand instead of BSR
+  //      category) ---------------------------------------------------------
+  let _analyticsBrandFilterBrands = [];  // [{brand, count, checked}]
+
+  async function _openAnalyticsBrandFilter() {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const modal = $("#analytics-brand-filter-modal");
+    const body  = $("#analytics-brand-filter-body");
+    const sumEl = $("#analytics-brand-filter-summary");
+    if (!modal || !body) return;
+
+    body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:24px 0;">Loading brands…</div>`;
+    sumEl.textContent = "—";
+    modal.classList.remove("hidden");
+
+    try {
+      const j = await api(`/api/analytics/runs/${id}/brands`);
+      // Default: all unchecked (checked = "mark for removal")
+      _analyticsBrandFilterBrands = (j.brands || []).map(b => ({...b, checked: false}));
+      _renderAnalyticsBrandFilterBody();
+    } catch (e) {
+      body.innerHTML = `<div class="text-sm" style="color:#b91c1c;">Failed to load: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function _renderAnalyticsBrandFilterBody() {
+    const body  = $("#analytics-brand-filter-body");
+    const sumEl = $("#analytics-brand-filter-summary");
+    if (!body) return;
+
+    const brands  = _analyticsBrandFilterBrands;
+    const total   = brands.reduce((s, b) => s + b.count, 0);
+    const removed = brands.filter(b => b.checked).reduce((s, b) => s + b.count, 0);
+    const kept    = total - removed;
+
+    sumEl.textContent = removed > 0
+      ? `${removed.toLocaleString()} candidate${removed !== 1 ? "s" : ""} will be removed · ${kept.toLocaleString()} kept`
+      : `No brands selected for removal`;
+
+    if (!brands.length) {
+      body.innerHTML = `<div class="text-sm text-center" style="color:#94a3b8;padding:16px 0;">No brands found.</div>`;
+      return;
+    }
+
+    body.innerHTML = brands.map((b, i) => `
+      <label class="ba-cat-row" data-brand-idx="${i}" style="${b.checked ? 'background:#fff7ed;' : ''}">
+        <input type="checkbox" class="analytics-brand-chk" data-brand-idx="${i}" ${b.checked ? "checked" : ""} />
+        <span class="ba-cat-name" style="${b.checked ? 'text-decoration:line-through;color:#b45309;' : ''}">${escapeHtml(b.brand) || "<em style='color:#94a3b8'>(Blanks)</em>"}</span>
+        <span class="ba-cat-count">${b.count.toLocaleString()}</span>
+      </label>
+    `).join("");
+
+    body.querySelectorAll(".analytics-brand-chk").forEach(chk => {
+      chk.addEventListener("change", () => {
+        const idx = parseInt(chk.dataset.brandIdx);
+        _analyticsBrandFilterBrands[idx].checked = chk.checked;
+        _renderAnalyticsBrandFilterBody();
+      });
+    });
+  }
+
+  function _closeAnalyticsBrandFilter() {
+    $("#analytics-brand-filter-modal")?.classList.add("hidden");
+  }
+
+  $("#analytics-run-filter-brands")?.addEventListener("click", _openAnalyticsBrandFilter);
+  $("#analytics-brand-filter-close")?.addEventListener("click",  _closeAnalyticsBrandFilter);
+  $("#analytics-brand-filter-cancel")?.addEventListener("click", _closeAnalyticsBrandFilter);
+
+  $("#analytics-brand-filter-apply")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id;
+    if (!id) return;
+    const toRemove = _analyticsBrandFilterBrands.filter(b => b.checked).map(b => b.brand);
+    if (!toRemove.length) {
+      _closeAnalyticsBrandFilter();
+      return;
+    }
+    const applyBtn = $("#analytics-brand-filter-apply");
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = "Removing…"; }
+    try {
+      const j = await api(`/api/analytics/runs/${id}/filter-brands`, {
+        method: "POST",
+        body: { remove_brands: toRemove },
+      });
+      _closeAnalyticsBrandFilter();
+      showToast(`Removed ${j.deleted.toLocaleString()} candidate${j.deleted !== 1 ? "s" : ""} · ${j.remaining.toLocaleString()} remaining`, "success");
+      state.analyticsRun.tabPageData = {};
+      state.analyticsRun.page = 1;
+      await fetchAnalyticsRunDetail();
+    } catch (e) {
+      showToast(`Filter failed: ${e.message}`, "error");
+    } finally {
+      if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = "Remove Checked"; }
+    }
+  });
 
   function _renderPagination(page, totalPages, totalRows) {
     const el = $("#analytics-run-pagination");
     if (!el) return;
     if (totalPages <= 1) { el.innerHTML = ""; return; }
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const from = (page - 1) * pageSize + 1;
     const to   = Math.min(page * pageSize, totalRows);
 
@@ -4293,7 +5019,7 @@
   async function _fetchVerdictPage(tab, page) {
     const verdict = _TAB_TO_VERDICT[tab]; // undefined for "All" tab — that's ok
     const id = state.analyticsRun.id;
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const offset = (page - 1) * pageSize;
     const aiFilter = state.analyticsRun.aiFilter || "all";
     const searchQ = (state.analyticsRun.search || "").trim();
@@ -4493,7 +5219,7 @@
     // the total so page buttons cover the full dataset.
     // When an AI filter is active the server returns ai_filtered_count — use
     // that so pagination reflects only the filtered set.
-    const pageSize = state.analyticsRun.pageSize || 50;
+    const pageSize = state.analyticsRun.pageSize || 10;
     const page     = state.analyticsRun.page;
     let totalRows, totalPages, pageRows;
     if (isVerdictTab || _aiFilterActive) {
@@ -6099,11 +6825,21 @@
   function renderBARuns() {
     const body = $("#ba-runs-body");
     if (!body) return;
-    const runs = state.brandAnalytics.runs;
-    if (!runs.length) {
+    const all = state.brandAnalytics.runs;
+    if (!all.length) {
       body.innerHTML = `<div class="empty-state" style="padding:24px 12px;"><div class="text-sm" style="color:#6b7480;">No runs yet — click New Search to start.</div></div>`;
+      const pg = $("#ba-runs-pagination");
+      if (pg) pg.innerHTML = "";
       return;
     }
+
+    const pageSize = state.brandAnalytics.runsPageSize || 10;
+    const totalPages = Math.max(1, Math.ceil(all.length / pageSize));
+    if (state.brandAnalytics.runsPage > totalPages) state.brandAnalytics.runsPage = totalPages;
+    if (state.brandAnalytics.runsPage < 1) state.brandAnalytics.runsPage = 1;
+    const page = state.brandAnalytics.runsPage;
+    const runs = all.slice((page - 1) * pageSize, page * pageSize);
+
     body.innerHTML = runs.map(r => {
       const terms = Array.isArray(r.search_terms) ? r.search_terms : [];
       const statusColor = r.status === "Complete" ? "#16a34a"
@@ -6123,6 +6859,46 @@
     body.querySelectorAll("[data-run-id]").forEach(el => {
       el.addEventListener("click", () => openBARun(parseInt(el.dataset.runId)));
     });
+
+    _renderBARunsPagination(page, totalPages, all.length);
+  }
+
+  function _renderBARunsPagination(page, totalPages, totalRows) {
+    const el = $("#ba-runs-pagination");
+    if (!el) return;
+    if (totalPages <= 1) { el.innerHTML = ""; return; }
+    const pageSize = state.brandAnalytics.runsPageSize || 10;
+    const from = (page - 1) * pageSize + 1;
+    const to   = Math.min(page * pageSize, totalRows);
+
+    const pages = [];
+    for (let p = 1; p <= totalPages; p++) {
+      if (p === 1 || p === totalPages || (p >= page - 2 && p <= page + 2)) {
+        pages.push(p);
+      } else if (pages[pages.length - 1] !== "…") {
+        pages.push("…");
+      }
+    }
+    const btns = pages.map(p =>
+      p === "…"
+        ? `<span class="pg-ellipsis">…</span>`
+        : `<button class="pg-btn${p === page ? " active" : ""}" data-pg="${p}">${p}</button>`
+    ).join("");
+
+    el.innerHTML = `
+      <span class="pg-info">Showing ${from}–${to} of ${totalRows}</span>
+      <button class="pg-btn" data-pg="${page - 1}" ${page <= 1 ? "disabled" : ""}>&#8249;</button>
+      ${btns}
+      <button class="pg-btn" data-pg="${page + 1}" ${page >= totalPages ? "disabled" : ""}>&#8250;</button>`;
+
+    el.querySelectorAll("button[data-pg]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const p = parseInt(btn.dataset.pg);
+        if (isNaN(p) || p < 1 || p > totalPages) return;
+        state.brandAnalytics.runsPage = p;
+        renderBARuns();
+      });
+    });
   }
 
   $("#ba-refresh-runs")?.addEventListener("click", loadBrandAnalyticsRuns);
@@ -6135,6 +6911,17 @@
     ba.run.search = "";
     ba.run._firstRender = true;   // triggers entrance animations on first render only
     if (ba.run.poll) { clearTimeout(ba.run.poll); ba.run.poll = null; }
+
+    // The "Amazon brand names found" panel caches its fetch on the DOM node
+    // itself (dataset.loaded) since it only wants to fetch once per run, not
+    // on every 2s poll tick -- but that same node persists across different
+    // runs in this SPA, so without a reset here it would just keep showing
+    // whatever brand names were fetched for the FIRST run ever opened, no
+    // matter which run you open afterward. Clear it so each run fetches its
+    // own brand names fresh.
+    const bnContainer = $("#ba-run-brand-names-list");
+    if (bnContainer) { delete bnContainer.dataset.loaded; bnContainer.innerHTML = ""; }
+    $("#ba-brand-names-new-badge")?.classList.add("hidden");
 
     $$("main > div").forEach(el => el.classList.add("hidden"));
     const barView = $("#view-brand-analytics-run");
@@ -7566,8 +8353,265 @@
   const _TOOLS_POLL_MAX_FAILS = 5;
 
   // ── Open / close ──────────────────────────────────────────────────────────
-  $("#open-tools-btn")?.addEventListener("click", () => _openPanel("tools-panel"));
+  $("#open-tools-btn")?.addEventListener("click", () => {
+    _openPanel("tools-panel");
+    _refreshEligStoreStatus();
+  });
   $("#tools-close")?.addEventListener("click", () => _closeActivePanel());
+
+  // ========================================================================
+  //  Reports view — PO P&L is dashboard #1; more register their own
+  //  data-reports-tab button + #reports-tab-<id> pane as they're built.
+  //  A full page (switchView("reports", ...)), not a slide-in panel —
+  //  reversed from the original side-panel build per user request.
+  // ========================================================================
+  function _switchReportsTab(tab) {
+    $$("#view-reports .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.reportsTab === tab));
+    $("#reports-tab-po-pnl")?.classList.toggle("hidden", tab !== "po-pnl");
+  }
+  $$("#view-reports .lib-type-tab").forEach(tabBtn => {
+    tabBtn.addEventListener("click", () => _switchReportsTab(tabBtn.dataset.reportsTab));
+  });
+
+  const _fmtUsd0 = n => "$" + Math.round(n || 0).toLocaleString();
+  const _fmtUsd2 = n => "$" + (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _fmtInt = n => Math.round(n || 0).toLocaleString();
+
+  async function _loadReportsPoPnlFilters() {
+    const vendorSel = $("#rpt-po-pnl-vendor"), brandSel = $("#rpt-po-pnl-brand");
+    if (!vendorSel || !brandSel) return;
+    const keepVendor = vendorSel.value, keepBrand = brandSel.value;
+    try {
+      const j = await api("/api/reports/po-pnl/filters");
+      vendorSel.innerHTML = `<option value="">All vendors</option>` +
+        (j.vendors || []).map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+      brandSel.innerHTML = `<option value="">All brands</option>` +
+        (j.brands || []).map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+      vendorSel.value = keepVendor; brandSel.value = keepBrand;
+    } catch { /* best-effort — dropdowns just stay at "All" */ }
+  }
+
+  function _rptPoPnlRowHtml(po, idx) {
+    const brands = po.brands || [];
+    const brandsHtml = brands.length
+      ? brands.map(b => `<span class="rpt-brand-pill">${escapeHtml(b)}</span>`).join("")
+      : `<span style="color:#cbd5e1;">—</span>`;
+    const pct = Math.round((po.pct_sold || 0) * 100);
+    return `
+      <tr class="rpt-po-row" data-idx="${idx}">
+        <td><span class="rpt-caret">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </span></td>
+        <td style="font-weight:600;color:#1e293b;">${po.po_number}</td>
+        <td style="color:#374151;">${escapeHtml(po.vendor || "—")}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(brands.join(", "))}">${brandsHtml}</td>
+        <td style="color:#6b7480;">${po.received_date || "—"}</td>
+        <td style="text-align:right;">${_fmtInt(po.qty_received)}</td>
+        <td style="text-align:right;">${_fmtInt(po.sold_qty)}</td>
+        <td style="text-align:right;${po.left_qty > 0 ? "color:#b45309;font-weight:600;" : ""}">${_fmtInt(po.left_qty)}</td>
+        <td style="text-align:right;">
+          <div class="rpt-pct-wrap">
+            <span class="rpt-pct-track"><span class="rpt-pct-fill" style="width:${Math.min(100, Math.max(0, pct))}%;"></span></span>
+            <span class="rpt-pct-text">${pct}%</span>
+          </div>
+        </td>
+        <td style="text-align:right;">${_fmtUsd0(po.bought_cost)}</td>
+        <td style="text-align:right;color:#16a34a;">${_fmtUsd0(po.sold_revenue)}</td>
+        <td style="text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
+        <td style="text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
+      </tr>
+      <tr class="rpt-po-detail hidden" data-idx="${idx}" data-po="${po.po_number}">
+        <td colspan="13" style="padding:0;"><div class="rpt-detail-wrap"></div></td>
+      </tr>`;
+  }
+
+  // A PO's item lines are fetched and built only when its row is first
+  // expanded (2026-10-30) -- building every hidden item table up front (~2.5k
+  // rows for Avi alone, more with Victoria) is what made the page slow.
+  function _rptItemsTableHtml(items) {
+    if (!items.length) return `<div class="text-xs" style="color:#9aa1ab;padding:10px 14px;">No item lines.</div>`;
+    return `
+      <table class="rpt-detail-table">
+        <thead>
+          <tr>
+            <th>SKU</th><th>Brand</th>
+            <th>ASIN</th>
+            <th style="text-align:right;">Qty Bought</th>
+            <th style="text-align:right;">Qty Sold</th>
+            <th style="text-align:right;">Qty Left</th>
+            <th style="text-align:right;">Bought $</th>
+            <th style="text-align:right;">Sold $</th>
+            <th style="text-align:right;">Left $</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(it => `
+            <tr>
+              <td style="font-family:monospace;">${escapeHtml(it.product_id)}</td>
+              <td>${escapeHtml(it.brand || "—")}</td>
+              <td style="font-family:monospace;">${(it.asins || []).join(", ") || "—"}</td>
+              <td style="text-align:right;">${_fmtInt(it.qty_received)}</td>
+              <td style="text-align:right;">${_fmtInt(it.sold_qty)}</td>
+              <td style="text-align:right;">${_fmtInt(it.left_qty)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.bought_cost)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.sold_revenue)}</td>
+              <td style="text-align:right;">${_fmtUsd2(it.left_value)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+  }
+
+  let _rptPos = [];   // last list response -- an older server still embeds each PO's items
+
+  async function _rptLoadPoItems(detailRow) {
+    const wrap = detailRow?.querySelector(".rpt-detail-wrap");
+    if (!wrap || detailRow.dataset.loaded) return;
+    detailRow.dataset.loaded = "1";
+    const embedded = _rptPos[Number(detailRow.dataset.idx)]?.items;
+    if (Array.isArray(embedded)) { wrap.innerHTML = _rptItemsTableHtml(embedded); return; }
+    wrap.innerHTML = `<div class="text-xs" style="color:#9aa1ab;padding:10px 14px;">Loading items…</div>`;
+    const params = new URLSearchParams({
+      po_number: detailRow.dataset.po,
+      brand: $("#rpt-po-pnl-brand")?.value || "",
+      item: $("#rpt-po-pnl-item")?.value.trim() || "",
+    });
+    try {
+      const j = await api(`/api/reports/po-pnl/items?${params.toString()}`);
+      wrap.innerHTML = _rptItemsTableHtml(j.items || []);
+    } catch (e) {
+      delete detailRow.dataset.loaded;   // let a later click retry
+      wrap.innerHTML = `<div class="text-xs" style="color:#dc2626;padding:10px 14px;">Couldn't load items: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  }
+
+  async function _loadReportsPoPnl(refresh) {
+    const tbody = $("#rpt-po-pnl-tbody");
+    const empty = $("#rpt-po-pnl-empty");
+    const emptyText = $("#rpt-po-pnl-empty-text");
+    const loading = $("#rpt-po-pnl-loading");
+    const refreshBtn = $("#rpt-po-pnl-refresh");
+    if (!tbody) return;
+    const params = new URLSearchParams({
+      vendor: $("#rpt-po-pnl-vendor")?.value || "",
+      po_number: $("#rpt-po-pnl-po")?.value.trim() || "",
+      brand: $("#rpt-po-pnl-brand")?.value || "",
+      item: $("#rpt-po-pnl-item")?.value.trim() || "",
+      bucket: $("#rpt-po-pnl-bucket-archive")?.checked ? "archive" : "active",
+      refresh: refresh ? "true" : "false",
+    });
+    loading?.classList.remove("hidden");
+    if (refresh) refreshBtn?.classList.add("spinning");
+    try {
+      const j = await api(`/api/reports/po-pnl?${params.toString()}`);
+      const pos = j.pos || [];
+      _rptPos = pos;
+      const s = j.summary || {};
+      if ($("#rpt-po-pnl-sum-count")) $("#rpt-po-pnl-sum-count").textContent = _fmtInt(s.po_count);
+      if ($("#rpt-po-pnl-sum-bought")) $("#rpt-po-pnl-sum-bought").textContent = _fmtUsd0(s.bought_cost);
+      if ($("#rpt-po-pnl-sum-sold")) $("#rpt-po-pnl-sum-sold").textContent = _fmtUsd0(s.sold_revenue);
+      if ($("#rpt-po-pnl-sum-profit")) $("#rpt-po-pnl-sum-profit").textContent = _fmtUsd0(s.sold_profit);
+      if ($("#rpt-po-pnl-sum-left")) $("#rpt-po-pnl-sum-left").textContent = _fmtUsd0(s.left_value);
+
+      if (!pos.length) {
+        tbody.innerHTML = "";
+        empty?.classList.remove("hidden");
+        if (emptyText) emptyText.textContent = "No POs match these filters.";
+      } else {
+        empty?.classList.add("hidden");
+        tbody.innerHTML = pos.map((po, i) => _rptPoPnlRowHtml(po, i)).join("");
+        tbody.querySelectorAll(".rpt-po-row").forEach(row => {
+          row.addEventListener("click", () => {
+            const idx = row.dataset.idx;
+            const detail = tbody.querySelector(`.rpt-po-detail[data-idx="${idx}"]`);
+            const caret = row.querySelector(".rpt-caret");
+            const nowHidden = detail?.classList.toggle("hidden");
+            row.classList.toggle("rpt-row-open", !nowHidden);
+            if (caret) caret.style.transform = nowHidden ? "" : "rotate(90deg)";
+            if (!nowHidden) _rptLoadPoItems(detail);
+          });
+        });
+      }
+    } catch (e) {
+      tbody.innerHTML = "";
+      empty?.classList.remove("hidden");
+      if (emptyText) emptyText.textContent = "Couldn't load: " + (e.message || e);
+    } finally {
+      loading?.classList.add("hidden");
+      refreshBtn?.classList.remove("spinning");
+    }
+  }
+
+  $("#rpt-po-pnl-refresh")?.addEventListener("click", () => _loadReportsPoPnl(true));
+  $("#rpt-po-pnl-vendor")?.addEventListener("change", () => _loadReportsPoPnl());
+  $("#rpt-po-pnl-brand")?.addEventListener("change", () => _loadReportsPoPnl());
+  let _rptPoPnlDebounce = null;
+  function _rptPoPnlDebouncedLoad() {
+    clearTimeout(_rptPoPnlDebounce);
+    _rptPoPnlDebounce = setTimeout(() => _loadReportsPoPnl(), 400);
+  }
+  $("#rpt-po-pnl-po")?.addEventListener("input", _rptPoPnlDebouncedLoad);
+  $("#rpt-po-pnl-item")?.addEventListener("input", _rptPoPnlDebouncedLoad);
+  function _rptSetBucket(bucket) {
+    const cb = $("#rpt-po-pnl-bucket-archive");
+    if (cb) cb.checked = bucket === "archive";
+    $("#rpt-po-pnl-bucket-btn-active")?.classList.toggle("active", bucket === "active");
+    $("#rpt-po-pnl-bucket-btn-archive")?.classList.toggle("active", bucket === "archive");
+  }
+  $("#rpt-po-pnl-bucket-btn-active")?.addEventListener("click", () => {
+    _rptSetBucket("active");
+    _loadReportsPoPnl();
+  });
+  $("#rpt-po-pnl-bucket-btn-archive")?.addEventListener("click", () => {
+    _rptSetBucket("archive");
+    _loadReportsPoPnl();
+  });
+
+  // Eligibility store switch — shows which stores are actually usable, since
+  // a store can have working SP-API credentials (catalog search would work)
+  // but still be missing its own seller ID (eligibility specifically needs
+  // one per store — see services/spapi/config.list_stores).
+  async function _refreshEligStoreStatus() {
+    const note = $("#tools-elig-store-note");
+    try {
+      const j = await api("/api/eligibility/stores");
+      const byKey = {};
+      (j.stores || []).forEach(s => { byKey[s.key] = s; });
+      const turba = byKey.turba;
+      if (note) {
+        if (!turba || !turba.configured) {
+          note.textContent = "Turba: SP-API credentials not configured in .env.";
+        } else if (!turba.seller_id_configured) {
+          note.textContent = "Turba: no seller ID configured yet — eligibility checks for Turba will fail until one is added to .env.";
+        } else {
+          note.textContent = "";
+        }
+      }
+    } catch { /* best-effort — leave the note blank on failure */ }
+  }
+
+  // Toolbox sub-tabs: ASIN Check / Brand Check / MPN Check / Quick Search / PO Analytics
+  function _switchToolsTab(tab) {
+    $$("#tools-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.toolsTab === tab));
+    $("#tools-tab-asin")?.classList.toggle("hidden", tab !== "asin");
+    $("#tools-tab-brand")?.classList.toggle("hidden", tab !== "brand");
+    $("#tools-tab-mpn")?.classList.toggle("hidden", tab !== "mpn");
+    $("#tools-tab-quicksearch")?.classList.toggle("hidden", tab !== "quicksearch");
+    $("#tools-tab-po")?.classList.toggle("hidden", tab !== "po");
+    $("#tools-tab-seller")?.classList.toggle("hidden", tab !== "seller");
+    $("#tools-tab-competitor")?.classList.toggle("hidden", tab !== "competitor");
+    if (tab === "mpn") _refreshMpnSyncStatus();
+    if (tab === "po") {
+      // PO Analytics used to re-sync on re-entering its own view (a job keeps
+      // running server-side regardless of which tab is open) -- now that
+      // trigger is re-entering this Toolbox sub-tab instead.
+      if (typeof _refreshPoaStatusNow === "function") _refreshPoaStatusNow();
+      if (typeof _refreshPoaLists === "function") _refreshPoaLists();
+      if (typeof loadAutomationSettings === "function") loadAutomationSettings();
+    }
+  }
+  $$("#tools-panel .lib-type-tab").forEach(tab => {
+    tab.addEventListener("click", () => _switchToolsTab(tab.dataset.toolsTab));
+  });
 
   // Checkbox label hover highlight
   ["#tools-opt-elig-wrap","#tools-opt-sf-wrap","#tools-opt-generic-wrap"].forEach(sel => {
@@ -7620,23 +8664,44 @@
     if (el) el.textContent = n > 0 ? `${n} brand${n === 1 ? "" : "s"}` : "";
   });
 
-  // Sample-size mode: fixed count vs percentage of the total Amazon ASINs
+  // Sample-size mode: one slider (default Percent) toggles between a fixed
+  // count and a percentage of the total Amazon ASINs, sharing ONE number
+  // box whose min/max/placeholder-ish default swap with the mode -- each
+  // mode remembers its own last-typed value via data- attributes so
+  // flipping the slider back and forth doesn't clobber what was typed.
   function _syncBrandCheckMode() {
     const pct = $("#brand-check-mode-pct")?.checked;
-    const cVal = $("#brand-check-count-val");
-    const pVal = $("#brand-check-pct-val");
-    if (cVal) { cVal.disabled = !!pct; cVal.style.background = pct ? "#f8fafc" : ""; }
-    if (pVal) { pVal.disabled = !pct; pVal.style.background = pct ? "" : "#f8fafc"; }
+    const val = $("#brand-check-sample-val");
+    const suf = $("#brand-check-mode-suffix");
+    const lblCount = $("#brand-check-mode-label-count");
+    const lblPct = $("#brand-check-mode-label-pct");
+    if (!val) return;
+    const newMode = pct ? "pct" : "count";
+    const oldMode = val.dataset.mode;
+    if (oldMode && oldMode !== newMode) val.dataset[oldMode] = val.value;
+    if (pct) {
+      val.min = "1"; val.max = "100";
+      val.value = val.dataset.pct || "10";
+      if (suf) suf.textContent = "% of each brand's live ASINs.";
+    } else {
+      val.min = "1"; val.max = "300";
+      val.value = val.dataset.count || "8";
+      if (suf) suf.textContent = "of each brand's live ASINs (capped at 300).";
+    }
+    val.dataset.mode = newMode;
+    if (lblCount) lblCount.style.color = pct ? "#94a3b8" : "#1e293b";
+    if (lblPct) lblPct.style.color = pct ? "#1e293b" : "#94a3b8";
   }
-  $("#brand-check-mode-count")?.addEventListener("change", _syncBrandCheckMode);
   $("#brand-check-mode-pct")?.addEventListener("change", _syncBrandCheckMode);
+  _syncBrandCheckMode();
 
   function _brandCheckParams() {
+    const val = $("#brand-check-sample-val");
     if ($("#brand-check-mode-pct")?.checked) {
-      const pct = parseFloat($("#brand-check-pct-val")?.value);
+      const pct = parseFloat(val?.value);
       return { sample_pct: Math.max(1, Math.min(100, isNaN(pct) ? 10 : pct)) };
     }
-    const n = parseInt($("#brand-check-count-val")?.value, 10);
+    const n = parseInt(val?.value, 10);
     return { sample_size: Math.max(1, Math.min(300, isNaN(n) ? 8 : n)) };
   }
 
@@ -7667,7 +8732,7 @@
     ERROR:          { bg: "#fef2f2", color: "#dc2626", icon: "!" },
   };
 
-  const _brandCheckState = { cancel: false, results: [] };
+  const _brandCheckState = { cancel: false, results: [], jobId: null };
 
   function _renderSingleBrandResult(r) {
     const out = $("#brand-check-result");
@@ -7680,6 +8745,7 @@
       ? ` (${r.dog_skipped} deactivated ASIN${r.dog_skipped === 1 ? "" : "s"} skipped)` : "";
     out.innerHTML = `<div style="font-weight:700;margin-bottom:2px;">${style.icon} ${_escHtml(r.brand)}</div>` +
       `<div>${_escHtml(r.summary)}${_escHtml(dogNote)}</div>` +
+      (r.notes ? `<div style="margin-top:4px;font-weight:600;">Notes: ${_escHtml(r.notes)}</div>` : "") +
       `<div style="margin-top:4px;font-size:11px;opacity:0.75;">${(r.total_asins_in_catalog || 0).toLocaleString()} ASIN${r.total_asins_in_catalog === 1 ? "" : "s"} for this brand on Amazon; ${r.checked.length} checked.</div>`;
   }
 
@@ -7693,8 +8759,22 @@
     tr.innerHTML =
       `<td style="padding:5px 6px;font-weight:600;color:#1e293b;white-space:nowrap;">${_escHtml(r.brand)}</td>` +
       `<td style="padding:5px 6px;white-space:nowrap;"><span style="background:${style.bg};color:${style.color};border-radius:99px;padding:2px 8px;font-weight:600;font-size:11px;">${style.icon} ${_escHtml(r.verdict)}</span></td>` +
-      `<td style="padding:5px 6px;color:#475569;">${_escHtml(r.summary)}${_escHtml(dogNote)}</td>`;
+      `<td style="padding:5px 6px;color:#475569;">${_escHtml(r.summary)}${_escHtml(dogNote)}</td>` +
+      `<td style="padding:5px 6px;color:#1e293b;font-weight:600;">${_escHtml(r.notes || "")}</td>`;
     tbody.appendChild(tr);
+  }
+
+  // 2026-10-27: rewritten to start a real server-tracked background job
+  // (POST .../check-brand/start) and poll it, instead of looping client-side
+  // Promise.all calls to the plain single-brand endpoint -- the old version
+  // left the backend with zero visibility that a check was even running, so
+  // it could never show up in Settings > Tasks Running. See
+  // docs/infra/job_persistence.md's 2026-10-27c entry.
+  async function _cancelBrandCheckJob() {
+    _brandCheckState.cancel = true;
+    if (_brandCheckState.jobId) {
+      try { await api(`/api/eligibility/check-brand/jobs/${_brandCheckState.jobId}/cancel`, { method: "POST" }); } catch {}
+    }
   }
 
   async function _checkBrands() {
@@ -7713,6 +8793,7 @@
     const params = _brandCheckParams();
     _brandCheckState.cancel = false;
     _brandCheckState.results = [];
+    _brandCheckState.jobId = null;
 
     singleOut?.classList.add("hidden");
     tableWrap?.classList.add("hidden");
@@ -7726,40 +8807,53 @@
       progress?.classList.remove("hidden");
       if (progress) progress.textContent = `0 / ${brands.length} checked…`;
       btn.textContent = "Cancel";
-      btn.onclick = () => { _brandCheckState.cancel = true; };
+      btn.onclick = _cancelBrandCheckJob;
     } else {
       btn.disabled = true;
       btn.textContent = "Checking…";
     }
 
-    let done = 0;
-    let idx = 0;
-    const CONCURRENCY = 2;
+    let job;
+    try {
+      job = await api("/api/eligibility/check-brand/start", { method: "POST", body: { brands, ...params } });
+    } catch (e) {
+      showToast(`Couldn't start the brand check: ${e.message}`, "error");
+      btn.disabled = false;
+      btn.textContent = "Check";
+      btn.onclick = _checkBrands;
+      return;
+    }
+    _brandCheckState.jobId = job.job_id;
+    const total = job.total || brands.length;   // backend dedupes brand names, so job.total is authoritative
 
-    async function worker() {
-      while (idx < brands.length) {
-        if (_brandCheckState.cancel) return;
-        const brand = brands[idx++];
-        let r;
-        try {
-          r = await api("/api/eligibility/check-brand", { method: "POST", body: { brand, ...params } });
-        } catch (e) {
-          r = { brand, verdict: "ERROR", summary: e.message, total_asins_in_catalog: 0, checked: [], dog_skipped: 0 };
-        }
+    const seen = new Set();
+    let done = 0;
+    while (true) {
+      let j;
+      try {
+        j = await api(`/api/eligibility/check-brand/jobs/${job.job_id}`);
+      } catch (e) {
+        break;   // job expired/evicted -- stop polling, show whatever we already rendered
+      }
+      for (const r of j.results) {
+        if (seen.has(r.brand)) continue;
+        seen.add(r.brand);
         _brandCheckState.results.push(r);
         if (isBulk) _appendBrandRow(r); else _renderSingleBrandResult(r);
-        done++;
-        if (progress) progress.textContent = `${done} / ${brands.length} checked…`;
       }
+      done = j.done;
+      if (progress) progress.textContent = `${done} / ${total} checked…`;
+      if (j.status !== "running") {
+        if (isBulk && progress) {
+          progress.textContent = j.status === "cancelled"
+            ? `Cancelled — ${done} / ${total} checked.`
+            : `Done — ${done} / ${total} checked.`;
+        }
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, brands.length) }, worker));
-
-    if (isBulk && progress) {
-      progress.textContent = _brandCheckState.cancel
-        ? `Cancelled — ${done} / ${brands.length} checked.`
-        : `Done — ${done} / ${brands.length} checked.`;
-    }
     if (isBulk) exportBtn?.classList.remove("hidden");
     btn.disabled = false;
     btn.textContent = "Check";
@@ -7784,11 +8878,11 @@
     const rows = _brandCheckState.results;
     if (!rows.length) return;
     const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const headers = ["brand", "verdict", "summary", "total_asins_on_amazon", "checked", "dog_skipped"];
+    const headers = ["brand", "verdict", "summary", "total_asins_on_amazon", "checked", "dog_skipped", "notes"];
     const lines = [headers.map(_q).join(",")];
     for (const r of rows) {
       lines.push([r.brand, r.verdict, r.summary, r.total_asins_in_catalog || 0,
-                  r.checked.length, r.dog_skipped || 0].map(_q).join(","));
+                  r.checked.length, r.dog_skipped || 0, r.notes || ""].map(_q).join(","));
     }
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -7797,6 +8891,1107 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
+
+  // ------------------------------------------------------------------------
+  //  MPN Check
+  // ------------------------------------------------------------------------
+  // Default is "one manufacturer for all"; sliding toggles ON the
+  // per-line/multi-manufacturer feature, which LOCKS (not hides) the
+  // single-manufacturer textbox since it's no longer the source of truth.
+  function _syncMpnCheckMode() {
+    const multiMode = $("#mpn-check-mode-multi")?.checked;
+    const oneMode = !multiMode;
+    const mfrInput = $("#mpn-check-one-mfr");
+    if (mfrInput) {
+      mfrInput.disabled = multiMode;
+      mfrInput.style.background = multiMode ? "#f8fafc" : "";
+      mfrInput.style.color = multiMode ? "#94a3b8" : "";
+    }
+    const lblOne = $("#mpn-check-mode-label-one");
+    const lblMulti = $("#mpn-check-mode-label-multi");
+    if (lblOne) lblOne.style.color = oneMode ? "#1e293b" : "#94a3b8";
+    if (lblMulti) lblMulti.style.color = multiMode ? "#1e293b" : "#94a3b8";
+    const ta = $("#mpn-check-input");
+    if (ta) ta.placeholder = oneMode
+      ? "1-0425N\n1271\n\u2026 one MPN per line"
+      : "1-0425N\tMedline\n1271\tTeleflex\n\u2026 one per line, MPN then manufacturer (tab, comma, or spaces apart)";
+  }
+  $("#mpn-check-mode-multi")?.addEventListener("change", _syncMpnCheckMode);
+  _syncMpnCheckMode();
+
+  // Parses the textarea into [{mpn, manufacturer}], preserving order and
+  // duplicates (the backend matches each row independently, so a repeated
+  // MPN under a different manufacturer is meaningful, not noise to dedupe).
+  function _parseMpnPairs(raw, oneManufacturer) {
+    const out = [];
+    for (const rawLine of String(raw || "").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      if (oneManufacturer != null) {
+        out.push({ mpn: line, manufacturer: oneManufacturer });
+        continue;
+      }
+      const toks = line.split(/\t|,|;|\s{2,}/).map(t => t.trim()).filter(Boolean);
+      if (toks.length < 2) { out.push({ mpn: toks[0] || line, manufacturer: "" }); continue; }
+      out.push({ mpn: toks[0], manufacturer: toks.slice(1).join(" ") });
+    }
+    return out;
+  }
+
+  $("#mpn-check-file")?.addEventListener("change", async function() {
+    const file = this.files && this.files[0];
+    this.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const input = $("#mpn-check-input");
+      if (input) {
+        const existing = input.value.trim();
+        input.value = existing ? existing + "\n" + text : text;
+      }
+    } catch (e) {
+      showToast("Could not read file: " + e.message, "error");
+    }
+  });
+
+  const _mpnCheckState = { results: [] };
+
+  function _mpnRowHtml(r) {
+    const qtyCell = r.matched && r.qty_case != null
+      ? `<span style="color:#16a34a;font-weight:600;">${r.qty_case}${r.qty_case_uom ? " " + _escHtml(r.qty_case_uom) : ""}</span>`
+      : `<span style="color:#94a3b8;">\u2014</span>`;
+    const eaCell = r.matched && r.ea_case != null
+      ? `<span style="color:#16a34a;font-weight:600;">${r.ea_case}</span>`
+      : `<span style="color:#94a3b8;">\u2014</span>`;
+    return `<td style="padding:5px 6px;font-family:monospace;color:#1e293b;white-space:nowrap;">${_escHtml(r.mpn)}</td>` +
+      `<td style="padding:5px 6px;color:#475569;white-space:nowrap;">${_escHtml(r.manufacturer)}</td>` +
+      `<td style="padding:5px 6px;">${qtyCell}</td>` +
+      `<td style="padding:5px 6px;">${eaCell}</td>` +
+      `<td style="padding:5px 6px;color:#94a3b8;">${_escHtml(r.note || "")}</td>`;
+  }
+
+  function _renderMpnRow(r, idx) {
+    const tbody = $("#mpn-check-table-body");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    tr.dataset.idx = idx;
+    tr.innerHTML = _mpnRowHtml(r);
+    tbody.appendChild(tr);
+  }
+
+  function _updateMpnRow(idx) {
+    const tbody = $("#mpn-check-table-body");
+    const tr = tbody?.querySelector(`tr[data-idx="${idx}"]`);
+    const r = _mpnCheckState.results[idx];
+    if (tr && r) tr.innerHTML = _mpnRowHtml(r);
+  }
+
+  async function _refreshMpnSyncStatus() {
+    const el = $("#mpn-check-sync-status");
+    if (!el) return;
+    try {
+      const j = await api("/api/mpn-check/sync-status");
+      if (!j.mirror_populated) {
+        el.textContent = "Database mirror is still building for the first time \u2014 try again shortly.";
+      } else if (j.last?.finished_at) {
+        const when = new Date(j.last.finished_at + "Z").toLocaleString();
+        el.textContent = `Mirrored from the database \u2014 last synced ${when}.`;
+      } else {
+        el.textContent = "";
+      }
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Runs the AI web-search fallback over just the rows the local check
+  // couldn't fully answer, updating those specific rows in place. Separate,
+  // opt-in step -- per user: "The LLM should be a separate option."
+  async function _runMpnAiFallback(progress) {
+    const needsAi = [];
+    _mpnCheckState.results.forEach((r, idx) => {
+      if (!r.matched || r.ea_case == null) needsAi.push(idx);
+    });
+    if (!needsAi.length) return;
+
+    if (progress) progress.textContent += ` Searching the web for ${needsAi.length} unresolved\u2026`;
+    const pairs = needsAi.map(idx => {
+      const r = _mpnCheckState.results[idx];
+      return { mpn: r.mpn, manufacturer: r.manufacturer };
+    });
+    try {
+      const resp = await api("/api/mpn-check/ai-fallback", { method: "POST", body: { pairs } });
+      let found = 0;
+      (resp.results || []).forEach((ar, i) => {
+        const idx = needsAi[i];
+        const r = _mpnCheckState.results[idx];
+        if (!r) return;
+        if (ar.ea_case != null) {
+          r.ea_case = ar.ea_case;
+          r.matched = true;
+          found++;
+        }
+        r.note = ar.note || r.note;
+        _updateMpnRow(idx);
+      });
+      if (progress) {
+        const matched = _mpnCheckState.results.filter(r => r.matched).length;
+        progress.textContent = `${matched} / ${_mpnCheckState.results.length} matched (${found} via AI web search).`;
+      }
+    } catch (e) {
+      showToast("AI web search failed: " + e.message, "error");
+    }
+  }
+
+  async function _checkMpns() {
+    const input = $("#mpn-check-input");
+    const btn = $("#mpn-check-btn");
+    const tableWrap = $("#mpn-check-table-wrap");
+    const tableBody = $("#mpn-check-table-body");
+    const progress = $("#mpn-check-progress");
+    const exportBtn = $("#mpn-check-export-btn");
+    if (!input || !btn) return;
+
+    const oneMode = !$("#mpn-check-mode-multi")?.checked;
+    const oneMfr = oneMode ? ($("#mpn-check-one-mfr")?.value || "").trim() : null;
+    if (oneMode && !oneMfr) { showToast("Enter the manufacturer/brand to apply to every MPN.", "warning"); return; }
+
+    const pairs = _parseMpnPairs(input.value, oneMfr);
+    if (!pairs.length) { showToast("Paste at least one MPN.", "warning"); return; }
+
+    const fields = [];
+    if ($("#mpn-check-opt-qty")?.checked) fields.push("qty_case");
+    if (!fields.length) { showToast("Pick at least one thing to find.", "warning"); return; }
+    const useAi = !!$("#mpn-check-opt-ai")?.checked;
+
+    btn.disabled = true;
+    btn.textContent = "Checking\u2026";
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = `Checking ${pairs.length} MPN${pairs.length === 1 ? "" : "s"}\u2026`;
+
+    try {
+      const r = await api("/api/mpn-check", { method: "POST", body: { pairs, fields } });
+      _mpnCheckState.results = r.results || [];
+      tableWrap?.classList.remove("hidden");
+      _mpnCheckState.results.forEach((row, idx) => _renderMpnRow(row, idx));
+      if (progress) progress.textContent = `${r.matched} / ${r.total} matched.`;
+      if (_mpnCheckState.results.length) exportBtn?.classList.remove("hidden");
+      if (useAi) await _runMpnAiFallback(progress);
+    } catch (e) {
+      showToast("MPN check failed: " + e.message, "error");
+      if (progress) progress.textContent = "Failed \u2014 " + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Check";
+    }
+  }
+  $("#mpn-check-btn")?.addEventListener("click", _checkMpns);
+
+  $("#mpn-check-export-btn")?.addEventListener("click", function() {
+    const rows = _mpnCheckState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["mpn", "manufacturer", "matched", "qty_case", "qty_case_uom", "ea_case", "note"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push([r.mpn, r.manufacturer, r.matched, r.qty_case ?? "", r.qty_case_uom ?? "", r.ea_case ?? "", r.note || ""].map(_q).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "mpn_check.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  // ==========================================================================
+  //  Walmart Catalog -- item search + first-cut Offer Analysis
+  // ==========================================================================
+  const _wmOaState = { results: [] };
+
+  function _parseWalmartOaRows(text) {
+    // Same "UPC or Title" split the Amazon Offer Analysis wizard supports:
+    // a purely-numeric 6-14 digit token is a barcode search, anything else
+    // is a keyword/title search. Tab-separated (pasted from Excel) is tried
+    // first so a title containing commas isn't split apart; falls back to
+    // comma-separated for hand-typed rows.
+    return text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+      const parts = (line.includes("\t") ? line.split("\t") : line.split(",")).map(s => s.trim());
+      const ident = parts[0] || "";
+      const isUpc = /^\d{6,14}$/.test(ident);
+      return {
+        upc: isUpc ? ident : "",
+        query: isUpc ? "" : ident,
+        vendor_cost: parseFloat(parts[1]) || 0,
+        category: parts[2] || "",
+      };
+    }).filter(r => r.upc || r.query);
+  }
+
+  function _fmtWmMoney(v) {
+    return (v === null || v === undefined) ? "—" : `$${Number(v).toFixed(2)}`;
+  }
+  function _fmtWmPct(v) {
+    return (v === null || v === undefined) ? "—" : `${(Number(v) * 100).toFixed(1)}%`;
+  }
+
+  function _renderWalmartOaRow(row) {
+    const tbody = $("#wm-oa-table-body");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #f1f5f9";
+    const cells = [
+      row.upc || row.query || "—",
+      row.item_id || "—",
+      row.title || "—",
+      row.upc ? "exact (UPC)" : (row.match_score == null ? "—" : `${Math.round(row.match_score)}%`),
+      _fmtWmMoney(row.walmart_price),
+      _fmtWmMoney(row.vendor_cost),
+      _fmtWmMoney(row.referral_fee),
+      _fmtWmMoney(row.net_profit),
+      _fmtWmPct(row.roi),
+      row.error || row.note || "",
+    ];
+    tr.innerHTML = cells.map(c => `<td style="padding:5px 6px;">${
+      String(c ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    }</td>`).join("");
+    tbody.appendChild(tr);
+  }
+
+  async function _runWalmartOfferAnalysis() {
+    const input = $("#wm-oa-input");
+    const btn = $("#wm-oa-run");
+    const tableWrap = $("#wm-oa-table-wrap");
+    const tableBody = $("#wm-oa-table-body");
+    const progress = $("#wm-oa-progress");
+    const exportBtn = $("#wm-oa-export");
+    if (!input || !btn) return;
+
+    const items = _parseWalmartOaRows(input.value);
+    if (!items.length) { showToast("Paste at least one line: UPC, Vendor Cost", "warning"); return; }
+
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    tableWrap?.classList.add("hidden");
+    if (tableBody) tableBody.innerHTML = "";
+    exportBtn?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = `Searching Walmart for ${items.length} item${items.length === 1 ? "" : "s"}…`;
+
+    try {
+      const r = await api("/api/walmart/offer-analysis", { method: "POST", body: { items } });
+      _wmOaState.results = r.results || [];
+      tableWrap?.classList.remove("hidden");
+      _wmOaState.results.forEach(_renderWalmartOaRow);
+      const found = _wmOaState.results.filter(x => x.walmart_price != null).length;
+      if (progress) progress.textContent = `${found} / ${r.total} found a Walmart price.`;
+      if (_wmOaState.results.length) exportBtn?.classList.remove("hidden");
+    } catch (e) {
+      showToast("Walmart Offer Analysis failed: " + e.message, "error");
+      if (progress) progress.textContent = "Failed — " + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run Offer Analysis";
+    }
+  }
+  $("#wm-oa-run")?.addEventListener("click", _runWalmartOfferAnalysis);
+
+  $("#wm-oa-export")?.addEventListener("click", function() {
+    const rows = _wmOaState.results;
+    if (!rows.length) return;
+    const _q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const headers = ["upc", "query", "item_id", "title", "match_score", "size_conflict", "walmart_price", "vendor_cost", "referral_rate", "referral_fee", "net_profit", "roi", "margin", "note", "error"];
+    const lines = [headers.map(_q).join(",")];
+    for (const r of rows) {
+      lines.push(headers.map(h => _q(r[h])).join(","));
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "walmart_offer_analysis.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  async function _refreshWalmartStatus() {
+    const el = $("#wm-status");
+    if (!el) return;
+    try {
+      const j = await api("/api/walmart/status");
+      if (!j.configured) {
+        el.textContent = "Not connected — add WALMART_CLIENT_ID / WALMART_CLIENT_SECRET to .env and restart the backend.";
+      } else {
+        el.textContent = `Connected — ${j.production ? "production" : "sandbox"}.`;
+      }
+    } catch (e) {
+      el.textContent = "";
+    }
+  }
+
+  // ---- PO Analytics -- Analyze / Add PO+Recipients / Awaiting / Archive ----
+  // Every watched PO is analyzed + emailed automatically the day before its
+  // tracked ETA (services/po_automation.py), each to its own recipients if
+  // it has any (else the tool-wide default). This renders the watchlist
+  // split into two lists: not yet sent (Awaiting Analysis) and already sent
+  // (Archive, with a re-download link to the exact report that went out).
+
+  async function _refreshPoaLists() {
+    const awaitEl = $("#poa-awaiting-list");
+    const archEl = $("#poa-archive-list");
+    if (!awaitEl && !archEl) return;
+    if (awaitEl) awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    if (archEl) archEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;">Loading…</div>`;
+    let data;
+    try {
+      data = await api("/api/po-analytics/automation/watchlist");
+    } catch (e) {
+      const msg = `<div style="font-size:12px;color:#c0392b;">Couldn't load: ${e.message || e}</div>`;
+      if (awaitEl) awaitEl.innerHTML = msg;
+      if (archEl) archEl.innerHTML = msg;
+      return;
+    }
+    const rows = data.watchlist || [];
+    const awaiting = rows.filter(r => !r.sent_at);
+    const sent = rows.filter(r => r.sent_at);
+
+    if (awaitEl) {
+      if (!awaiting.length) {
+        awaitEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">Nothing waiting — add a PO above.</div>`;
+      } else {
+        awaitEl.innerHTML = "";
+        for (const r of awaiting) {
+          const row = document.createElement("div");
+          row.className = "has-tooltip";
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;flex-wrap:wrap;cursor:default;";
+          // The row itself is hoverable for the full detail; the visible line
+          // is intentionally just PO # + vendor (per the user's ask).
+          const amountTxt = r.amount != null && r.amount !== ""
+            ? "$" + Number(r.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : "—";
+          const tipLines = [
+            `PO ${r.po_number}`,
+            `Vendor: ${r.vendor || "—"}`,
+            `Description of goods: ${r.goods || "—"}`,
+            `Amount: ${amountTxt}`,
+            `Recipients: ${(r.recipients || []).join(", ") || "—"}`,
+          ];
+          row.setAttribute("data-tooltip", tipLines.join("\n"));
+          row.innerHTML = `
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b>${r.vendor ? " — " + escapeHtml(r.vendor) : ""}</span>
+            <button class="icon-btn" data-po="${r.po_number}" title="Remove from watchlist" style="width:22px;height:22px;flex:none;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          `;
+          row.querySelector("button").addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const po = e.currentTarget.dataset.po;
+            try {
+              await api(`/api/po-analytics/automation/watchlist/${po}`, { method: "DELETE" });
+              showToast(`Removed PO ${po} from the watchlist.`, "success");
+              await _refreshPoaLists();
+              _refreshAutomationStatusLine(document);
+            } catch (err) {
+              showToast(`Couldn't remove PO ${po}: ${err.message || err}`, "error");
+            }
+          });
+          awaitEl.appendChild(row);
+        }
+      }
+    }
+
+    if (archEl) {
+      if (!sent.length) {
+        archEl.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;">No reports analyzed yet.</div>`;
+      } else {
+        archEl.innerHTML = "";
+        for (const r of sent) {
+          const row = document.createElement("div");
+          row.className = "has-tooltip";
+          row.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;background:#f7f8fa;border-radius:6px;font-size:13px;flex-wrap:wrap;";
+          // Compact per the user's spec: PO#, date sent (M/D/Y), recipient
+          // count, and an icon-only download button -- who the recipients
+          // were + the PO's own Monday status (e.g. "Invoice Uploaded")
+          // only show up on hover, via the same tooltip pattern Awaiting
+          // Analysis already uses.
+          const sentIso = (r.sent_at || "").slice(0, 10);
+          const dp = sentIso.split("-");
+          const dateTxt = dp.length === 3 ? `${parseInt(dp[1], 10)}/${parseInt(dp[2], 10)}/${dp[0]}` : (sentIso || "—");
+          const nRecip = (r.recipients || []).length;
+          const tipLines = [
+            `Recipients: ${(r.recipients || []).join(", ") || "—"}`,
+            `Status: ${r.status || "—"}`,
+          ];
+          row.setAttribute("data-tooltip", tipLines.join("\n"));
+          row.innerHTML = `
+            <span style="color:#37404c;"><b>PO ${r.po_number}</b> — ${dateTxt} — ${nRecip} recipient${nRecip === 1 ? "" : "s"}</span>
+            <button class="icon-btn" data-po="${r.po_number}" title="Download report" style="width:26px;height:26px;flex:none;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16"/></svg>
+            </button>
+          `;
+          row.querySelector("button").addEventListener("click", async (e) => {
+            const po = e.currentTarget.dataset.po;
+            try {
+              const resp = await fetch(`/api/po-analytics/automation/archive/${po}/download`);
+              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+              const blob = await resp.blob();
+              const cd = resp.headers.get("Content-Disposition") || "";
+              const m = /filename="?([^"]+)"?/.exec(cd);
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = m ? m[1] : `${po}.xlsx`;
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+            } catch (err) {
+              showToast(`Download failed: ${err.message || err}`, "error");
+            }
+          });
+          archEl.appendChild(row);
+        }
+      }
+    }
+  }
+
+  // Recipients are chosen from a real popup list: clicking the "Choose
+  // recipient" box opens a floating dropdown (appended to <body>,
+  // position:fixed computed from the button's own rect, so it's never
+  // clipped by the side panel's internal scroll area or its CSS transform).
+  // _poaKnownRecipients is everyone PICKABLE (the 4 usual people, plus
+  // anyone added via "+ Add Other", which persists across POs for the rest
+  // of the session); _poaSelectedRecipients is who's actually chosen for the
+  // PO about to be added — it starts EMPTY every time, so nothing is
+  // pre-chosen. The trigger button's own label never changes (always "Choose
+  // recipient") — who's picked is only shown inside the open popup itself,
+  // as a highlighted row, not a checkbox. Domain is always @fordmed.com
+  // (single org) so it's never typed — only the name shows, and only the
+  // name is typed (in the small "Add Other" modal) to add someone new.
+  const POA_DEFAULT_RECIPIENT_NAMES = ["Raiann", "AviS", "MasonB", "VictoriaV"];
+  let _poaKnownRecipients = POA_DEFAULT_RECIPIENT_NAMES.slice();
+  let _poaSelectedRecipients = [];
+  let _poaRecipDropdownEl = null;   // the floating popup; only exists in the DOM while open
+
+  // The trigger button's label now shows the COUNT of chosen recipients
+  // (reverses an earlier, deliberately-static-label decision) so it's
+  // visible without opening the popup.
+  function _updatePoaRecipLabel() {
+    const el = $("#poa-watch-recip-label");
+    if (!el) return;
+    const n = _poaSelectedRecipients.length;
+    el.textContent = n > 0 ? `${n} recipient${n === 1 ? "" : "s"} chosen` : "Choose recipient";
+  }
+
+  function _onPoaRecipOutsideClick(e) {
+    const trigger = $("#poa-watch-recip-btn");
+    if (_poaRecipDropdownEl && !_poaRecipDropdownEl.contains(e.target)
+        && e.target !== trigger && !trigger?.contains(e.target)) {
+      _closePoaRecipDropdown();
+    }
+  }
+  function _onPoaRecipEscape(e) {
+    if (e.key === "Escape") _closePoaRecipDropdown();
+  }
+  function _onPoaRecipPanelScroll() {
+    // The popup is position:fixed to the viewport; if the panel content
+    // behind it scrolls, the trigger button moves out from under it — just
+    // close rather than try to keep repositioning on every scroll tick.
+    _closePoaRecipDropdown();
+  }
+
+  function _closePoaRecipDropdown() {
+    if (!_poaRecipDropdownEl) return;
+    _poaRecipDropdownEl.remove();
+    _poaRecipDropdownEl = null;
+    document.removeEventListener("mousedown", _onPoaRecipOutsideClick, true);
+    document.removeEventListener("keydown", _onPoaRecipEscape, true);
+    $("#tools-tab-po")?.removeEventListener("scroll", _onPoaRecipPanelScroll);
+  }
+
+  function _renderPoaRecipDropdownList() {
+    if (!_poaRecipDropdownEl) return;
+    const list = _poaRecipDropdownEl.querySelector(".poa-recip-list");
+    if (!list) return;
+    if (!_poaKnownRecipients.length) {
+      list.innerHTML = `<div style="font-size:12px;color:#94a3b8;font-style:italic;padding:4px 2px;">No one to choose from yet — add someone below.</div>`;
+      return;
+    }
+    list.innerHTML = "";
+    for (const name of _poaKnownRecipients) {
+      const selected = _poaSelectedRecipients.includes(name);
+      const row = document.createElement("div");
+      // Whole-row highlight, no checkbox glyph — selecting a name just
+      // colors the row, same idea as a chip/tag picker.
+      row.style.cssText = `padding:7px 10px;border-radius:6px;font-size:13px;cursor:pointer;` +
+        (selected
+          ? `background:#4f46e5;color:#fff;font-weight:600;`
+          : `background:transparent;color:#37404c;`);
+      row.textContent = name;
+      row.addEventListener("click", () => {
+        _poaSelectedRecipients = selected
+          ? _poaSelectedRecipients.filter(n => n !== name)
+          : [..._poaSelectedRecipients, name];
+        _renderPoaRecipDropdownList();
+        _updatePoaRecipLabel();
+      });
+      list.appendChild(row);
+    }
+  }
+
+  // "+ Add Other" opens a small standalone modal (reusing the app's standard
+  // .modal-backdrop pattern) instead of an inline textbox sitting in the
+  // popup list itself.
+  function _openPoaAddOtherModal() {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.style.cssText = "align-items:center;justify-content:center;padding:0;z-index:600;";
+    backdrop.innerHTML = `
+      <div class="bg-white rounded-xl w-[340px] p-5 shadow-xl" role="dialog" aria-modal="true" style="box-shadow:0 24px 60px rgba(0,0,0,0.28);">
+        <div class="font-semibold" style="color:var(--navy-800);margin-bottom:10px;">Add other recipient</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="poa-add-other-input" type="text" placeholder="e.g. Raiann"
+            style="flex:1;min-width:0;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:6px;outline:none;color:#1e293b;" />
+          <span style="font-size:11px;color:#94a3b8;white-space:nowrap;">@fordmed.com</span>
+        </div>
+        <div class="flex justify-end gap-2 mt-4">
+          <button class="btn btn-secondary poa-add-other-cancel">Cancel</button>
+          <button class="btn btn-primary poa-add-other-ok">Add</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    const input = backdrop.querySelector("#poa-add-other-input");
+    input.focus();
+
+    function close() { backdrop.remove(); document.removeEventListener("keydown", onKey); }
+    function submit() {
+      let name = input.value.trim();
+      if (!name) return;
+      name = name.replace(/@.*$/, "").trim();   // tolerate a pasted full email — strip the domain back off
+      if (/\s/.test(name)) {
+        showToast("Just the name (e.g. \"Raiann\") — no spaces.", "error");
+        return;
+      }
+      if (!_poaKnownRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+        _poaKnownRecipients.push(name);
+      }
+      // A name you just typed in is something you want on THIS PO — select
+      // it right away instead of making you click it a second time.
+      if (!_poaSelectedRecipients.some(n => n.toLowerCase() === name.toLowerCase())) {
+        _poaSelectedRecipients.push(name);
+      }
+      _renderPoaRecipDropdownList();
+      _updatePoaRecipLabel();
+      close();
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      else if (e.key === "Enter") { e.preventDefault(); submit(); }
+    }
+    backdrop.querySelector(".poa-add-other-cancel").addEventListener("click", close);
+    backdrop.querySelector(".poa-add-other-ok").addEventListener("click", submit);
+    backdrop.addEventListener("mousedown", (e) => { if (e.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey);
+  }
+
+  function _openPoaRecipDropdown() {
+    if (_poaRecipDropdownEl) { _closePoaRecipDropdown(); return; }   // toggle closed on a 2nd click
+    const trigger = $("#poa-watch-recip-btn");
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+
+    const el = document.createElement("div");
+    el.className = "poa-recip-dropdown";
+    el.style.cssText = `position:fixed;top:${rect.bottom + 4}px;left:${rect.left}px;width:${rect.width}px;
+      background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 10px 30px rgba(15,23,42,0.12);
+      padding:10px;z-index:500;display:flex;flex-direction:column;gap:8px;`;
+    el.innerHTML = `
+      <div class="poa-recip-list" style="display:flex;flex-direction:column;gap:2px;overflow-y:auto;max-height:180px;"></div>
+      <button id="poa-add-other-btn" class="btn btn-secondary text-xs" type="button" style="justify-content:center;border-top:1px solid #eef0f4;padding-top:8px;margin-top:2px;">+ Add Other</button>`;
+    document.body.appendChild(el);
+    _poaRecipDropdownEl = el;
+    _renderPoaRecipDropdownList();
+
+    el.querySelector("#poa-add-other-btn").addEventListener("click", _openPoaAddOtherModal);
+
+    // Defer attaching the outside-click listener so the same click that
+    // opened the dropdown doesn't immediately close it again.
+    setTimeout(() => {
+      document.addEventListener("mousedown", _onPoaRecipOutsideClick, true);
+      document.addEventListener("keydown", _onPoaRecipEscape, true);
+      $("#tools-tab-po")?.addEventListener("scroll", _onPoaRecipPanelScroll);
+    }, 0);
+  }
+  $("#poa-watch-recip-btn")?.addEventListener("click", _openPoaRecipDropdown);
+
+  async function _addPoaWatch() {
+    const input = $("#poa-watch-input");
+    const btn = $("#poa-watch-add");
+    if (!input) return;
+    const raw = input.value.trim();
+    if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
+    if (!_poaSelectedRecipients.length) {
+      showToast("Choose at least one recipient — it's required for every PO.", "warning");
+      return;
+    }
+    const sentCount = _poaSelectedRecipients.length;
+    const recipients = _poaSelectedRecipients.map(n => `${n}@fordmed.com`).join(",");
+    if (btn) btn.disabled = true;
+    try {
+      const r = await api("/api/po-analytics/automation/watchlist", {
+        method: "POST", body: { po_numbers: raw, recipients },
+      });
+      input.value = "";
+      _poaSelectedRecipients = [];   // nothing pre-chosen for the next PO — choose fresh each time
+      _updatePoaRecipLabel();
+      _closePoaRecipDropdown();
+      showToast(`Added ${r.added} of ${r.requested} PO(s) — analyzed automatically the day before ETA, sent to ${sentCount} recipient(s).`, r.added ? "success" : "info");
+      await _refreshPoaLists();
+      _refreshAutomationStatusLine(document);
+    } catch (e) {
+      showToast(`Couldn't add: ${e.message || e}`, "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+  $("#poa-watch-add")?.addEventListener("click", _addPoaWatch);
+  $("#poa-watch-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); _addPoaWatch(); }
+  });
+
+  // ---- PO Analytics -- Analyze a PO (manual, on-demand) ---------------------
+  // Runs PO Analytics right now for whatever PO(s) you type, independent of
+  // the day-before-ETA automation above. The job itself runs server-side
+  // (routers/po_analytics.py POST /start), so switching away and back is
+  // safe -- _refreshPoaStatusNow() re-syncs the panel on re-entry instead of
+  // relying solely on the poll loop that was already running.
+  let _poaPoll = null;
+  let _poaActiveJobId = null;
+
+  function _clearPoaPoll() {
+    if (_poaPoll) { clearTimeout(_poaPoll); _poaPoll = null; }
+  }
+
+  async function _startPoAnalytics() {
+    const input = $("#poa-input");
+    const btn = $("#poa-run");
+    const dl = $("#poa-download");
+    const progress = $("#poa-progress");
+    const errEl = $("#poa-error");
+    if (!input || !btn) return;
+
+    const raw = input.value.trim();
+    if (!raw) { showToast("Enter at least one PO number.", "warning"); return; }
+
+    _clearPoaPoll();
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    dl?.classList.add("hidden");
+    errEl?.classList.add("hidden");
+    $("#poa-skipped")?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Starting…";
+
+    try {
+      const r = await api("/api/po-analytics/start", { method: "POST", body: { po_numbers: raw } });
+      _poaActiveJobId = r.job_id;
+      _pollPoAnalytics(r.job_id);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run analysis";
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+    }
+  }
+  $("#poa-run")?.addEventListener("click", _startPoAnalytics);
+
+  function _applyPoaStatus(j, jobId) {
+    const btn = $("#poa-run");
+    const dl = $("#poa-download");
+    const progress = $("#poa-progress");
+    const errEl = $("#poa-error");
+    const skipEl = $("#poa-skipped");
+    if (progress && !progress.classList.contains("hidden")) {
+      const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+      const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
+      progress.textContent = j.total
+        ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
+        : (j.phase || "Working…");
+    }
+    if (j.status === "complete") {
+      if (btn) { btn.disabled = false; btn.textContent = "Run analysis"; }
+      progress?.classList.add("hidden");
+      dl?.classList.remove("hidden");
+      if (dl) dl.onclick = () => _downloadPoAnalytics(jobId, j.filename);
+      if (skipEl) {
+        const parts = [];
+        if (j.used_ordered_qty) {
+          // Nothing in this PO (or its splits) has been received yet -- it
+          // was still analyzed right away, just using ordered quantity
+          // instead of received quantity (see routers/po_analytics.py's
+          // fallback). Surfaced here rather than silently, since the
+          // numbers in the report mean something different in this mode.
+          parts.push("Not yet received — analyzed using ordered quantity instead (see \"PO qty (Ordered)\" in the report)");
+        }
+        if (j.skipped_pos?.length) {
+          // A skip with a "note" successfully followed a split (not a failure,
+          // just not what was literally typed in) -- phrase those positively
+          // and separately from ones truly left out with nothing usable found.
+          const followed = j.skipped_pos.filter(s => s.note);
+          const leftOut = j.skipped_pos.filter(s => !s.note);
+          if (followed.length) {
+            parts.push(...followed.map(s => `PO ${s.po} (${s.status}) → used its split instead`));
+          }
+          if (leftOut.length) {
+            parts.push(...leftOut.map(s => `PO ${s.po} (${s.status}) — left out, no Received split found`));
+          }
+        }
+        if (parts.length) {
+          skipEl.textContent = parts.join("; ") + ".";
+          skipEl.classList.remove("hidden");
+        } else {
+          skipEl.classList.add("hidden");
+        }
+      }
+      return true;
+    }
+    if (j.status === "error") {
+      if (btn) { btn.disabled = false; btn.textContent = "Run analysis"; }
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = j.error || "Failed.";
+      return true;
+    }
+    return false;
+  }
+
+  const _POA_GONE = { status: "error", error: "This PO analysis is no longer on the server. If it "
+    + "finished, download it from Settings → Tasks Running → Saved files; otherwise run it again." };
+
+  function _pollPoAnalytics(jobId) {
+    const tick = async () => {
+      let j;
+      try {
+        j = await api(`/api/po-analytics/jobs/${jobId}`);
+      } catch (e) {
+        if (e.status === 404) { _applyPoaStatus(_POA_GONE, jobId); return; }   // gone -- stop polling
+        _poaPoll = setTimeout(tick, 2000);
+        return;
+      }
+      if (_applyPoaStatus(j, jobId)) return;   // complete/error — stop polling
+      _poaPoll = setTimeout(tick, 1500);
+    };
+    tick();
+  }
+
+  // Called when (re-)entering the PO Analytics view — immediately reflects the
+  // latest status of any job started earlier instead of waiting for the next
+  // 1.5s tick, so a job that finished while the user was on another tab shows
+  // up right away rather than looking frozen.
+  async function _refreshPoaStatusNow() {
+    if (!_poaActiveJobId) return;
+    try {
+      const j = await api(`/api/po-analytics/jobs/${_poaActiveJobId}`);
+      _applyPoaStatus(j, _poaActiveJobId);
+    } catch (e) {
+      if (e.status === 404) _applyPoaStatus(_POA_GONE, _poaActiveJobId);
+    }
+  }
+
+  async function _downloadPoAnalytics(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/po-analytics/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "po_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      showToast("Download failed: " + e.message, "error");
+    }
+  }
+
+  // ===== Seller Analytics ===================================================
+  // Mirrors the PO Analytics job pattern above: start a background job, poll
+  // until it's done, then download. Unlike a vendor-offer UPC (which needs a
+  // barcode->ASIN recovery pass), a seller ID is already a confirmed identity
+  // -- Keepa hands back its full current ASIN roster directly.
+  let _saPoll = null;
+
+  function _clearSaPoll() {
+    if (_saPoll) { clearTimeout(_saPoll); _saPoll = null; }
+  }
+
+  // One button now does both: look up the seller's identity (shown inline)
+  // AND kick off the full export in the same action -- merged per user
+  // request ("make both the run analysis and seller into one box... we get
+  // the same label information of the seller + it starts exporting").
+  async function _saRunAll() {
+    const sellerInput = $("#sa-seller-input");
+    const roiInput = $("#sa-roi-input");
+    const btn = $("#sa-run-btn");
+    const dl = $("#sa-download-btn");
+    const progress = $("#sa-progress");
+    const errEl = $("#sa-error");
+    const resEl = $("#sa-lookup-result");
+    if (!sellerInput || !btn) return;
+
+    const sellerId = sellerInput.value.trim();
+    if (!sellerId) { showToast("Enter a seller ID.", "warning"); return; }
+    const roiPct = parseFloat(roiInput?.value) || 30;
+
+    _clearSaPoll();
+    btn.disabled = true;
+    btn.textContent = "Looking up…";
+    dl?.classList.add("hidden");
+    errEl?.classList.add("hidden");
+    resEl?.classList.add("hidden");
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Looking up seller…";
+
+    try {
+      const r = await api("/api/seller-analytics/lookup", { method: "POST", body: { seller_id: sellerId } });
+      if (resEl) {
+        const name = r.seller_name ? `<strong>${r.seller_name}</strong>` : `Seller ${sellerId}`;
+        const fba = r.has_fba ? " · FBA" : "";
+        const rating = r.rating != null ? ` · ${r.rating}% positive (${r.rating_count || 0} ratings)` : "";
+        resEl.innerHTML = `${name} — ${r.asin_count.toLocaleString()} ASINs currently listed${fba}${rating}`;
+        resEl.classList.remove("hidden");
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run Analysis";
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+      return;
+    }
+
+    btn.textContent = "Starting…";
+    progress?.classList.remove("hidden");
+    if (progress) progress.textContent = "Starting export…";
+    try {
+      const r = await api("/api/seller-analytics/start", {
+        method: "POST", body: { seller_id: sellerId, roi_pct: roiPct },
+      });
+      btn.textContent = "Running…";
+      _pollSellerAnalytics(r.job_id);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Run Analysis";
+      progress?.classList.add("hidden");
+      errEl?.classList.remove("hidden");
+      if (errEl) errEl.textContent = e.message;
+    }
+  }
+  $("#sa-run-btn")?.addEventListener("click", _saRunAll);
+
+  // ===== Competitor Analysis (2026-11-03) ===================================
+  // Same job pattern as Seller Analytics: start -> poll -> download. Single
+  // product (JSON) or bulk spreadsheet (multipart). The finished job also
+  // returns a small summary rendered below the card.
+  let _caPoll = null, _caJob = null;
+  const _caMoney = v => v == null ? "—" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const _caInt = v => v == null ? "—" : Math.round(v).toLocaleString();
+
+  function _caSetRunning(on) {
+    ["#ca-run-btn", "#ca-bulk-btn"].forEach(s => { const b = $(s); if (b) b.disabled = on; });
+    $("#ca-cancel-btn")?.classList.toggle("hidden", !on);
+  }
+
+  async function _caStart(bulk) {
+    const err = $("#ca-error"), prog = $("#ca-progress");
+    err?.classList.add("hidden");
+    $("#ca-download-btn")?.classList.add("hidden");
+    $("#ca-summary")?.classList.add("hidden");
+    let r;
+    try {
+      if (bulk) {
+        const f = $("#ca-bulk-file")?.files?.[0];
+        if (!f) { showToast("Choose a spreadsheet first.", "warning"); return; }
+        const fd = new FormData();
+        fd.append("file", f);
+        _caSetRunning(true);
+        r = await api("/api/competitor-analysis/start-bulk", { method: "POST", body: fd, form: true });
+      } else {
+        const body = {
+          description: $("#ca-desc")?.value.trim(), our_asin: $("#ca-asin")?.value.trim(),
+          our_price: $("#ca-price")?.value, extra_terms: $("#ca-terms")?.value,
+        };
+        if (!body.description && !body.our_asin) { showToast("Describe the product or give our ASIN.", "warning"); return; }
+        _caSetRunning(true);
+        r = await api("/api/competitor-analysis/start", { method: "POST", body });
+      }
+    } catch (e) {
+      _caSetRunning(false);
+      err?.classList.remove("hidden");
+      if (err) err.textContent = e.message;
+      return;
+    }
+    _caJob = r.job_id;
+    try { localStorage.setItem("ca_job", _caJob); } catch {}
+    prog?.classList.remove("hidden");
+    if (prog) prog.textContent = `Started (${r.products} product${r.products === 1 ? "" : "s"})…`;
+    _caPollNow();
+  }
+
+  async function _caPollNow() {
+    if (_caPoll) { clearTimeout(_caPoll); _caPoll = null; }
+    if (!_caJob) return;
+    const prog = $("#ca-progress"), err = $("#ca-error");
+    let j;
+    try {
+      j = await api(`/api/competitor-analysis/jobs/${_caJob}`);
+    } catch (e) {
+      if (e.status === 404) { _caSetRunning(false); prog?.classList.add("hidden"); try { localStorage.removeItem("ca_job"); } catch {} return; }
+      _caPoll = setTimeout(_caPollNow, 5000);
+      return;
+    }
+    prog?.classList.remove("hidden");
+    if (j.status === "running") {
+      _caSetRunning(true);
+      const count = j.total ? ` — ${j.done}/${j.total}` : "";
+      const eta = j.eta_seconds ? ` (~${Math.max(1, Math.round(j.eta_seconds / 60))} min left in this step)` : "";
+      if (prog) prog.textContent = `${j.phase || "Working"}${count}${eta}`;
+      _caPoll = setTimeout(_caPollNow, 3000);
+      return;
+    }
+    _caSetRunning(false);
+    if (j.status === "complete") {
+      if (prog) prog.textContent = "Done.";
+      const dl = $("#ca-download-btn");
+      if (dl) { dl.classList.remove("hidden"); dl.onclick = () => _caDownload(_caJob, j.filename); }
+      _caRenderSummary(j.summary || []);
+    } else {
+      prog?.classList.add("hidden");
+      err?.classList.remove("hidden");
+      if (err) err.textContent = j.status === "cancelled" ? "Cancelled." : (j.error || "Failed.");
+    }
+  }
+
+  async function _caDownload(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/competitor-analysis/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const url = URL.createObjectURL(await resp.blob());
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "competitor_analysis.xlsx"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { showToast("Download failed: " + e.message, "error"); }
+  }
+
+  function _caRenderSummary(items) {
+    const el = $("#ca-summary");
+    if (!el) return;
+    if (!items.length) { el.classList.add("hidden"); return; }
+    const tile = (label, value, sub) => `<div style="flex:1;min-width:120px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;">
+        <div style="font-size:11px;color:#6b7480;">${escapeHtml(label)}</div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy-800);margin-top:2px;">${value}</div>
+        ${sub ? `<div style="font-size:11px;color:#94a3b8;margin-top:2px;">${escapeHtml(sub)}</div>` : ""}</div>`;
+    el.innerHTML = items.slice(0, 10).map(s => {
+      if (s.error) return `<div class="card" style="padding:14px;color:#dc2626;font-size:12px;"><strong>${escapeHtml(s.description)}</strong>: ${escapeHtml(s.error)}</div>`;
+      const e = s.exact || {}, c = s.close || {};
+      const ours = s.our_price_per_unit != null
+        ? `Our ${_caMoney(s.our_price_per_unit)}/unit is cheaper than ${Math.round((s.our_cheaper_than_pct || 0) * 100)}% of exact matches.` : "";
+      const brands = (s.top_brands || []).map(b => `<tr><td style="padding:3px 8px;">${escapeHtml(b.name)}</td><td style="padding:3px 8px;text-align:right;">${b.listings}</td>
+          <td style="padding:3px 8px;text-align:right;">${_caInt(b.units)}</td><td style="padding:3px 8px;text-align:right;">${_caMoney(b.revenue)}</td>
+          <td style="padding:3px 8px;text-align:right;">${Math.round((b.share || 0) * 100)}%</td><td style="padding:3px 8px;text-align:right;">${_caMoney(b.avg_ppu)}</td></tr>`).join("");
+      return `<div class="card" style="padding:16px;">
+        <div style="font-weight:700;color:var(--navy-800);">${escapeHtml(s.description)}</div>
+        <div style="font-size:12px;color:#6b7480;margin:2px 0 10px;">${escapeHtml(s.spec || "")} · ${s.screened} listings screened · ${e.listings || 0} exact, ${c.listings || 0} close</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${tile("Units / month (exact)", _caInt(e.units_month), e.units_estimated_share ? `${Math.round(e.units_estimated_share * 100)}% estimated from rank` : "")}
+          ${tile("Revenue / month", _caMoney(e.revenue_month), `${e.brands || 0} brands`)}
+          ${tile("Avg price / unit", _caMoney(e.avg_ppu), `median ${_caMoney(e.median_ppu)}`)}
+          ${tile("Lowest price / unit", _caMoney(e.min_ppu), e.min_ppu_brand || "")}
+          ${tile("Best sales rank", _caInt(e.best_rank), `Amazon holds BB on ${e.amazon_bb_listings || 0}`)}
+          ${tile("Close variants", String(c.listings || 0), `${_caInt(c.units_month)} units · ${_caMoney(c.revenue_month)}`)}
+        </div>
+        ${ours ? `<div style="font-size:12px;color:#334155;margin-top:8px;">${ours}</div>` : ""}
+        ${brands ? `<table style="margin-top:10px;font-size:12px;border-collapse:collapse;width:100%;">
+          <tr style="color:#6b7480;text-align:left;"><th style="padding:3px 8px;">Brand (exact)</th><th style="padding:3px 8px;text-align:right;">Listings</th>
+          <th style="padding:3px 8px;text-align:right;">Units/mo</th><th style="padding:3px 8px;text-align:right;">Revenue/mo</th>
+          <th style="padding:3px 8px;text-align:right;">Share</th><th style="padding:3px 8px;text-align:right;">Avg $/unit</th></tr>${brands}</table>` : ""}
+      </div>`;
+    }).join("") + (items.length > 10 ? `<div style="font-size:12px;color:#6b7480;">${items.length - 10} more in the report.</div>` : "");
+    el.classList.remove("hidden");
+  }
+
+  $("#ca-run-btn")?.addEventListener("click", () => _caStart(false));
+  $("#ca-bulk-btn")?.addEventListener("click", () => _caStart(true));
+  $("#ca-cancel-btn")?.addEventListener("click", async () => {
+    if (!_caJob) return;
+    try { await api(`/api/competitor-analysis/jobs/${_caJob}/cancel`, { method: "POST" }); } catch {}
+  });
+  // Pick a running/finished job back up after a page reload.
+  try { _caJob = localStorage.getItem("ca_job"); } catch {}
+  if (_caJob) _caPollNow();
+
+  function _pollSellerAnalytics(jobId) {
+    const btn = $("#sa-run-btn");
+    const dl = $("#sa-download-btn");
+    const progress = $("#sa-progress");
+    const errEl = $("#sa-error");
+    const tick = async () => {
+      let j;
+      try {
+        j = await api(`/api/seller-analytics/jobs/${jobId}`);
+      } catch (e) {
+        if (e.status === 404) {
+          // Gone for good -- stop instead of silently retrying forever with
+          // the last progress text still showing (2026-10-29: a finished
+          // result sat unseen in a frozen tab, then this looked "stuck").
+          if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+          progress?.classList.add("hidden");
+          errEl?.classList.remove("hidden");
+          if (errEl) errEl.textContent = "This run is no longer on the server. If it finished, "
+            + "download it from Settings → Tasks Running → Saved files; otherwise run it again.";
+          return;
+        }
+        _saPoll = setTimeout(tick, 2000);
+        return;
+      }
+      if (progress && !progress.classList.contains("hidden")) {
+        const pct = j.total ? Math.round((j.done / j.total) * 100) : 0;
+        const etaTxt = j.eta_seconds != null ? ` · ~${j.eta_seconds}s left` : "";
+        progress.textContent = j.total
+          ? `${j.phase} — ${j.done}/${j.total} (${pct}%)${etaTxt}`
+          : (j.phase || "Working…");
+      }
+      if (j.status === "complete") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+        progress?.classList.add("hidden");
+        dl?.classList.remove("hidden");
+        if (dl) dl.onclick = () => _downloadSellerAnalytics(jobId, j.filename);
+        return;
+      }
+      if (j.status === "error") {
+        if (btn) { btn.disabled = false; btn.textContent = "Run Analysis"; }
+        progress?.classList.add("hidden");
+        errEl?.classList.remove("hidden");
+        if (errEl) errEl.textContent = j.error || "Failed.";
+        return;
+      }
+      _saPoll = setTimeout(tick, 1500);
+    };
+    tick();
+  }
+
+  async function _downloadSellerAnalytics(jobId, filename) {
+    try {
+      const resp = await fetch(`/api/seller-analytics/jobs/${jobId}/download`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename || "seller_analytics.xlsx";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      showToast("Download failed: " + e.message, "error");
+    }
+  }
 
   async function _startToolsRun() {
     const input = $("#tools-asin-input");
@@ -7809,6 +10004,7 @@
     const wantSF   = $("#tools-opt-sf")?.checked ?? true;
     const wantGen  = $("#tools-opt-generic")?.checked ?? false;
     if (!wantElig && !wantSF && !wantGen) { showToast("Select at least one tool to run.", "warning"); return; }
+    const eligStore = $("input[name='tools-elig-store']:checked")?.value || "default";
 
     // Reset state
     const t = state.tools;
@@ -7839,7 +10035,7 @@
     const starts = [];
     if (wantElig) {
       starts.push(
-        api("/api/eligibility/check", { method: "POST", body: { asins } })
+        api("/api/eligibility/check", { method: "POST", body: { asins, store: eligStore } })
           .then(j => { t.eligJobId = j.job_id; })
           .catch(e => { showToast("Eligibility start failed: " + e.message, "error"); t.eligDone = true; })
       );

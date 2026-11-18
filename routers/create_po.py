@@ -21,13 +21,11 @@ from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from services import azure_sql
-from services import brand_map
 from services import create_po as cp
 from services import database
 from services import sku_exports
 from services.file_parser import get_sheet_names, parse_raw_rows
 from services.sellercloud import get_sellercloud_client, sellercloud_configured
-from services.sellercloud import catalog_index as ci
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -36,15 +34,53 @@ router = APIRouter()
 def _catalog_source(company: str = "Ford Medical") -> tuple:
     """(CatalogIndex, brand_map, source_label) for reference lookups, restricted to
     `company`'s own SKUs (a brand only under another company is treated as new).
-    Prefer the LIVE Azure SellerCloud view; fall back to the local SC-data snapshot +
-    the brand_mappings table when Azure is unconfigured or unreachable."""
-    if azure_sql.is_configured():
-        try:
-            index, mapping = azure_sql.catalog_source(company)
-            return index, mapping, "azure"
-        except Exception as exc:   # network/token/query — degrade gracefully
-            log.warning("Azure catalog unavailable (%s) — using local snapshot", exc)
-    return ci.local_index(), brand_map.get_map(), "snapshot"   # NOTE: snapshot isn't company-filtered
+
+    LIVE Azure only (2026-10-07, per explicit user instruction) — no longer falls
+    back to the local SC-data.xlsx-derived snapshot. That snapshot was a repeated
+    source of real bugs this session: it sat 56 days stale with nobody noticing,
+    its source file is persistently locked (open in Excel) so it often can't even
+    refresh on demand, and silently degrading to it meant Create SKUs could return
+    wrong/stale matches with no visible sign anything was off. A real Azure outage
+    should surface as a clear, loud error instead."""
+    if not azure_sql.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Azure SQL isn't configured — Create SKUs now requires the live "
+                   "catalog (no local-snapshot fallback). Check AZURE_* env vars.",
+        )
+    try:
+        index, mapping = azure_sql.catalog_source(company)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Live Azure catalog pull failed: {str(exc)[:200]}. Try again shortly.",
+        )
+    return index, mapping, "azure"
+
+
+def _session_index(sess: dict, company: str) -> tuple:
+    """(CatalogIndex, brand_map) for this session, rebuilt whenever the batch's
+    configured `company` differs from whatever company the cached index was last
+    built for.
+
+    Without this check (bug found live 2026-10-08): `/brands` (Step 2) eagerly
+    caches `sess['index']` using whatever `company` happened to be selected AT
+    THAT MOMENT -- but the Company dropdown lives on the SAME step and changing
+    it does NOT re-trigger `/brands`. So a user who loaded the brand roster under
+    the default "Ford Medical" and only THEN switched to "Turba" had every later
+    step (Generate, Export, check-sku) silently keep using the stale Ford-Medical
+    -scoped index. A Turba batch's own existing `-FBATRB`/`-FBMTRB` shadows live
+    under `CompanyName='Turba'` in the Azure view -- invisible to a Ford-Medical
+    -scoped pull -- so the collision-avoidance ladder (`_claim` in derive_rows)
+    never saw them as already taken and silently minted names that were already
+    assigned to OTHER ASINs. Confirmed live against a real export
+    (`Bulk_FDD199_2026-10-08.xlsx`): 6 "new" FBA SKUs it created were each
+    already active on SellerCloud under a different ASIN."""
+    if sess.get("index") is not None and sess.get("index_company") == company:
+        return sess["index"], sess["mapping"]
+    index, mapping, _src = _catalog_source(company)
+    sess["index"], sess["mapping"], sess["index_company"] = index, mapping, company
+    return index, mapping
 
 # token -> accumulating wizard session (rows, config, derived state). In-memory is
 # fine for this local single-user app.
@@ -184,10 +220,7 @@ def check_sku(body: dict = Body(...)) -> dict:
     sess = _require(body.get("token", ""))
     sku = _v(body.get("sku"))
     field = _v(body.get("field")) or "main"
-    index = sess.get("index")
-    if index is None:
-        index, mapping, _src = _catalog_source(sess.get("config", {}).get("company", "Ford Medical"))
-        sess["index"], sess["mapping"] = index, mapping
+    index, _mapping = _session_index(sess, sess.get("config", {}).get("company", "Ford Medical"))
     on_sc = bool(sku) and index.sku_exists(sku)
     return {
         "sku": sku, "field": field, "on_sc": on_sc,
@@ -210,9 +243,7 @@ def brands(body: dict = Body(...)) -> dict:
         items = [{"brand": cp._s(r.get(col))} for r in rows]
         items = [it for it in items if it["brand"]]
 
-    index, mapping, _src = _catalog_source(body.get("company", "Ford Medical"))
-    sess["index"] = index
-    sess["mapping"] = mapping
+    index, mapping = _session_index(sess, body.get("company", "Ford Medical"))
 
     resolved = cp.resolve_brands(
         items, index=index, catalog_brand_names=index.brand_names,
@@ -240,12 +271,7 @@ def generate(body: dict = Body(...)) -> dict:
         for it in items:
             it["brand"] = config.get("single_brand", "")
 
-    index = sess.get("index")
-    mapping = sess.get("mapping")
-    if index is None or mapping is None:
-        index, mapping, _src = _catalog_source(config.get("company", "Ford Medical"))
-    sess["index"] = index
-    sess["mapping"] = mapping
+    index, mapping = _session_index(sess, config.get("company", "Ford Medical"))
     brands_info = cp.resolve_brands(
         items, index=index, catalog_brand_names=index.brand_names,
         overrides=config.get("brand_overrides"), ai_suggest=_ai_manufacturer,
@@ -388,14 +414,15 @@ def export(body: dict = Body(...)) -> dict:
     if body.get("clean_titles", True):
         _apply_ai_titles(sess["items"])   # sets item['clean_name']; read by build_files
     edits = body.get("edits") or {}
+    index, _mapping = _session_index(sess, sess["config"].get("company", "Ford Medical"))
     results = cp.derive_rows(sess["items"], config=sess["config"],
-                             index=sess.get("index"), brands=sess["brands"], edits=edits)
+                             index=index, brands=sess["brands"], edits=edits)
 
     # Tag each batch with a unique ID + today's date → filenames "Bulk_<ID>_<date>.xlsx"
     export_id = uuid.uuid4().hex[:6].upper()
     export_date = datetime.date.today().isoformat()
     files = cp.build_files(results, sess["config"], tag=f"{export_id}_{export_date}",
-                           index=sess.get("index"))
+                           index=index)
 
     cfg = sess["config"]
     # Remember NEW brands we just exported (prefix + manufacturer) so they resolve
@@ -404,6 +431,8 @@ def export(body: dict = Body(...)) -> dict:
     for bi in (sess.get("brands") or {}).values():
         if getattr(bi, "status", "") == "new" and getattr(bi, "prefix", ""):
             cp.save_brand_reference(bi.brand, bi.prefix, _company, bi.manufacturer)
+    files_payload = [{"name": name, "b64": base64.b64encode(data).decode("ascii")}
+                      for name, data in files]
     try:
         sku_exports.record(
             export_id=export_id, export_date=export_date,
@@ -413,13 +442,22 @@ def export(body: dict = Body(...)) -> dict:
             total_fbm=sum(1 for r in results if r.fbm and not r.fbm_on_sc),
             total_kits=sum(1 for r in results if r.kit_value),
             files=[name for name, _ in files],
+            files_blob=files_payload,
         )
     except Exception as exc:
         log.warning("failed to log sku export: %s", exc)
 
-    return {"export_id": export_id, "export_date": export_date,
-            "files": [{"name": name, "b64": base64.b64encode(data).decode("ascii")}
-                      for name, data in files]}
+    return {"export_id": export_id, "export_date": export_date, "files": files_payload}
+
+
+@router.get("/create-po/history/{export_id}/download")
+def history_download(export_id: str) -> dict:
+    """Re-download a past export's exact generated files, no re-generation."""
+    blob = sku_exports.get_files_blob(export_id)
+    if blob is None:
+        raise HTTPException(404, "No stored files for this export (it may predate "
+                                  "re-export support, or the ID doesn't exist).")
+    return {"export_id": export_id, "files": blob}
 
 
 def _config(body: dict) -> dict:

@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS vo_vendor_offers (
     avail_qty      REAL,
     description    TEXT,
     first_seen     TEXT NOT NULL,
-    last_seen      TEXT NOT NULL
+    last_seen      TEXT NOT NULL,
+    supplier       TEXT            -- vendor's own supplier/manufacturer label (Cencora mailbox only, 2026-11-04)
 );
 CREATE INDEX IF NOT EXISTS idx_vo_offers_upc ON vo_vendor_offers(upc);
 CREATE INDEX IF NOT EXISTS idx_vo_offers_vendor ON vo_vendor_offers(vendor_id);
@@ -122,6 +123,11 @@ def init_schema() -> None:
     """Create the vo_* tables/views (idempotent) and seed the vendor list."""
     with database._LOCK, database._connect() as conn:
         conn.executescript(SCHEMA_VO)
+        # Additive migration (2026-11-04): supplier label per offer, used by the
+        # Cencora auto-alert's excluded-supplier filter (vendor_offers_auto_alert).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vo_vendor_offers)")}
+        if "supplier" not in cols:
+            conn.execute("ALTER TABLE vo_vendor_offers ADD COLUMN supplier TEXT")
         for n in VENDOR_NAMES:
             conn.execute("INSERT OR IGNORE INTO vo_vendors (vendor_name) VALUES (?)", (n,))
 
@@ -146,11 +152,108 @@ def norm_upc(value):
     return digits.zfill(12) if len(digits) <= 12 else digits
 
 
+def _upc_a_check_digit(d11: str) -> str:
+    odd = sum(int(d11[i]) for i in range(0, 11, 2))    # positions 1,3,5,7,9,11 (1-indexed)
+    even = sum(int(d11[i]) for i in range(1, 11, 2))   # positions 2,4,6,8,10
+    total = odd * 3 + even
+    return str((10 - (total % 10)) % 10)
+
+
+def is_valid_upc_a(value) -> bool:
+    """True iff norm_upc(value) is a genuine checksum-valid 12-digit UPC-A --
+    catches a vendor's internal/warehouse code that merely happens to be
+    all-digits (this is the exact check services/vendor_offers_db_sync.py
+    already applies to every DB-synced vendor; file-upload loaders use it too
+    so a vendor's garbage 'UPC' column can't silently create a phantom
+    disconnected product -- confirmed live 2026-09-24: Diamond's 12DGTUPC for
+    one item was the internal code '30521511', not the real UPC
+    '305215070009', which orphaned that item's Diamond pricing from every
+    other vendor's identical listing until this was caught by hand)."""
+    digits = norm_upc(value)
+    if not digits or len(digits) != 12:
+        return False
+    return _upc_a_check_digit(digits[:11]) == digits[11]
+
+
 def as_int(value):
     n = pd.to_numeric(value, errors="coerce")
     if pd.isna(n):
         return None
     return int(n)
+
+
+# A whole "NxSIZE" or multi-level "NxMxSIZE" chain, captured as one match so
+# the inner numbers of a multi-level chain can't be re-matched on their own.
+# Sizes may drop the leading zero ("12X.13OZ", "144 X .9GM").
+_SIZE_NUM = r"(?:\d+(?:\.\d+)?|\.\d+)"
+_CASE_QTY_RE = re.compile(rf"(?<![\d.])(\d+)\s*[Xx]\s*{_SIZE_NUM}(?:\s*[Xx]\s*{_SIZE_NUM})*")
+# What follows a chain that is really physical dimensions, not a pack count:
+# a CM/IN unit ("8X12.5X1 CM", "4X1X10IN 3000") or a bare count after a
+# space ("BAG T-SACK 9X5X18 1000").
+_DIMENSION_TAIL_RE = re.compile(r"\s*(?:CM|IN)\b|\s+\d", re.I)
+# Diapers / training pants / adult incontinence. Matched on product wording,
+# not brand alone -- "HUGGIES ... WPE 560 DS" is wipes, not a diaper.
+_INCONTINENCE_RE = re.compile(
+    r"\b(?:DIAPERS?|DPR|BRIEFS?|BRF|U/G|UNDERWEAR|UNDWR|PULL.?UPS?|GOODNITES|DEPENDS?"
+    r"|POISE|PREVAIL|INCONT\w*)\b|\b(?:HUGGIES|PAMPERS|LUVS)\b.*\bSZ\s*\d", re.I)
+# A count: "50CT", "2/CS", "100/PK", or a bare integer at the very end
+# (optionally followed by the "DS" drop-ship tag): "PMP 24 DS", "... 1000".
+# At most 5 digits -- longer runs are part numbers ("SHELLS 1.3G O281000 DS").
+_COUNT_RE = re.compile(
+    r"(?<![\d./])(\d{1,5})(?!\d)\s*(?:CT|PK|PC|PCS|EA|BX)\b"
+    r"|(?<![\d./])(\d{1,5})(?!\d)\s*/\s*(?:PK|BX|CS)\b"
+    r"|(?<![\d./-])(\d{1,5})(?!\d)\s*(?:DS)?\s*$", re.I)
+
+
+def _last_count(desc: str) -> int | None:
+    matches = list(_COUNT_RE.finditer(desc.strip()))
+    if not matches:
+        return None
+    n = int(next(g for g in matches[-1].groups() if g))
+    return n if n > 0 else None
+
+
+def extract_case_qty_from_desc(desc: str | None) -> int:
+    """Extract a case/pack quantity multiplier from a product description
+    shaped like "...12X4.25OZ" or "...6X32OZ" -- the number immediately
+    before an "X" that's itself followed by another number (the per-unit
+    size that follows it). Takes the LAST such match in the string, since
+    the quantity marker is a trailing size descriptor by convention and an
+    earlier number could coincidentally match the same shape.
+
+    Used for Cencora rows priced per case/pack (ABC Selling UoM == 'CS' or
+    'PK'), where the file has no separate structured case-quantity column
+    for these rows -- the true case qty only exists embedded in the free-
+    text description. Confirmed by the user 2026-10-27 with real examples:
+    "SURGILUBE STERILE FLIP CAP 12X4.25OZ" at $39.82/case -> divide by 12
+    for the per-each price; "SIMILAC NEOSURE RTF BOTL LIQ RETL 6X32OZ" at
+    $85.54/case -> divide by 6.
+
+    Multi-level chains ("4X6X8OZ", "6X20X2CT") use their FIRST number --
+    the outer count of the unit the UPC identifies (4 six-packs). The old
+    regex re-matched inside such chains and returned junk (6X20X2CT -> 0,
+    7X4.25X13.5 -> 25).
+
+    Descriptions without a usable NxSIZE chain, per user rules 2026-10-28:
+      - chain is really dimensions (bags, dressings, "6X9 1000CT") -> the count
+        in the description (1000), or 1 if there is none;
+      - diapers / incontinence -> 1;
+      - a count ("50CT", "2/CS", trailing "PMP 24 DS") -> that count (last one);
+      - nothing at all -> 1.
+    So this always returns a positive divisor; every CS/PK row now loads."""
+    if not desc:
+        return 1
+    matches = list(_CASE_QTY_RE.finditer(desc))
+    if matches:
+        m = matches[-1]
+        if _DIMENSION_TAIL_RE.match(desc, m.end()):
+            return _last_count(desc) or 1
+        n = int(m.group(1))
+        if n > 0:
+            return n
+    if _INCONTINENCE_RE.search(desc):
+        return 1
+    return _last_count(desc) or 1
 
 
 def file_date(path: Path) -> str:
@@ -194,10 +297,16 @@ def _block_dates(path: Path, n: int) -> list:
 # --------------------------------------------------------------------------
 
 def load_quality_king(path: Path, block: int | None = None):
-    """fd51126.xlsx — a STACK of catalog snapshots, replayed oldest-first."""
+    """fd51126.xlsx — a STACK of catalog snapshots, replayed oldest-first.
+
+    Qty/case = INNER x PACK, not PACK alone — confirmed live 2026-09-24
+    against a real file column-by-column: INNER is the inner-pack count, PACK
+    is how many inner packs make up a case (e.g. INNER=3, PACK=4 -> 12 units
+    ship per case). Using PACK alone silently under-counted every Quality King
+    case size by a factor of INNER."""
     df = pick_columns(pd.read_excel(path, sheet_name=0), {
         "ITEM": "item", "DESCRIPTION": "desc", "UPC": "upc", "UM": "uom",
-        "PACK": "pack", "ONHAND": "onhand", "QKD PRICE": "cost",
+        "INNER": "inner", "PACK": "pack", "ONHAND": "onhand", "QKD PRICE": "cost",
     }, "Quality King fd51126.xlsx").reset_index(drop=True)
 
     uom_col = df["uom"].astype(str).str.strip()
@@ -221,6 +330,8 @@ def load_quality_king(path: Path, block: int | None = None):
                 reason = f"UoM={uom!r} not EA (repeated header row or non-each pricing)"
             elif upc is None:
                 reason = "missing/unparseable UPC"
+            elif not is_valid_upc_a(upc):
+                reason = "UPC isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
             elif pd.isna(cost) or cost <= 0:
                 reason = "missing or non-positive QKD PRICE"
             if reason:
@@ -229,7 +340,7 @@ def load_quality_king(path: Path, block: int | None = None):
                 continue
             rows.append({
                 "vendor_item_id": item, "upc": upc, "cost": float(cost),
-                "qty_per_case": as_int(r["pack"]),
+                "qty_per_case": (as_int(r.get("inner")) or 1) * (as_int(r["pack"]) or 1),
                 "avail_qty": pd.to_numeric(r.get("onhand"), errors="coerce"),
                 "description": _clean(r["desc"]), "seen": stamp,
             })
@@ -238,7 +349,15 @@ def load_quality_king(path: Path, block: int | None = None):
 
 
 def load_cencora(path: Path):
-    """Cencora product catalog. Only ABC Selling UoM == 'EA' rows loaded."""
+    """Cencora product catalog. ABC Selling UoM == 'EA' rows load at face
+    value (qty_per_case=1). 'CS'/'PK' rows are case/pack-priced -- divided
+    by the case quantity embedded in the Product Description (the number
+    right before an "NxSIZE" pattern, e.g. "12X4.25OZ" -> 12; see
+    extract_case_qty_from_desc) to get a true per-each cost, with that same
+    number recorded as qty_per_case. Since 2026-10-28 every CS/PK row gets a
+    divisor (count in the description, 1 for incontinence or no count -- see
+    extract_case_qty_from_desc). Any other UoM is skipped (no reliable
+    per-each divisor) -- per user confirmation 2026-10-27."""
     df = pick_columns(pd.read_excel(path, sheet_name="Results", skiprows=1), {
         "ABC #": "item", "Product Description": "desc", "ABC Selling UoM": "uom",
         "Current Acq Cost": "cost", "UPC Barcode": "upc", "FDB Case Pack": "case_pack",
@@ -249,21 +368,32 @@ def load_cencora(path: Path):
         uom = _clean(r["uom"])
         cost = pd.to_numeric(r["cost"], errors="coerce")
         upc = norm_upc(r["upc"])
+        desc = _clean(r["desc"])
         reason = None
-        if uom != "EA":
+        divisor = 1
+        if uom == "EA":
+            divisor = 1
+        elif uom in ("CS", "PK"):
+            divisor = extract_case_qty_from_desc(desc)
+            if divisor is None:
+                reason = f"UoM={uom!r} but no case-quantity ('NxSIZE') pattern found in description"
+        else:
             reason = f"UoM={uom!r} -- cost is per case/pack, no reliable per-each divisor"
-        elif upc is None:
-            reason = "missing/unparseable UPC Barcode"
-        elif pd.isna(cost) or cost <= 0:
-            reason = "missing or non-positive Current Acq Cost"
+        if reason is None:
+            if upc is None:
+                reason = "missing/unparseable UPC Barcode"
+            elif not is_valid_upc_a(upc):
+                reason = "UPC Barcode isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
+            elif pd.isna(cost) or cost <= 0:
+                reason = "missing or non-positive Current Acq Cost"
         if reason:
             skipped.append({"vendor": "Cencora", "item": _clean(r["item"]),
-                            "description": _clean(r["desc"]), "reason": reason})
+                            "description": desc, "reason": reason})
             continue
         rows.append({
-            "vendor_item_id": _clean(r["item"]), "upc": upc, "cost": float(cost),
-            "qty_per_case": as_int(r["case_pack"]), "avail_qty": None,
-            "description": _clean(r["desc"]), "seen": stamp,
+            "vendor_item_id": _clean(r["item"]), "upc": upc, "cost": float(cost) / divisor,
+            "qty_per_case": divisor, "avail_qty": None,
+            "description": desc, "seen": stamp,
         })
     return [(stamp, rows)], skipped
 
@@ -284,6 +414,8 @@ def load_diamond(path: Path):
         reason = None
         if upc is None:
             reason = "missing/unparseable 12DGTUPC"
+        elif not is_valid_upc_a(upc):
+            reason = "12DGTUPC isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
         elif pd.isna(cost) or cost <= 0:
             reason = "missing or non-positive PRICE"
         if reason:
@@ -315,6 +447,8 @@ def load_bilo(path: Path):
         reason = None
         if upc is None:
             reason = "missing/unparseable UPC Code"
+        elif not is_valid_upc_a(upc):
+            reason = "UPC Code isn't a valid UPC-A (likely an internal/warehouse code, not a real barcode)"
         elif pd.isna(price) or price <= 0:
             reason = "missing or non-positive Item Price"
         elif pd.isna(per_uom) or per_uom <= 0:
@@ -364,10 +498,14 @@ def dedupe_offers(rows: list, vendor: str):
 
 UPSERT_SQL = """
 INSERT INTO vo_vendor_offers (offer_key, vendor_id, vendor_item_id, upc, cost,
-                              qty_per_case, avail_qty, description, first_seen, last_seen)
+                              qty_per_case, avail_qty, description, first_seen, last_seen,
+                              supplier)
 VALUES (:offer_key, :vendor_id, :vendor_item_id, :upc, :cost,
-        :qty_per_case, :avail_qty, :description, :seen, :seen)
+        :qty_per_case, :avail_qty, :description, :seen, :seen, :supplier)
 ON CONFLICT(offer_key) DO UPDATE SET
+    supplier    = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
+                       THEN COALESCE(excluded.supplier, vo_vendor_offers.supplier)
+                       ELSE vo_vendor_offers.supplier END,
     cost        = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
                        THEN excluded.cost        ELSE vo_vendor_offers.cost        END,
     avail_qty   = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
@@ -405,6 +543,7 @@ def _ensure_products(conn, upc_titles: dict) -> None:
 def _upsert_offers(conn, vname: str, rows: list) -> dict:
     vid = _vendor_id(conn, vname)
     payload = [{**r, "vendor_id": vid, "offer_key": offer_key(vid, r),
+                "supplier": r.get("supplier"),
                 "avail_qty": None if r.get("avail_qty") is None or pd.isna(r["avail_qty"])
                              else float(r["avail_qty"])}
                for r in rows]
@@ -414,17 +553,26 @@ def _upsert_offers(conn, vname: str, rows: list) -> dict:
     return {"added": after - before, "total": after, "submitted": len(rows)}
 
 
-def ingest_vendor_file(vname: str, path: Path) -> dict:
-    """Merge one uploaded vendor catalog into vo_vendor_offers (§5B semantics).
+def merge_batches(vname: str, batches: list, skipped: list | None = None,
+                   reset_avail: bool = False) -> dict:
+    """Merge pre-parsed (stamp, rows) batches into vo_vendor_offers (§5B semantics)
+    -- the shared core of ingest_vendor_file (file upload) and the DB sync path
+    (services/vendor_offers_db_sync.py). Returns {submitted, added, total, skipped,
+    arrivals}.
 
-    Returns {submitted, added, total, skipped, arrivals}. Raises ValueError on an
-    unknown vendor or a column/format mismatch."""
-    if vname not in VENDOR_LOADERS:
-        raise ValueError(f"No loader for {vname!r}. Known: {sorted(VENDOR_LOADERS)}")
-    loader = VENDOR_LOADERS[vname]
-    kwargs = {"block": None} if vname == "Quality King Distributors" else {}
-    batches, skipped = loader(path, **kwargs)
-
+    `reset_avail=True` (used by services/vendor_offers_mailbox_sync.py's direct
+    email-ingestion path) zeroes EVERY existing offer's avail_qty for this vendor
+    BEFORE merging the new batches, so an item that silently vanished from the
+    vendor's new file reads 0 immediately instead of keeping a stale quantity
+    until the separate staleness job eventually nulls it out after N days --
+    appropriate when the new file is a trusted, complete snapshot of the
+    vendor's current catalog (per user request 2026-10-23: "if we inject a file
+    then the qty available should be annulled and the new qty should be added").
+    A row the new file DOES mention still gets its real avail_qty applied right
+    after, via the normal per-row upsert below -- this only affects rows the new
+    file is silent about. Not used by plain file-upload/DB-sync merges, which
+    may be partial/incremental and shouldn't nuke other vendors'/days' data."""
+    skipped = list(skipped or [])
     cleaned = []
     for stamp, rows in batches:
         rows, dupes = dedupe_offers(rows, vname)
@@ -433,6 +581,9 @@ def ingest_vendor_file(vname: str, path: Path) -> dict:
 
     submitted = added = 0
     with database._LOCK, database._connect() as conn:
+        if reset_avail:
+            vid = _vendor_id(conn, vname)
+            conn.execute("UPDATE vo_vendor_offers SET avail_qty = 0 WHERE vendor_id = ?", (vid,))
         # seed products (union of every UPC seen) so offers are never dropped
         titles = {}
         for _, rows in cleaned:
@@ -448,11 +599,22 @@ def ingest_vendor_file(vname: str, path: Path) -> dict:
             added += st["added"]
             total = st["total"]
     return {"vendor": vname, "submitted": submitted, "added": added,
-            "total": total, "skipped": len(skipped),
-            "arrivals": len(cleaned)}
+            "total": total, "skipped": len(skipped), "arrivals": len(cleaned)}
 
 
-# --------------------------------------------------------------------------
+def ingest_vendor_file(vname: str, path: Path) -> dict:
+    """Merge one uploaded vendor catalog into vo_vendor_offers (§5B semantics).
+
+    Returns {submitted, added, total, skipped, arrivals}. Raises ValueError on an
+    unknown vendor or a column/format mismatch."""
+    if vname not in VENDOR_LOADERS:
+        raise ValueError(f"No loader for {vname!r}. Known: {sorted(VENDOR_LOADERS)}")
+    loader = VENDOR_LOADERS[vname]
+    kwargs = {"block": None} if vname == "Quality King Distributors" else {}
+    batches, skipped = loader(path, **kwargs)
+    return merge_batches(vname, batches, skipped)
+
+
 # ASINs — reused from catalog-verifier's Pair Library (the integration win)
 # --------------------------------------------------------------------------
 
@@ -595,6 +757,61 @@ def assign_asin(upc: str, asin: str, amazon_pack_size=None) -> dict:
     return {"upc": upc, "asin": asin, "amazon_pack_size": pack, "library_upserts": mirrored}
 
 
+def _barcode_key(s) -> str:
+    return re.sub(r"\D", "", str(s or "")).lstrip("0")
+
+
+def asins_for_upc(upc: str) -> list[dict]:
+    """Every ASIN paired to `upc` on the Price Desk (manual + Pair Library),
+    for the item drawer's per-ASIN Unpair buttons (2026-11-02)."""
+    nupc = norm_upc(upc) or str(upc or "").strip()
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT asin, amazon_pack_size, source FROM vo_asin_by_upc WHERE upc=? ORDER BY asin",
+            (nupc,)).fetchall()
+    return [{"asin": r[0], "pack": r[1], "source": r[2]} for r in rows]
+
+
+def unassign_asin(asin: str, upc: str | None = None) -> dict:
+    """Remove a wrong UPC<->ASIN pair from the Price Desk.
+
+    Targeted to that one UPC (2026-10-28; it used to wipe the ASIN's WHOLE
+    Pair Library entry -- found when the user asked to unpair 071662087036 /
+    B0015IN0XK, whose library entry held a different, correct UPC,
+    071662081461, that the old call would have deleted too):
+      1. drops the `vo_asin_listings` row (only if it's for `upc`, when given);
+      2. drops just the Pair Library identifiers for this ASIN that are the
+         same barcode (leading zeros ignored), via delete_library_pair's
+         single-identifier path -- other UPCs on the ASIN are kept;
+      3. blacklists (upc, asin), so the export doesn't re-pair them through
+         Keepa's barcode list (an Amazon listing can carry several UPCs --
+         Keepa lists B0015IN0XK under both). Unlockable in the Pair Manager."""
+    asin = (asin or "").strip().upper()
+    if not re.match(r"^B0[A-Z0-9]{8}$", asin):
+        raise ValueError("A valid ASIN (B0XXXXXXXX) is required.")
+    want = _barcode_key(upc) if upc else None
+    with database._LOCK, database._connect() as conn:
+        rows = conn.execute("SELECT upc FROM vo_asin_listings WHERE asin=?", (asin,)).fetchall()
+        upcs = [r[0] for r in rows if want is None or _barcode_key(r[0]) == want]
+        for u in upcs:
+            conn.execute("DELETE FROM vo_asin_listings WHERE asin=? AND upc=?", (asin, u))
+        removed_listing = len(upcs)
+        if upc and not upcs:
+            upcs = [norm_upc(upc) or str(upc).strip()]   # not on the desk, but still unpair it
+        lib_ids = conn.execute(
+            "SELECT id_type, identifier FROM pair_library_ids "
+            "WHERE asin=? AND id_type IN ('upc','ean')", (asin,)).fetchall()
+    keys = {_barcode_key(u) for u in upcs}
+    library = {"deleted_ids": 0, "deleted_asin": 0, "verified_cleared": 0}
+    for id_type, ident in lib_ids:
+        if _barcode_key(ident) in keys:
+            for k, v in database.delete_library_pair(asin, id_type, ident).items():
+                library[k] += v
+    for u in upcs:
+        database.add_to_blacklist(u, asin, None, ["price_desk_unpair"])
+    return {"asin": asin, "removed_listing": removed_listing, "unpaired_upcs": upcs, **library}
+
+
 def parse_pasted_pairs(text: str):
     """Parse pasted 'UPC,ASIN[,pack]' lines, order-independent. ASIN by shape;
     the UPC is the non-ASIN token with the MOST digits (any length — short internal
@@ -684,6 +901,38 @@ def assign_bulk(text: str, dry: bool = False) -> dict:
         "rejectedTotal": len(rejected),
         "sample": [{"upc": p["upc"], "asin": p["asin"], "pack": p["pack"]} for p in new_pairs[:12]],
     }
+
+
+# --------------------------------------------------------------------------
+# Staleness maintenance -- an offer's avail_qty is only as trustworthy as its
+# last_seen date; once an offer hasn't been refreshed (by either a file
+# upload, the DB sync, or the mailbox sync) in a while, its quantity is
+# stale, not just its price -- so it's cleared to NULL (treated as "unknown",
+# not "0", consistent with how only_available/(win.get("avail") or 0)
+# already treat a missing value elsewhere in this module) rather than
+# displayed as if still current. Originally 6 days (user 2026-09-25: "if the
+# sku hasnt been updated for 6 days, then lets clear the available qty"),
+# tightened to 1 day (user 2026-10-23: "have all available quantities empty
+# and add only available quantity from the recent todays and yesterdays
+# files") -- days=1 keeps last_seen==today OR yesterday (the cutoff is
+# exclusive: `last_seen < today-1` is cleared, so yesterday itself survives)
+# and clears everything older.
+# --------------------------------------------------------------------------
+
+STALE_AVAIL_QTY_DAYS = 1
+
+
+def clear_stale_available_qty(days: int = STALE_AVAIL_QTY_DAYS) -> dict:
+    """Null out avail_qty for every offer whose last_seen is older than
+    `days`. Returns {cleared, cutoff}. Safe to call repeatedly (idempotent --
+    only rows that still have a non-NULL avail_qty are touched)."""
+    with database._LOCK, database._connect() as conn:
+        cutoff = conn.execute("SELECT date('now', ?)", (f"-{int(days)} days",)).fetchone()[0]
+        cur = conn.execute(
+            "UPDATE vo_vendor_offers SET avail_qty = NULL "
+            "WHERE last_seen < ? AND avail_qty IS NOT NULL", (cutoff,))
+        cleared = cur.rowcount
+    return {"cleared": cleared, "cutoff": cutoff}
 
 
 # --------------------------------------------------------------------------
