@@ -3250,13 +3250,11 @@
   <!-- Shared overlay — dims the main content when any side panel is open -->
   <div id="panel-overlay"></div>
 
+  <!-- Each script exactly once: a second app.js / create_po.js tag runs the whole app twice
+       (two click handlers per button, e.g. two runs created per "Start run"). -->
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=72"></script>
-  <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=73"></script>
+  <script src="/static/app.js?v=74"></script>
   <script src="/static/families.js?v=10"></script>
-  <script src="/static/create_po.js?v=27"></script>
-  <script src="/static/create_po.js?v=27"></script>
+  <script src="/static/create_po.js?v=28"></script>
 </body>
 </html>
