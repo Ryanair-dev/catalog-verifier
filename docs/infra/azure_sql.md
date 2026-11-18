@@ -16,6 +16,11 @@ Read-only mirror of the live SellerCloud catalog (and, separately, a Monday.com 
 
 ## Changelog
 
+**2026-10-30 — `fetch_rows()` is single-flight; new `is_warm()`:**
+- Found via a PO P&L dashboard load right after a restart taking 240 s: `_LOCK` only guarded the cache read, so every caller arriving during the startup scheduler's ~165 s cold pull started its OWN full pull of the catalog view in parallel. New `_PULL_LOCK` serializes the pull itself; a caller that was waiting re-checks the cache and reuses the fresh rows instead of pulling again (`force=True` still always pulls). Pull body moved to `_pull_rows()`, unchanged.
+- `is_warm()` -- True once the view has been pulled at least once; lets latency-sensitive callers (PO P&L, `docs/features/reports.md` 2026-10-30) skip optional catalog enrichment instead of blocking on a cold pull.
+- Tested with a mocked pull: 3 concurrent cold callers -> 1 pull.
+
 **Changes this session (2026-10-07c) — Azure catalog mirror: hourly background refresh instead of a 30-min lazy TTL:**
 - Follow-on to 2026-10-07b's live-Azure switch for PO Analytics. User: "why dont we jst constantly update it? ... have it run every once an hour" — the existing 30-min in-process cache (`services/azure_sql.py fetch_rows`) only refreshes WHEN something happens to call it again after the TTL expires; between on-demand PO Analytics/Create SKUs runs nothing was proactively refreshing it, which is exactly how the local xlsx snapshot (a different, older data path) sat 56 days stale earlier today with nobody noticing — the same silent-staleness risk existed here too, just bounded to 30 min instead of indefinitely.
 - **New `azure_sql.start_scheduler()`/`stop_scheduler()`/`scheduler_status()`**, mirroring `services/vendor_offers_db_sync.py`'s exact hourly-scheduler shape (daemon thread, `threading.Event`s for stop/running, `INTERVAL_SECONDS=3600`): force-refreshes `fetch_rows()` every hour regardless of demand, then also refreshes `sc_reference`'s brand-prefix/manufacturer tables from the SAME pull (`force=False` — reuses the rows just pulled instead of a 2nd full query). Best-effort: a failed pull is logged and retried next cycle, never crashes the thread.

@@ -16,6 +16,8 @@ A manually-confirmed identifier→ASIN library (`pair_library`/`pair_library_ids
 
 ## Changelog
 
+**2026-10-29** — The Price Desk's unpair (`vendor_offers.unassign_asin`) no longer wipes an ASIN's whole Pair Library entry: it now drops only the identifier(s) matching the unpaired UPC (via `delete_library_pair`'s single-identifier path) and adds the (upc, asin) pair to `blacklisted_pairs` with `failed_signals='price_desk_unpair'` -- visible/unlockable in the Pair Manager. Found unpairing 071662087036 / B0015IN0XK, whose library entry held a different, correct UPC (071662081461) the old call would have deleted. Full story: `docs/features/vendor_offers.md`'s 2026-10-29 entry.
+
 **2026-10-23** — Removed two stale UPC aliases causing wrong ASIN associations: `60308411` unpaired from `B01MG7V3UW`, and `84105811` unpaired from `B082CX4R2R`.
 - User: "could you please unpair 60308411 & B01MG7V3UW from diamond" then, mid-turn, "84105811 & B082CX4R2R as well."
 - **Same root cause, same fix, both pairs — investigated live before touching anything each time**: searched the Pair Library (`POST /api/pairs/library/search`) for each ASIN. `B01MG7V3UW` is Garnier/L'Oreal, primary UPC `603084491636`, but also carried `000060308411` as a UPC **alias**; `B082CX4R2R` is Edge Shave Gel/Edgewell, primary UPC `841058005261`, carrying `000084105811` as an alias. Cross-checked the Price Desk's live data (`GET /api/vendor-offers/data`) for each UPC: Diamond Wholesale's real offer for `000060308411` ("FRCTS SLEEK/SHINE SPRAY") is assigned to a DIFFERENT ASIN, `B01M6BOG8F`; its real offer for `000084105811` ("SKINTIMATE THERAPY SNS") is assigned to `B01IAFGKLY` — confirming both aliases were stale/wrong, not legitimate second listings.
