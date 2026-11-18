@@ -13,6 +13,12 @@ Analyzes a competitor's (or your own) FULL Amazon seller ASIN catalog, producing
 
 ## Changelog
 
+**2026-11-17b** — Gets the new "BB Fluctuation" column (shared layout + formula + red CF); see `docs/features/vendor_offers.md` 2026-11-17d.
+
+**2026-11-17** — Shares the vendor-offer export's new SKU behaviour: SKU / FBA SKU list every SKU (comma-separated, FBM tagged), a main derived from a shadow/kit is yellow, and "Inbound value" was removed. With no UPC per ASIN, the mains come from the ASIN's own SKUs. See `docs/features/vendor_offers.md` 2026-11-17b.
+
+**2026-11-10** — Sheet layout now shared with the vendor-offer export. The 3 hard-coded `insert_cols` calls were replaced by `vendor_offers_template_export.insert_template_cols(ws)`, because that export's `TEMPLATE_COLS` gained `FBA inbound` + `Inbound value` (after `FBA total`), and Seller Analytics imports the same `TEMPLATE_COLS`/`COL`/`L`. Without this its columns would have misaligned. Seller Analytics fills them too: `_fba_inbound_by_asin()`, and Inbound value = `FBA inbound × Product cost * amz pack` (here Product Cost is our own last cost). See `docs/features/vendor_offers.md` 2026-11-10b. Needs a restart (done 11:08).
+
 **2026-10-30** — The analyzed seller's own live price per ASIN (6 new columns); 30d sales no longer falls back to stale SellerSnap.
 - User: "when doing a seller analytics would it be possible to get the price at what that exact seller is selling for?" Before building, verified with one live `getItemOffersBatch` call on 20 of A2LYX7FKX6AP16's storefront ASINs: our SP-API app has Pricing access, and the seller's own offer came back on 19/20 (the 20th had 7 offers but only 6 were returned).
 - New `services/spapi/pricing.py seller_offers(asins, seller_id, ...)` -- SP-API Product Pricing v0 `getItemOffersBatch`, 20 ASINs/request, new limiter op `getItemOffersBatch` (0.1 req/s, burst 1 => ~10 s per 20 ASINs, ~18 min for a 2,100-ASIN storefront), retries 429/5xx, cancellable, a failed batch only loses its 20 ASINs. No Keepa tokens.

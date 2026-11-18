@@ -39,7 +39,8 @@ from collections import defaultdict
 from pathlib import Path
 
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
+from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.utils import get_column_letter
 
 from services import azure_sql, database, sc_reference
@@ -47,7 +48,7 @@ from services import keepa as keepa_api
 from services.sellercloud.client import get_sellercloud_client
 from services.spapi import reports as sp_reports
 from services.vendor_offers_template_export import (
-    ExportCancelled, _f, _fba_total_by_asin, enrich_asins,
+    _f, _fba_total_by_asin, enrich_asins, bb_fluctuation_formula, bb_fluctuation_rule,
 )
 
 log = logging.getLogger(__name__)
@@ -57,12 +58,19 @@ log = logging.getLogger(__name__)
 # Column order per explicit user instruction (2026-10-06): "PO qty and PO Asin"
 # placed right after "FBA total" — NOT where the hand-built reference file
 # happens to have them (after "Estimated Monthly Units Sold").
+# Manual "amz pack" overrides, {ASIN: pack}. Wins over the pack parsed from the
+# FBA SKU's '_QY{n}' tag. Add an ASIN here when the SKU name's pack is wrong for
+# PO Analytics purposes. SellerCloud itself is NOT changed.
+_AMZ_PACK_OVERRIDES: dict[str, int] = {
+    "B01IAEX61M": 1,   # DIA12410_QY36-FBA (Dial bar soap) -- user, 2026-11-06
+}
+
 ANALYTICS_COLS = [
     "SKU", "FBA SKU", "UPC", "ASIN", "Link", "Approved", "vendor title", "Amazon title",
     "FBA total", "PO qty", "PO Asins", "30d sales", "90d sales",
     "Estimated Monthly Units Sold", "FBA", "amz pack",
     "Product Cost", "Product cost * amz pack",
-    "Buy Box Price current", "BB Price 30d", "BB Price 90d",
+    "Buy Box Price current", "BB Fluctuation", "BB Price 30d", "BB Price 90d",
     "Net Profit", "Net Margin", "ROI",
     "FBA Fee", "Referral Fee", "Storage Fee", "Prep & Out fee",
     "Rank (current)", "Rank 30d", "BB seller", "BB share 30d", "BB share 90d",
@@ -102,6 +110,37 @@ def _pl(name: str) -> str:
 # the reference file instead of an approximation.
 _TEMPLATE = Path(__file__).resolve().parent.parent.parent / "assets" / "po_analytics_template.xlsx"
 _STYLE_ROW = 2
+
+
+def _insert_bb_fluctuation_col(ws) -> None:
+    """The bundled template predates "BB Fluctuation" (2026-11-17): insert its
+    column, give it the "Buy Box Price current" header style, and shift the
+    template's own conditional-formatting ranges that sit past it -- openpyxl's
+    insert_cols moves cells but NOT CF ranges (they're fixed letters: A:D, W, X,
+    AC), which would otherwise land on the wrong columns. Its rules are
+    duplicateValues / cellIs with constant formulas, so only ranges move."""
+    from copy import copy
+    from openpyxl.formatting.formatting import ConditionalFormattingList
+    from openpyxl.utils.cell import range_boundaries
+    idx = COL["BB Fluctuation"]
+    if ws.cell(row=1, column=idx).value == "BB Fluctuation":
+        return                                   # template already has it
+    old = list(ws.conditional_formatting)
+    ws.insert_cols(idx, 1)
+    new = ConditionalFormattingList()
+    for cf in old:
+        ranges = []
+        for rng in str(cf.sqref).split():
+            c1, r1, c2, r2 = range_boundaries(rng)
+            c1, c2 = (c1 + 1 if c1 >= idx else c1), (c2 + 1 if c2 >= idx else c2)
+            ranges.append(f"{get_column_letter(c1)}{r1}:{get_column_letter(c2)}{r2}")
+        for rule in cf.rules:
+            new.add(" ".join(ranges), rule)
+    ws.conditional_formatting = new
+    src = ws.cell(row=1, column=COL["Buy Box Price current"])
+    h = ws.cell(row=1, column=idx, value="BB Fluctuation")
+    h._style = copy(src._style)
+    ws.column_dimensions[get_column_letter(idx)].width = 16
 
 
 def _parse_po_numbers(raw: str) -> list[int]:
@@ -291,7 +330,13 @@ def gather(po_numbers: list[int], company: str = "Ford Medical",
                 continue
             slot = by_asin[ch["asin"]]
             slot["pack_qty"] = ch["pack_qty"]
-            slot[ch["channel"].lower()] = ch["sku"]   # fba / fbm
+            # Collect EVERY fba/fbm child per ASIN (2026-11-05, user: "if an
+            # asin has multiple FBA skus attached please add it in the one cell
+            # ... separate by the comma") -- previously a plain assignment, so
+            # the last child silently overwrote the others.
+            skus = slot.setdefault(ch["channel"].lower(), [])
+            if ch["sku"] not in skus:
+                skus.append(ch["sku"])
 
         if not by_asin:
             # no FBA/FBM shadow found for this Main SKU yet — still surface the
@@ -307,11 +352,11 @@ def gather(po_numbers: list[int], company: str = "Ford Medical",
         for asin, info in by_asin.items():
             base_rows.append({
                 "sku": main_sku,
-                "fba_sku": info.get("fba") or info.get("fbm"),
+                "fba_sku": ", ".join(sorted(info.get("fba") or info.get("fbm") or [])) or None,
                 "upc": upc, "asin": asin,
                 "po_qty": po_qty, "product_cost": product_cost,
                 "vendor_title": vendor_title,
-                "pack_qty": info.get("pack_qty") or 1,
+                "pack_qty": _AMZ_PACK_OVERRIDES.get(asin.strip().upper()) or info.get("pack_qty") or 1,
                 "qty_per_case": qty_per_case,
             })
 
@@ -355,68 +400,9 @@ def gather(po_numbers: list[int], company: str = "Ford Medical",
     }
 
 
-def _fetch_dimensions(asins: list[str], on_progress=None, should_cancel=None) -> dict[str, dict]:
-    """{asin: {length_in, width_in, height_in, weight_lb}} via a live SP-API
-    getCatalogItem call per ASIN -- the "Jim" sheet's dimension columns. A
-    small, separate pool (doesn't touch enrich_asins' shared signature, which
-    the Price Desk "Offer Analytics" export also depends on) -- enrich_asins
-    DOES compute these same dims internally for any ASIN it isn't already
-    storage-cached for, but discards them immediately after turning them into
-    a single storage-fee number, and the shared storage_fee_cache table only
-    reliably carries dims for ASINs that happened to also go through the
-    separate Tools-panel storage-fee job, not every ASIN PO Analytics needs --
-    so a dedicated fetch here is the simplest way to guarantee every ASIN gets
-    real dimensions. Best-effort: a failed/missing ASIN just gets all-None
-    dims, never raises."""
-    import requests
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from services.spapi.client import lease_catalog_api
-    from services.spapi.config import sp_api_configured
-    from services.storage_fees import extract_dimensions
-
-    out: dict[str, dict] = {}
-    uniq = sorted({a.strip().upper() for a in asins if a})
-    if not uniq or not sp_api_configured():
-        if on_progress:
-            on_progress(0, 0)
-        return out
-
-    # Store-leased for the whole run (2026-10-20) -- see
-    # services.spapi.client.lease_catalog_api's docstring: if another batch
-    # job is already leasing "default" right now, this run gets pinned to
-    # "turba" instead so the two don't share one store's 2 req/sec budget.
-    with lease_catalog_api() as capi:
-        def one(asin: str):
-            try:
-                raw = capi.get_by_asin(asin, included_data="attributes")
-                dims = extract_dimensions(raw.get("attributes") or {})
-            except Exception:  # noqa: BLE001 -- 404/DOG, throttled, or any other failure
-                dims = {"length_in": None, "width_in": None, "height_in": None, "weight_lb": None}
-            return asin, dims
-
-        done = 0
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            futs = [ex.submit(one, a) for a in uniq]
-            for f in as_completed(futs):
-                if should_cancel and should_cancel():
-                    for fut in futs:
-                        fut.cancel()
-                    raise ExportCancelled()
-                a, dims = f.result()
-                out[a] = dims
-                done += 1
-                if on_progress:
-                    on_progress(done, len(uniq))
-    return out
-
-
-JIM_COLS = ["Main SKU", "FBA SKU", "ASIN", "Description", "PO qty", "Qty/Case", "amz pack",
-            "Length (in)", "Width (in)", "Height (in)", "Weight (lb)"]
-
-
 def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> bytes:
     """Slow phase: live Keepa + SP-API eligibility/storage + 30d Sales & Traffic
-    for every distinct ASIN, then assemble the workbook (Analytics + PO + Jim)."""
+    for every distinct ASIN, then assemble the workbook (Analytics + PO)."""
     rows = gathered["rows"]
     asins = sorted({r["asin"] for r in rows if r.get("asin")})
 
@@ -429,9 +415,6 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
     live_elig, live_storage, live_generic, _live_storage_peak = enrich_asins(
         asins, _ep, should_cancel, check_generic=True)
 
-    _dp = (lambda d, t: on_progress(d, t, "fetching dimensions")) if on_progress else None
-    dims_by_asin = _fetch_dimensions(asins, _dp, should_cancel)
-
     fba_total = _fba_total_by_asin(asins)
     report30 = sp_reports.get_units_30d()
 
@@ -443,6 +426,7 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
 
     wb = load_workbook(_TEMPLATE)
     ws = wb["Analytics"]      # headers (row 1) + a per-column style swatch (row 2) already in place
+    _insert_bb_fluctuation_col(ws)
     if not gathered.get("require_received", True):
         # Automated day-before-ETA report: "PO qty" means ordered qty here,
         # not received qty (nothing has arrived yet) — relabel so nobody
@@ -455,7 +439,6 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         for c in range(1, len(ANALYTICS_COLS) + 1):
             ws.cell(row=dest_row, column=c)._style = ws.cell(row=_STYLE_ROW, column=c)._style
 
-    kept_rows: list[dict] = []   # reused below to build the "Jim" sheet off the SAME set
     r = 2
     for row in rows:
         asin = row.get("asin")
@@ -465,7 +448,6 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         # real profitability to analyze.
         if asin and (live_elig.get(asin) == "DOG" or live_generic.get(asin) == "GENERIC"):
             continue
-        kept_rows.append(row)
         _copy_row_style(r)
         key = (asin or "").strip().upper()
         k = keepa.get(key, {}) if asin else {}
@@ -493,6 +475,8 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
             "Product Cost": row.get("product_cost"),
             "Product cost * amz pack": f'={L("Product Cost")}{r}*{L("amz pack")}{r}',
             "Buy Box Price current": round(bb_cur, 2) if bb_cur else 0,
+            "BB Fluctuation": bb_fluctuation_formula(f'{L("Buy Box Price current")}{r}',
+                                                     f'{L("BB Price 30d")}{r}', f'{L("BB Price 90d")}{r}'),
             "BB Price 30d": z(k.get("buybox_30d")), "BB Price 90d": z(k.get("buybox_90d")),
             "Net Profit": (f'={L("Buy Box Price current")}{r}-{L("Product cost * amz pack")}{r}'
                            f'-{L("FBA Fee")}{r}-{L("Referral Fee")}{r}-{L("Storage Fee")}{r}'
@@ -520,6 +504,11 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         r += 1
 
     last = r - 1
+    if last >= 2:
+        _dxf = DifferentialStyle(fill=PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),
+                                 font=Font(color="9C0006"))
+        ws.conditional_formatting.add(f'{L("BB Fluctuation")}2:{L("BB Fluctuation")}{last}',
+                                      bb_fluctuation_rule(_dxf))
     ws.auto_filter.ref = f"A1:{L(ANALYTICS_COLS[-1])}{max(last, 1)}"
 
     ws2 = wb["PO"]            # header row (plain, unstyled — matches the reference) already in place
@@ -548,27 +537,6 @@ def enrich_and_build(gathered: dict, on_progress=None, should_cancel=None) -> by
         for name, c in PCOL.items():
             ws2.cell(row=r2, column=c, value=rowd2.get(name))
         r2 += 1
-
-    # "Jim" sheet — a lean subset of the same kept rows (DOG/Generic already
-    # excluded above) plus full SP-API package dimensions, per explicit request.
-    # Not in the bundled template (no pre-built styling to reuse) -- plain
-    # bold headers are enough since no one asked for pixel-matched formatting
-    # on this one.
-    ws3 = wb.create_sheet("Jim")
-    ws3.append(JIM_COLS)
-    for c in range(1, len(JIM_COLS) + 1):
-        ws3.cell(row=1, column=c).font = Font(bold=True)
-    for row in kept_rows:
-        asin = row.get("asin")
-        d = dims_by_asin.get((asin or "").strip().upper(), {}) if asin else {}
-        ws3.append([
-            row["sku"], row.get("fba_sku"), asin, row.get("vendor_title"),
-            row.get("po_qty"), row.get("qty_per_case"), row.get("pack_qty") or 1,
-            d.get("length_in"), d.get("width_in"), d.get("height_in"), d.get("weight_lb"),
-        ])
-    ws3.auto_filter.ref = f"A1:{get_column_letter(len(JIM_COLS))}{max(len(kept_rows) + 1, 1)}"
-    for c, w in zip(range(1, len(JIM_COLS) + 1), (16, 18, 12, 40, 10, 10, 10, 11, 11, 11, 11)):
-        ws3.column_dimensions[get_column_letter(c)].width = w
 
     buf = io.BytesIO()
     wb.save(buf)

@@ -384,6 +384,19 @@ def check_and_trigger() -> dict:
 
     items = monday_eta.fetch_inbound_items()
     relevant = [it for it in items if it.get("po_number") in watch]
+    if not relevant:
+        # fetch_inbound_items() swallows Azure errors and returns [] -- carrying
+        # on would compute "due" from the LAST cycle's stale ETAs. Confirmed
+        # live 2026-11-04: PO 52486's ETA moved 11-06 -> 11-04 on Monday at
+        # 11-02 14:05 ET, yet the 11-03 noon cycle updated zero tracking rows
+        # (all 60 still stamped 11-02 17:00 UTC) while still sending two POs
+        # off stale data -- so 52486 was silently skipped. Abort instead; the
+        # scheduler loop retries an aborted cycle (see _loop).
+        summary["aborted"] = (f"Monday mirror returned {len(items)} board items but none of the "
+                              f"{len(watch)} watched POs (Azure read failed?) -- skipped this cycle "
+                              f"rather than acting on stale ETAs")
+        log.warning("[po_automation] %s", summary["aborted"])
+        return summary
     _upsert_tracking(relevant)
     summary["checked"] = len(relevant)
 
@@ -434,6 +447,20 @@ def check_and_trigger() -> dict:
 _thread: threading.Thread | None = None
 _stop = threading.Event()
 _running = threading.Event()
+_RETRY_EVERY_S = 900   # 15 min between retries of a failed/aborted cycle
+_RETRY_MAX = 12        # -> keeps trying until ~15:00 ET, well within the due window
+_last_cycle: dict = {}
+
+
+def _record_cycle(ok: bool, error: str | None, summary: dict | None) -> None:
+    """Last scheduled cycle's outcome, surfaced via scheduler_status() so a
+    failed noon run is visible in Settings > Tasks Running."""
+    _last_cycle.clear()
+    _last_cycle.update({
+        "at": dt.datetime.now(_TZ).isoformat(timespec="seconds"),
+        "ok": ok, "error": error,
+        "sent": (summary or {}).get("sent"), "due": (summary or {}).get("due"),
+    })
 
 
 def next_run_time(now: dt.datetime | None = None) -> dt.datetime:
@@ -457,15 +484,30 @@ def _loop() -> None:
                 return
         if _stop.is_set():
             return
-        try:
-            _running.set()
-            summary = check_and_trigger()
-            if summary["sent"] or summary["errors"]:
-                log.info("[po_automation] check cycle: %s", summary)
-        except Exception:  # noqa: BLE001
-            log.exception("[po_automation] check cycle failed")
-        finally:
-            _running.clear()
+        # A failed/aborted cycle (Azure down, Monday mirror unreadable) is
+        # retried every _RETRY_EVERY_S up to _RETRY_MAX times instead of
+        # waiting a whole day -- a missed noon cycle is exactly how a
+        # day-before-ETA email gets skipped (2026-11-04, PO 52486).
+        for attempt in range(_RETRY_MAX + 1):
+            ok = False
+            try:
+                _running.set()
+                summary = check_and_trigger()
+                ok = not summary.get("aborted")
+                if summary["sent"] or summary["errors"] or not ok:
+                    log.info("[po_automation] check cycle: %s", summary)
+                _record_cycle(ok, summary.get("aborted"), summary)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("[po_automation] check cycle failed")
+                _record_cycle(False, str(exc)[:300], None)
+            finally:
+                _running.clear()
+            if ok or attempt == _RETRY_MAX:
+                break
+            log.warning("[po_automation] retrying check cycle in %ds (attempt %d/%d)",
+                        _RETRY_EVERY_S, attempt + 1, _RETRY_MAX)
+            if _stop.wait(_RETRY_EVERY_S):
+                return
         _stop.wait(120)   # step past noon before recomputing the next run
 
 
@@ -498,4 +540,5 @@ def scheduler_status() -> dict:
         "watched_pos": watched,
         "tracked_pos": tracked,
         "sent_pos": sent,
+        "last_cycle": dict(_last_cycle) or None,
     }

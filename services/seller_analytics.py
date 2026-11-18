@@ -53,8 +53,9 @@ from services.spapi import pricing as sp_pricing
 from services.spapi import reports as sp_reports
 from services.vendor_offers_template_export import (
     _TEMPLATE, TEMPLATE_COLS, COL, L, _NEW_HEADER_COLS, _ROBOTO, _BOLD, _CENTER,
-    _HYPERLINK_FONT, _HDR_GREY, _HDR_ALIGN, _FILLS, _ACCT, _f, _storage_est,
-    _sku_data_by_asin, _fba_total_by_asin, _last_po_by_sku,
+    _HYPERLINK_FONT, _HDR_GREY, _HDR_ALIGN, _FILLS, _FILL_DERIVED, _ACCT, _f, _storage_est,
+    _sku_data_by_asin, _fba_total_by_asin, _fba_inbound_by_asin, _last_po_by_sku,
+    insert_template_cols, bb_fluctuation_formula, bb_fluctuation_rule,
     _sellersnap_30d_by_asin, _units_30d, enrich_asins, ExportCancelled,
 )
 
@@ -131,6 +132,7 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
 
     sku_by_asin = _sku_data_by_asin(asins)
     fba_total = _fba_total_by_asin(asins)
+    fba_inbound = _fba_inbound_by_asin(asins)
     snap30 = _sellersnap_30d_by_asin(asins)
     report30 = sp_reports.get_units_30d() if live else {}
     last_po = _last_po_by_sku(
@@ -203,9 +205,7 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
 
     wb = load_workbook(_TEMPLATE)
     ws = wb["Analytics"]
-    ws.insert_cols(2, 3)     # Offer Vendor, SKU, FBA SKU  (after UPC)
-    ws.insert_cols(12, 5)    # Available qty, OR33, On order, FBA total, 30d sales
-    ws.insert_cols(19, 2)    # Last cost, Vendor
+    insert_template_cols(ws)   # shared with the vendor-offer export (same layout)
     ws.cell(row=1, column=COL["qty/case"]).value = "qty/case"
     for name in _NEW_HEADER_COLS:
         c = COL[name]
@@ -221,7 +221,8 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
         upc = d["upc"]
         rowd = {
             "UPC/EAN": int(upc) if str(upc).isdigit() else (upc or None),
-            "SKU": sku.get("main_sku"), "FBA SKU": sku.get("fba_sku"),
+            "SKU": sku.get("main_skus") or sku.get("main_sku"),
+            "FBA SKU": sku.get("fba_skus") or sku.get("fba_sku"),
             "ASIN": asin,
             "Link": f'=HYPERLINK("https://www.amazon.com/dp/"&{L("ASIN")}{r})',
             "Offer Vendor": seller_label,
@@ -231,6 +232,7 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
             "Available qty": None,
             "OR33": sku.get("or33"), "On order": sku.get("on_order"),
             "FBA total": fba_total.get(asin.strip().upper()),
+            "FBA inbound": fba_inbound.get(asin.strip().upper()),
             "30d sales": _units_30d(asin, report30, snap30),
             "Estimated Monthly Units Sold": d["monthly"], "amz pack": pack,
             "Last cost": d["prod_cost"] if d["has_main"] else None,
@@ -238,6 +240,8 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
             "Product Cost": d["prod_cost"],
             "Product cost * amz pack": f'={L("Product Cost")}{r}*{L("amz pack")}{r}',
             "Buy Box Price current": round(d["bb_cur"], 2),
+            "BB Fluctuation": bb_fluctuation_formula(f'{L("Buy Box Price current")}{r}',
+                                                     f'{L("BB Price 30d")}{r}', f'{L("BB Price 90d")}{r}'),
             "BB Price 30d": z(k.get("buybox_30d")), "BB Price 90d": z(k.get("buybox_90d")),
             "Net Profit": (f'={L("Buy Box Price current")}{r}-{L("Product cost * amz pack")}{r}'
                            f'-{L("FBA Fee")}{r}-{L("Referral Fee")}{r}-{L("Storage Fee")}{r}-{L("Prep & Out fee")}{r}'),
@@ -270,6 +274,8 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
                 cell.font = _HYPERLINK_FONT
             if center:
                 cell.alignment = _CENTER
+        if sku.get("main_derived"):   # main taken from the shadow/kit (same as the vendor-offer export)
+            ws.cell(row=r, column=COL["SKU"]).fill = _FILL_DERIVED
         so = seller_offer.get(asin.strip().upper())
         c0 = len(TEMPLATE_COLS) + 1
         if so and so.get("found"):
@@ -304,6 +310,8 @@ def build_seller_template_xlsx(seller_id: str, roi_pct: float = DEFAULT_ROI_PCT,
                 f"{col}2:{col}{last}",
                 Rule(type="cellIs", operator=operator, formula=[formula], dxf=dxf),
             )
+        ws.conditional_formatting.add(f'{L("BB Fluctuation")}2:{L("BB Fluctuation")}{last}',
+                                      bb_fluctuation_rule(dxf))
     for j, name in enumerate(SELLER_COLS):
         c = len(TEMPLATE_COLS) + 1 + j
         hc = ws.cell(row=1, column=c, value=name)

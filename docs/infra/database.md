@@ -33,7 +33,7 @@ All SQLite I/O for the whole app lives in `services/database.py` — a single fi
 | `asin_identifier_overrides` | Global per-ASIN user corrections for mpn/upc/ean/gtin. PRIMARY KEY on asin. Written by PATCH endpoint; read by `_upsert_item` in brand_runner so every future brand run for this ASIN uses the corrected values. |
 | `pair_library` / `pair_library_ids` | Pair Manager's manually-confirmed identifier→ASIN library. See `docs/features/pair_manager.md`. |
 | `po_eta_automation` / `po_automation_watchlist` / `automation_recipients` | PO Analytics' day-before-ETA automation. See `docs/features/po_analytics.md`. |
-| `vo_vendors` / `vo_products` / `vo_asin_listings` / `vo_vendor_offers` | Vendor Offers / Price Desk. See `docs/features/vendor_offers.md`. |
+| `vo_vendors` / `vo_products` / `vo_asin_listings` / `vo_vendor_offers` | Vendor Offers / Price Desk (`vo_vendor_offers.supplier` added 2026-11-04 by an additive migration in `vendor_offers.init_schema()`). See `docs/features/vendor_offers.md`. |
 | `sku_exports` | Create SKUs export log (incl. `files_blob` for re-export). See `docs/features/create_skus.md`. |
 | `background_jobs` | Shared "survive a restart" shadow table for in-memory background jobs. See `docs/infra/job_persistence.md`. |
 | `storage_fee_cache` | 90-day TTL cache of computed FBA storage fees per ASIN (was 60 days — extended 2026-10-19). See `docs/features/toolbox.md`. |

@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS vo_vendor_offers (
     avail_qty      REAL,
     description    TEXT,
     first_seen     TEXT NOT NULL,
-    last_seen      TEXT NOT NULL
+    last_seen      TEXT NOT NULL,
+    supplier       TEXT            -- vendor's own supplier/manufacturer label (Cencora mailbox only, 2026-11-04)
 );
 CREATE INDEX IF NOT EXISTS idx_vo_offers_upc ON vo_vendor_offers(upc);
 CREATE INDEX IF NOT EXISTS idx_vo_offers_vendor ON vo_vendor_offers(vendor_id);
@@ -122,6 +123,11 @@ def init_schema() -> None:
     """Create the vo_* tables/views (idempotent) and seed the vendor list."""
     with database._LOCK, database._connect() as conn:
         conn.executescript(SCHEMA_VO)
+        # Additive migration (2026-11-04): supplier label per offer, used by the
+        # Cencora auto-alert's excluded-supplier filter (vendor_offers_auto_alert).
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vo_vendor_offers)")}
+        if "supplier" not in cols:
+            conn.execute("ALTER TABLE vo_vendor_offers ADD COLUMN supplier TEXT")
         for n in VENDOR_NAMES:
             conn.execute("INSERT OR IGNORE INTO vo_vendors (vendor_name) VALUES (?)", (n,))
 
@@ -492,10 +498,14 @@ def dedupe_offers(rows: list, vendor: str):
 
 UPSERT_SQL = """
 INSERT INTO vo_vendor_offers (offer_key, vendor_id, vendor_item_id, upc, cost,
-                              qty_per_case, avail_qty, description, first_seen, last_seen)
+                              qty_per_case, avail_qty, description, first_seen, last_seen,
+                              supplier)
 VALUES (:offer_key, :vendor_id, :vendor_item_id, :upc, :cost,
-        :qty_per_case, :avail_qty, :description, :seen, :seen)
+        :qty_per_case, :avail_qty, :description, :seen, :seen, :supplier)
 ON CONFLICT(offer_key) DO UPDATE SET
+    supplier    = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
+                       THEN COALESCE(excluded.supplier, vo_vendor_offers.supplier)
+                       ELSE vo_vendor_offers.supplier END,
     cost        = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
                        THEN excluded.cost        ELSE vo_vendor_offers.cost        END,
     avail_qty   = CASE WHEN excluded.last_seen >= vo_vendor_offers.last_seen
@@ -533,6 +543,7 @@ def _ensure_products(conn, upc_titles: dict) -> None:
 def _upsert_offers(conn, vname: str, rows: list) -> dict:
     vid = _vendor_id(conn, vname)
     payload = [{**r, "vendor_id": vid, "offer_key": offer_key(vid, r),
+                "supplier": r.get("supplier"),
                 "avail_qty": None if r.get("avail_qty") is None or pd.isna(r["avail_qty"])
                              else float(r["avail_qty"])}
                for r in rows]

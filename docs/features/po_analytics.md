@@ -16,6 +16,34 @@ Analyzes a received (or about-to-be-received) SellerCloud Purchase Order's FBA/F
 
 ## Changelog
 
+**2026-11-17** — New "BB Fluctuation" column right after "Buy Box Price current" (same shared formula/CF as the Vendor Offers export, see `docs/features/vendor_offers.md` 2026-11-17d).
+- The bundled template predates it, so `_insert_bb_fluctuation_col` inserts the column at load, copies the "Buy Box Price current" header style, and shifts the template's fixed-letter CF ranges past it. openpyxl `insert_cols` does not move CF.
+- Verified: all 42 headers line up with `ANALYTICS_COLS`; CF still covers SKU..ASIN (A:D), Net Margin, ROI and Rank (W→X, X→Y, AC→AD).
+- Restarted 09:21.
+
+**2026-11-06b** — Manual "amz pack" override list; B01IAEX61M forced to amz pack 1.
+- User: "could you please change this asin B01IAEX61M to amz pack of 1."
+- Found: B01IAEX61M's only SellerCloud child is `DIA12410_QY36-FBA` (Dial bar soap, Amazon title "(12 Packs of 3)"), so the `_QY36` tag made amz pack 36.
+- Change (`services/analytics/po_analytics.py`): new module-level `_AMZ_PACK_OVERRIDES = {ASIN: pack}` dict, checked first in `gather()` when setting a row's `pack_qty` (then the `_QY{n}` parse, then 1). Applies to manual runs and the day-before-ETA automation (same code path), and so also to "PO Asins", "Product cost * amz pack", Net Profit and ROI, which all reference the amz pack cell. SellerCloud is not touched. Add future one-off overrides to that dict.
+- **Needs a backend restart.**
+
+**2026-11-06** — Removed the "Jim" sheet and all of its code.
+- User: "for the po analytics could you please remove the jim feature as I dont need it anymore, please remove the code for it too."
+- Removed from `services/analytics/po_analytics.py`: `_fetch_dimensions()` (a dedicated live SP-API `getCatalogItem` pass per distinct ASIN, used only for the Jim sheet's Length/Width/Height/Weight columns), `JIM_COLS`, the `kept_rows` list (existed only to feed Jim), the Jim sheet build in `enrich_and_build()`, and the now-unused `Font` / `ExportCancelled` imports. The workbook is now **Analytics + PO** only. Side benefit: every run (manual and day-before-ETA automation) skips one catalog call per ASIN and the "fetching dimensions" progress stage. No UI, router, or automation code referenced Jim. The 2026-10-08e entry below documents what was removed.
+- Verified: a real `gather()` + `enrich_and_build()` (live Azure, Keepa, SP-API; only the SellerCloud PO read stubbed) produced sheets `['Analytics', 'PO']`, progress stages `['Keepa live prices', 'eligibility check']`, Analytics rows intact (incl. the 2026-11-05 comma-joined FBA SKUs). **Needs a backend restart.**
+
+**2026-11-05** — FBA SKU cell now lists EVERY FBA SKU on an ASIN, comma-separated (was: only the last one).
+- User: "When creating the analytics, if an asin has multiple FBA skus attached please add it in the one cell for the fba sku, like just separate by the comma."
+- Root cause: `gather()` built `by_asin[asin]["fba"] = ch["sku"]` per child — a plain assignment, so when one ASIN had several FBA children (e.g. `ADL1001835-FBA` + `ADL1001835-FBA2`) the last one silently overwrote the rest. Live Azure catalog has **888** (Main SKU, ASIN) pairs with >1 FBA SKU, so this was common.
+- Fix (`services/analytics/po_analytics.py` `gather()`): each ASIN slot now collects a de-duped list per channel; `fba_sku` = `", ".join(sorted(fba))`, falling back to the FBM list when there's no FBA child (same precedence as before). Row count is unchanged (still one row per Main SKU × ASIN). Flows into both the Analytics sheet and the Jim sheet's "FBA SKU" column — nothing downstream parses this field (checked every `fba_sku` reference), so a joined string is safe. Note the duplicate-highlight CF spanning SKU/FBA SKU/UPC/ASIN now compares the joined string.
+- Verified: real `gather()` code path against the live Azure catalog (only the SellerCloud PO read stubbed with a fake PO) — `ADL1001835/B0091OCBJ4` → `ADL1001835-FBA, ADL1001835-FBA2`; `ABN64628/B009IXDJOE` → `ABN64628_QY24-FBA2, ABN64628_QY24-FBA3`; single-child ASINs unchanged (`ANH950685_QY4-FBA`). **Needs a backend restart.**
+
+**2026-11-04** — Day-before-ETA automation silently skipped PO 52486; a failed Monday-mirror read now aborts + retries instead of acting on stale ETAs.
+- User: "could you please check why this po isnt analyzed even though eta is today? 52486"
+- **Found (live evidence)**: Monday activity log for item 13430596660 — ETA set 11-06 (10-30), changed **11-06 → 11-04 on 11-02 at 14:05 ET**. Our tracking row still said `last_eta=2026-11-06`, `updated_at=2026-11-02 17:00:07` — and **all 60 tracking rows** were last stamped 11-02 17:00 UTC, yet the 11-03 noon cycle DID send 52282 + 50921 (sent_at 11-03 17:01–17:02 UTC). `check_and_trigger` is the only writer of those rows and always upserts every matched watched PO, so the 11-03 cycle matched zero of them: `monday_eta.fetch_inbound_items()` returns `[]` on any Azure connection/query error (by design, "never crash a caller"), and the cycle then ran `_compute_due` off the previous day's stale rows. Under stale data 52486 was due 11-06 → not due. Server logs for 11-03 were gone, so the Azure failure itself couldn't be confirmed — but it's the only path consistent with the DB state (see the recurring Azure access issues in `docs/infra/azure_sql.md`).
+- **Fix** (`services/po_automation.py`): `check_and_trigger` now returns early with `summary["aborted"]` when the read yields none of the watched POs (no upsert, no sends). `_loop` retries a failed/aborted cycle every 15 min (`_RETRY_EVERY_S=900`, `_RETRY_MAX=12` → until ~15:00 ET). New `_last_cycle` (`at/ok/error/sent/due`) exposed as `scheduler_status()["last_cycle"]` (Tasks Running). `check-now` returns the aborted summary instead of a 500.
+- **Verified**: abort path with `fetch_inbound_items` stubbed to `[]` → aborted, DB unchanged, nothing sent; loop with a fake cycle aborting twice → retried, succeeded on the 3rd call. Dry-run on today's live mirror: 61/61 watched POs found; due today = **52486** (ETA 11-04, "Invoice Uploaded"), 50564, 52103 — today's noon cycle will send them. **Backend restart done.**
+
 **2026-10-28** — PO reports' "FBA total" and "30d sales" inherit two shared fixes (no PO-Analytics code changed): `_fba_total_by_asin` now reads only the table's latest daily snapshot (stale ASINs no longer show phantom stock), and `get_units_30d()` now sums repeat child-ASIN rows (was dropping units). See `docs/features/vendor_offers.md`'s 2026-10-28b entry.
 
 **2026-10-19** — Recipient picker shows a count, Archive rows redesigned compact with an icon download + hover detail, Status card pinned to the top with an icon-only Refresh:
