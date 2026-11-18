@@ -1,0 +1,261 @@
+from __future__ import annotations
+
+import re
+
+from rapidfuzz import fuzz
+
+from services.analytics.matching_core.matching.flags import CLEAN_TITLES
+from services.analytics.matching_core.matching.patterns import (
+    APOSTROPHE_RE,
+    BRAND_NOISE_WORDS,
+    DIGITS_ONLY_RE,
+    MIN_BASE_LEN,
+    MPN_SUFFIX_RE,
+    NON_ALNUM_RE,
+    NON_ALNUM_SPACE_RE,
+    NON_DIGIT_RE,
+    PACK_COUNT_RE,
+    WHITESPACE_RE,
+)
+
+
+def base_mpn(mpn: str | None) -> str:
+    """Reduce an MPN to its base part number: strip seller/pack suffixes, then
+    lowercase and drop punctuation.
+
+        '0354-150H-2PK'      -> '0354150h'
+        '0311-150F - AMZ3PK' -> '0311150f'
+        '0354-150H'          -> '0354150h'   (no suffix, untouched)
+
+    Keeps the original when stripping would leave almost nothing, so an MPN is
+    never reduced to noise.
+    """
+    if not mpn:
+        return ""
+    s = str(mpn).strip()
+    stripped = MPN_SUFFIX_RE.sub("", s)
+    if len(NON_ALNUM_RE.sub("", stripped)) < MIN_BASE_LEN:
+        return NON_ALNUM_RE.sub("", s).lower()
+    return NON_ALNUM_RE.sub("", stripped).lower()
+
+
+_LETTER_PREFIX_RE = re.compile(r"^([a-z]{1,3})(\d[a-z0-9]*)$")
+
+
+def _without_letter_prefix(base: str) -> str:
+    """'m13216' -> '13216' (a brand's 1-3 letter prefix like Morakniv's 'M-'); '' when there is none or when
+    too little would be left to be a real part number."""
+    m = _LETTER_PREFIX_RE.match(base or "")
+    if m and len(m.group(2)) >= max(4, MIN_BASE_LEN):
+        return m.group(2)
+    return ""
+
+
+def candidate_part_number(item: dict | None) -> str:
+    """A listing's part number, from wherever Amazon put it: the normalized 'mpn', then the raw SP-API summary
+    (partNumber / modelNumber) and attributes (part_number / model_number).  Sparse listings often have the
+    number only in model_number ('Kansbol Survival Green': 13912), which the scorers used to miss entirely."""
+    item = item or {}
+    for key in ("mpn", "part_number", "model_number"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw = item.get("_raw") or {}
+    summary = (raw.get("summaries") or [{}])[0] if isinstance(raw.get("summaries"), list) else {}
+    attrs = raw.get("attributes") or {}
+    candidates = [summary.get("partNumber"), summary.get("modelNumber")]
+    for key in ("part_number", "model_number"):
+        entries = attrs.get(key) or []
+        first = entries[0] if isinstance(entries, list) and entries else None
+        candidates.append(first.get("value") if isinstance(first, dict) else first)
+    for value in candidates:
+        if value not in (None, "") and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+_PART_TOKEN_RE = re.compile(r"[A-Za-z]{0,3}-?\d[\w-]*")
+
+
+def part_number_in_text(part: str | None, text: str | None) -> bool:
+    """The vendor's part number is printed in the listing's text ('... Orange (M-11824)').  Only numbers with at
+    least 4 digits count, so a size or a count can not pass for a part number."""
+    base = base_mpn(part)
+    if sum(ch.isdigit() for ch in base) < 4:
+        return False
+    return any(mpns_match(part, token) for token in _PART_TOKEN_RE.findall(str(text or "")))
+
+
+def mpns_match(a: str | None, b: str | None) -> bool:
+    """The same part number.  Compared as base_mpn() forms, and a short letter prefix on ONE side is ignored:
+    'M-13216' = '13216' = 'M13216'.  Two DIFFERENT prefixes still differ ('A12345' vs 'B12345')."""
+    ba, bb = base_mpn(a), base_mpn(b)
+    if not ba or not bb:
+        return False
+    return ba == bb or _without_letter_prefix(ba) == bb or _without_letter_prefix(bb) == ba
+
+
+def normalize_upc(upc: str | None) -> str:
+    """Digits only; zero-pad 11-digit UPCs to 12 (vendor feeds often strip the
+    leading zero).  A number read from Excel ('760172011852.0') loses its '.0'
+    first, otherwise the 0 would become an extra digit."""
+    if not upc:
+        return ""
+    digits = NON_DIGIT_RE.sub("", re.sub(r"\.0+$", "", str(upc).strip()))
+    return "0" + digits if len(digits) == 11 else digits
+
+
+def normalize_text(text: str | None) -> str:
+    """Lowercase, collapse whitespace. For coarse comparison, not for building
+    search queries."""
+    if not text:
+        return ""
+    return WHITESPACE_RE.sub(" ", str(text).lower().strip())
+
+
+# --------------------------------------------------------------------------- #
+# Title comparison - ONE place, used by the weighted, cascade and classifier
+# scorers so both sides of every pair are cleaned the same way.
+# --------------------------------------------------------------------------- #
+
+# a number (decimals kept: "6.5") or a run of letters. Splitting digits from letters
+# turns "4PCS" into "4 pcs" and "56oz" into "56 oz", which is how Amazon writes them.
+_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?|[^\W\d_]+")
+
+
+def clean_for_compare(text: str | None) -> str:
+    """Lowercase; punctuation, hyphens and pipes become spaces; numbers and words
+    are split apart.
+
+        'Oral-B CrossAction, Pack of 4 | Black' -> 'oral b crossaction pack of 4 black'
+        'ORAL B HEADS 4PCS'                     -> 'oral b heads 4 pcs'
+    """
+    if not text:
+        return ""
+    return " ".join(_TOKEN_RE.findall(str(text).lower()))
+
+
+def title_similarity(a: str | None, b: str | None) -> float:
+    """Title similarity on a 0-100 scale. With MATCH_CLEAN_TITLES=0 this is the old
+    behaviour (lowercase only)."""
+    if not a or not b:
+        return 0.0
+    if CLEAN_TITLES:
+        a, b = clean_for_compare(a), clean_for_compare(b)
+    else:
+        a, b = str(a).lower(), str(b).lower()
+    if not a or not b:
+        return 0.0
+    return float(fuzz.token_set_ratio(a, b))
+
+
+def _ean13_check_digit(d12: str) -> str:
+    total = sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(d12))
+    return str((10 - (total % 10)) % 10)
+
+
+def _is_valid_upca(v: str) -> bool:
+    if len(v) != 12 or not v.isdigit():
+        return False
+    s = sum(int(c) * (3 if i % 2 == 0 else 1) for i, c in enumerate(v[:11]))
+    return str((10 - (s % 10)) % 10) == v[11]
+
+
+def all_id_forms(value: str | None) -> list[str]:
+    """Every plausible barcode form of an identifier, so a match succeeds
+    whether the value is stored as UPC-12, EAN-13 or GTIN-14 — including
+    recovery of an EAN-13 whose trailing check digit was dropped.
+
+    Ported from the old runner; barcode reconciliation is genuinely fiddly and
+    not worth rediscovering."""
+    if not value:
+        return []
+    v = DIGITS_ONLY_RE.sub("", str(value))
+    if not v:
+        return []
+    forms = [v]
+    n = len(v)
+    if n == 12:
+        forms += ["0" + v, "00" + v]
+        if not _is_valid_upca(v):
+            forms.append(v + _ean13_check_digit(v))
+    elif n == 13:
+        forms.append("0" + v)
+        if v.startswith("0"):
+            forms.append(v[1:])
+        forms.append(v[:12])
+    elif n == 14:
+        forms.append(v[1:])
+        if v.startswith("00"):
+            forms.append(v[2:])
+    return list(dict.fromkeys(forms))
+
+
+def barcode_forms(value: str | None) -> frozenset[str]:
+    """Every form of a barcode (UPC-12, EAN-13, GTIN-14 ...) after normalize_upc, as a set.
+    Two codes are the same barcode when their forms overlap; a set lets callers index and
+    look up barcodes (vendor_families.py) instead of comparing pair by pair."""
+    return frozenset(all_id_forms(normalize_upc(value)))
+
+
+def upc_matches(a: str | None, b: str | None) -> bool:
+    """True when two identifiers share any barcode form."""
+    fa, fb = set(all_id_forms(a)), set(all_id_forms(b))
+    return bool(fa and fb and (fa & fb))
+
+def pack_count(text: str) -> int:
+    """Extract a pack/count number from a title. Returns 1 if none found.
+    'Container 36 count' -> 36, 'pack of 72' -> 72."""
+    for m in PACK_COUNT_RE.finditer(text or ""):
+        n = next((g for g in m.groups() if g is not None), None)
+        if n:
+            return int(n)
+    return 1
+
+
+def effective_pack(offer_title: str, cand_title: str) -> tuple[int, bool]:
+    """How many offer units one candidate listing represents, and whether
+    that's a mismatch (more than one offer unit per listing).
+
+    'Container 36 count' + 'pack of 36'  -> (1, False)   same unit
+    'Container 36 count' + 'pack of 72'  -> (2, True)    2x bundle
+    'Cleaner 8 oz'        + 'pack of 6'   -> (6, True)    6x bundle
+    A pack difference alone doesn't mean a different SKU - it's used as a
+    soft signal (cap toward review), not a hard reject.
+    """
+    src_count = pack_count(offer_title)
+    amz_count = pack_count(cand_title)
+    if src_count > 1:
+        if amz_count == 0 or amz_count == src_count:
+            return 1, False
+        if amz_count > src_count and amz_count % src_count == 0:
+            ep = amz_count // src_count
+            return ep, ep > 1
+        return (amz_count if amz_count > 0 else 1), amz_count > src_count
+    return (amz_count, amz_count > 1) if amz_count > 1 else (1, False)
+
+
+def normalize_brand(brand: str | None) -> str:
+    """Strip corporate suffixes/generic words, collapse spacing/punctuation.
+    'Cardinal Health' -> 'cardinal', 'Shea Moisture' -> 'sheamoisture'."""
+    if not brand:
+        return ""
+    s = APOSTROPHE_RE.sub("", brand.lower())
+    s = NON_ALNUM_SPACE_RE.sub(" ", s)
+    tokens = [t for t in s.split() if t]
+    kept = [t for t in tokens if t not in BRAND_NOISE_WORDS]
+    return "".join(kept) if kept else "".join(tokens)
+
+
+def brands_match(a: str | None, b: str | None) -> bool:
+    """True when two brand strings are the same brand once normalized -
+    handles spacing ('Shea Moisture'='SheaMoisture'), corporate suffixes
+    ('Cardinal Health'='Cardinal'), and minor spelling variants (fuzzy>=88)."""
+    na, nb = normalize_brand(a), normalize_brand(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    if len(na) >= 5 and len(nb) >= 5 and (nb.startswith(na) or na.startswith(nb)):
+        return True
+    return fuzz.ratio(na, nb) >= 88
