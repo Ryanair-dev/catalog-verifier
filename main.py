@@ -17,7 +17,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import analytics, barcode, brand_analytics, create_po, eligibility, export, generic_check, health_check, library, mpn_check, pairs, po_analytics, reports, scans, seller_analytics, settings, storage_fees, vendor_offers, verify, walmart
+from routers import analytics, barcode, brand_analytics, competitor_analysis, create_po, eligibility, export, generic_check, health_check, library, mpn_check, pairs, po_analytics, reports, scans, seller_analytics, settings, storage_fees, vendor_offers, verify, walmart
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -82,6 +82,9 @@ async def _lifespan(app: FastAPI):
     # relauncher is already registered.
     try:
         from services import job_persistence
+        # Not imported by any router: import it so its "vo_auto_alert"
+        # relauncher is registered before the resume (2026-11-03).
+        from services import vendor_offers_auto_alert  # noqa: F401
         job_persistence.resume_orphaned_jobs()
     except Exception:
         pass
@@ -309,6 +312,7 @@ app.include_router(mpn_check.router,      prefix="/api", tags=["mpn-check"])
 app.include_router(walmart.router,        prefix="/api", tags=["walmart"])
 app.include_router(po_analytics.router,   prefix="/api", tags=["po-analytics"])
 app.include_router(seller_analytics.router, prefix="/api", tags=["seller-analytics"])
+app.include_router(competitor_analysis.router, prefix="/api", tags=["competitor-analysis"])
 app.include_router(reports.router,          prefix="/api", tags=["reports"])
 
 

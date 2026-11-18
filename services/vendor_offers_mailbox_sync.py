@@ -328,6 +328,9 @@ def _parse_cencora_mailbox(catalog_bytes: bytes, inventory_bytes: bytes | None,
             "qty_per_case": divisor,
             "avail_qty": float(avail) if avail is not None else None,
             "description": desc, "seen": stamp,
+            # stored so the daily Cencora alert can exclude whole supplier lines
+            # (vendor_offers_auto_alert.EXCLUDED_SUPPLIERS) -- 2026-11-04
+            "supplier": vo._clean(r.get("supplier")),
         })
     return rows, skipped, warnings
 

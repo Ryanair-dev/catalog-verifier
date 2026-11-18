@@ -455,6 +455,8 @@ def _run_brand_check(brand: str, sample_size: int, sample_pct: float | None) -> 
             verdict = "MIXED"
             summary = f"Mixed results for '{brand}'{resolved_note}: {parts} (of {len(checked)} checked)."
 
+    notes = _brand_notes(checked, statuses)
+
     return {
         "brand":                  brand,
         "resolved_as":            resolved_as,
@@ -463,7 +465,42 @@ def _run_brand_check(brand: str, sample_size: int, sample_pct: float | None) -> 
         "dog_skipped":            dog_count,
         "verdict":                verdict,
         "summary":                summary,
+        "notes":                  notes,
     }
+
+
+def _brand_notes(checked: list[dict], statuses: Counter) -> str:
+    """Brand Check's Notes column (2026-11-04, per user): if ANY sampled ASIN
+    is open to sell, ask Keepa whether those open ASINs have estimated monthly
+    sales (e.g. CHI: 7 open / 163 needs approval / 11 restricted -- only the
+    7 open ones go to Keepa). With no open ASINs at all, Notes is whichever
+    of Needs approval / Restricted covers more of the sample.
+
+    Keepa's monthlySold is Amazon's "N+ bought in past month" for the whole
+    ASIN (all sellers); blank means below Amazon's display threshold, so "no
+    estimated sales" = none of the open ASINs shows that badge. A Keepa
+    failure is reported as such -- never silently turned into "no sales"."""
+    open_asins = [r["asin"] for r in checked if r.get("status") == "CAN_SELL" and r.get("asin")]
+    if open_asins:
+        try:
+            from services import keepa
+            sold = keepa.fetch_monthly_sold(open_asins)
+        except Exception as exc:  # noqa: BLE001
+            return f"Keepa unavailable - sales not checked for {len(open_asins)} open-to-sell ASINs ({str(exc)[:80]})"
+        with_sales = [a for a in open_asins if (sold.get(a.strip().upper()) or 0) > 0]
+        if with_sales:
+            units = sum(sold[a.strip().upper()] for a in with_sales)
+            return (f"Has estimated sales (Keepa: {len(with_sales)} of {len(open_asins)} "
+                    f"open-to-sell ASINs, ~{units:,} units/mo)")
+        return f"No estimated sales (Keepa: 0 of {len(open_asins)} open-to-sell ASINs)"
+    na, rs = statuses.get("NEEDS_APPROVAL", 0), statuses.get("RESTRICTED", 0)
+    if na > rs:
+        return "Needs approval"
+    if rs > na:
+        return "Restricted"
+    if na:   # equal and non-zero
+        return "Needs approval / Restricted (tie)"
+    return "" if checked else "All sampled ASINs deactivated (DOG)"
 
 
 @router.post("/eligibility/check-brand")
@@ -515,10 +552,10 @@ async def check_brand_start(body: CheckBrandBulkBody) -> dict:
                 r = _run_brand_check(brand, body.sample_size, body.sample_pct)
             except HTTPException as exc:
                 r = {"brand": brand, "verdict": "ERROR", "summary": str(exc.detail),
-                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0}
+                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0, "notes": ""}
             except Exception as exc:  # noqa: BLE001
                 r = {"brand": brand, "verdict": "ERROR", "summary": str(exc)[:300],
-                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0}
+                     "total_asins_in_catalog": 0, "checked": [], "dog_skipped": 0, "notes": ""}
             with results_lock:
                 job["results"].append(r)
                 job["done"] += 1

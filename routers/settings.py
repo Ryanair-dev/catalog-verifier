@@ -155,14 +155,15 @@ def _recent_health_check_runs() -> list[dict]:
 
 @router.get("/settings/tasks-running")
 async def tasks_running() -> dict:
-    from routers import eligibility, generic_check, pairs, po_analytics, seller_analytics, storage_fees
+    from routers import competitor_analysis, eligibility, generic_check, pairs, po_analytics, seller_analytics, storage_fees
     from routers import vendor_offers as vo_router
     from services import azure_sql, eligibility_warmer, health_check, mpn_check_sync, reports_po_pnl
+    from services import vendor_offers_auto_alert as vo_alert
     from services import vendor_offers_mailbox_sync as vo_mail_sync
     from services.sellercloud import catalog_index as sc_catalog_index
 
     jobs: list[dict] = []
-    for mod in (eligibility, storage_fees, generic_check, po_analytics, seller_analytics, pairs, vo_router):
+    for mod in (eligibility, storage_fees, generic_check, po_analytics, seller_analytics, pairs, vo_router, vo_alert, competitor_analysis):
         try:
             jobs.extend(mod.list_jobs_for_tasks_panel())
         except Exception:  # noqa: BLE001
@@ -189,7 +190,25 @@ async def tasks_running() -> dict:
         except Exception:  # noqa: BLE001
             pass
 
+    # A scheduler mid-run also shows under Active jobs (2026-11-03, user: "the
+    # background schedulers can we also if they are running have them under
+    # active jobs"). Its card stays in the Schedulers list too.
+    for s in schedulers:
+        if s.get("running_now"):
+            jobs.append(_scheduler_as_job(s))
+
     return {"jobs": jobs, "runs": runs, "schedulers": schedulers}
+
+
+def _scheduler_as_job(s: dict) -> dict:
+    done = total = None
+    if isinstance(s.get("queue"), int) and isinstance(s.get("checked"), int):   # eligibility warmer
+        done, total = s["checked"], s["checked"] + s["queue"]
+    return {
+        "feature": f"{s['feature']} (scheduled run)", "job_id": f"scheduler:{s['feature']}",
+        "status": "running", "phase": s.get("summary") or s.get("phase") or "scheduled run in progress",
+        "done": done, "total": total, "started_at": s.get("run_started_at"), "completed_at": None,
+    }
 
 
 # Finished export files kept on disk (services/job_results.py, 2026-10-29) --
