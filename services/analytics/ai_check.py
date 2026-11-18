@@ -138,7 +138,12 @@ _SYSTEM = (
     "only the shade is the SKU. If the shade codes differ (Bigen '#46' vs '#48', 'No. 7' vs "
     "'No. 5') OR the tonal qualifiers differ ('Light Chestnut' vs 'Dark Chestnut', 'Medium' vs "
     "'Light') → reject. Do NOT approve one shade against another.\n"
-    "- Scent/flavor differences → reject only when BOTH sides specify it AND they clearly conflict\n\n"
+    "- Scent/flavor differences → reject only when BOTH sides specify it AND they clearly conflict\n"
+    "- UNSTATED VARIANT DETAIL (overrides the approve rules above): when the Amazon listing states a detail "
+    "that defines WHICH variant it is (compression or strength level like '20-30 mmHg', a calorie or version "
+    "number like '1.0' vs '1.5', open vs closed toe, dosage, a model number) and the vendor item does NOT "
+    "state it, you cannot know it is the same SKU → 'uncertain', never 'approve'. When both sides state it "
+    "and the values differ → 'reject'. Unclear cases stay with a person.\n\n"
     "Respond ONLY with a raw JSON object (no markdown, no code blocks):\n"
     '{"results": [{"asin":"...","verdict":"approve|reject|uncertain",'
     '"confidence":"high|medium|low","reasoning":"<25 words"}]}\n'

@@ -24,6 +24,7 @@ from __future__ import annotations
 from services.analytics.matching_core.matching.attribute_compare import (
     Cmp,
     compare_attributes,
+    volume_unclear,
     summarize,
 )
 from services.analytics.data_cleaning.normalize import (
@@ -43,6 +44,7 @@ MISMATCH_CAP = 29.0
 
 FUZZY_WITH_ATTRS = 70.0
 FUZZY_ALONE = 72.0
+TITLE_REVIEW_MIN = 50.0   # no rule fired but the titles are this similar: unclear -> Review, never rejected
 
 # Measured: rules 3 and 6 firing on two known attributes caused 5 of 6 false
 # approvals. Set to 1 to reproduce the spec exactly.
@@ -133,6 +135,9 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
         # nothing fired - weak fuzzy fallback so a near-miss reaches review
         # rather than being silently rejected
         confidence, rule = min(fuzzy * 0.5, 60.0), "fallback_fuzzy"
+        if fuzzy >= TITLE_REVIEW_MIN:
+            # the tester's rule: what the tool is unsure about goes to Review, never to Not Approved
+            confidence = max(confidence, REVIEW_MIN)
 
     # two DIFFERENT part numbers and no matching barcode: whatever fired above (often the title alone) may not
     # approve on its own; it goes to Review.  (A Morakniv run approved the wrong Kansbol and the Spark Emergency
@@ -146,6 +151,11 @@ def score(offer: Offer, cand: Candidate, mode: str = "cpg") -> MatchResult:
     if n_mismatch > 0:
         confidence = min(confidence, MISMATCH_CAP)
         rule += "+blocked_by_mismatch"
+    elif volume_unclear(offer, cand):
+        # a volume that makes no sense next to the other one ('1.4mL' vs '8.45 fl oz'): neither proof of a
+        # different product nor of the same one -> Review
+        confidence = min(max(confidence, REVIEW_MIN), VERIFIED_MIN - 1)
+        reasons.append("size_unclear")
 
     verdict = (Verdict.VERIFIED if confidence >= VERIFIED_MIN
                else Verdict.REVIEW if confidence >= REVIEW_MIN

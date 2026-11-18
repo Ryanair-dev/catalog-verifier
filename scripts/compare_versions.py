@@ -4,6 +4,21 @@ Compare two versions of the code on the eval set: per vendor, per how the pair w
     python scripts/compare_versions.py --before HEAD~1                    # last commit vs your current files
     python scripts/compare_versions.py --before main --after HEAD         # two commits / branches
     python scripts/compare_versions.py --before HEAD~1 --matcher all      # weighted + cascade + classifier
+
+--before / --after take any git commit, branch or tag.  "--after WORKTREE" (the default) means the files as
+they are on disk now, committed or not.  The other version is checked out into a temporary folder; your
+files are never touched.
+
+A version without services/analytics/matching_core (the old code on main) is scored with its old matcher,
+services/analytics/matcher.py score_amazon_item().  It has one scorer, so its answers are compared with each
+scorer of the other version.
+
+Both versions read the SAME copy of your database (catalog_verifier.db), so learned sub-brands and
+other saved data are equal on both sides: only the code differs.
+
+Better / worse, per pair:
+  a CORRECT pair is better when it moves up   (rejected -> review -> approved)
+  a WRONG pair   is better when it moves down (approved -> review -> rejected)
 """
 from __future__ import annotations
 
@@ -31,8 +46,13 @@ def dump(root: Path, eval_set: Path, matchers: list[str], mode: str, out: Path, 
     if db:                       # same database for both versions (learned sub-brands live there)
         from services import database
         database.DB_PATH = db
-    import eval_matchers as em  # the eval helpers of THIS version
     rows = json.loads(eval_set.read_text(encoding="utf-8"))
+    if not (root / "services" / "analytics" / "matching_core").is_dir():
+        result = dump_old_matcher(rows, matchers)
+        result["_rows"] = _row_info(rows)
+        out.write_text(json.dumps(result), encoding="utf-8")
+        return
+    import eval_matchers as em  # the eval helpers of THIS version
     pairs = em.load_eval_set(eval_set, None)
     result = {}
     for name in matchers:
@@ -42,12 +62,34 @@ def dump(root: Path, eval_set: Path, matchers: list[str], mode: str, out: Path, 
             print(f"  {name}: skipped ({type(exc).__name__}: {exc})", file=sys.stderr)
             continue
         result[name] = [{"verdict": r.verdict.value, "confidence": r.confidence} for r in res]
-    result["_rows"] = [{"source": r.get("_source") or "?", "found_via": r.get("_found_via") or "?",
-                        "offer_id": r["offer"].get("offer_id"), "asin": r["candidate"].get("asin"),
-                        "is_match": bool(r["is_match"]),
-                        "vendor_title": (r["offer"].get("title") or "")[:70],
-                        "amazon_title": (r["candidate"].get("title") or "")[:70]} for r in rows]
+    result["_rows"] = _row_info(rows)
     out.write_text(json.dumps(result), encoding="utf-8")
+
+
+def _row_info(rows: list[dict]) -> list[dict]:
+    return [{"source": r.get("_source") or "?", "found_via": r.get("_found_via") or "?",
+             "offer_id": r["offer"].get("offer_id"), "asin": r["candidate"].get("asin"),
+             "is_match": bool(r["is_match"]),
+             "vendor_title": (r["offer"].get("title") or "")[:70],
+             "amazon_title": (r["candidate"].get("title") or "")[:70]} for r in rows]
+
+
+def dump_old_matcher(rows: list[dict], matchers: list[str]) -> dict:
+    """The old code (before matching_core): services/analytics/matcher.py score_amazon_item(source, amazon).
+    One scorer, so the same answers are filed under every scorer name the other version is compared with."""
+    from services.analytics.matcher import score_amazon_item
+    verdicts = []
+    for r in rows:
+        o, c = r["offer"], r["candidate"]
+        source = {"title": o.get("title") or o.get("raw_text") or "", "brand": o.get("brand") or "",
+                  "upc": o.get("upc") or "", "itemid": o.get("mpn") or "", "mpn": o.get("mpn") or ""}
+        amazon = {"asin": c.get("asin"), "title": c.get("title") or "", "brand": c.get("brand") or "",
+                  "manufacturer": c.get("manufacturer") or "", "upc": c.get("upc") or "",
+                  "mpn": c.get("mpn") or "", "attributes": c.get("attributes") or {}}
+        s = score_amazon_item(source, amazon)
+        verdicts.append({"verdict": s["verdict"], "confidence": s.get("confidence_score")})
+    print("  scored with the OLD matcher (services/analytics/matcher.py)", file=sys.stderr)
+    return {name: verdicts for name in matchers} | {"_engine": "old matcher"}
 
 
 def run_version(ref: str, eval_set: Path, matchers: list[str], mode: str, tmp: Path, db: Path | None) -> dict:
@@ -157,6 +199,9 @@ def main() -> None:
         by_vendor[r["source"]].append(i)
         by_found[r["found_via"]].append(i)
     print(f"\nBEFORE = {args.before}   AFTER = {args.after}   ({len(rows)} pairs, eval set {eval_set.name})")
+    for tag, data in (("BEFORE", before), ("AFTER", after)):
+        if data.get("_engine") == "old matcher":
+            print(f"{tag} uses the old matcher (one scorer): every table compares it with that scorer of the other side")
     print("'+' = better, '-' = worse")
     for name in matchers:
         if name not in before or name not in after:

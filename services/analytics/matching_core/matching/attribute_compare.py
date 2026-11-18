@@ -58,10 +58,23 @@ def _volume_ml(text: str) -> float | None:
     return float(m.group(1)) * factor if factor else None
 
 
+SIZE_UNCLEAR_RATIO = 10.0   # one volume more than 10x the other: probably not a real size
+
+
+def volume_unclear(offer: Offer, cand: Candidate) -> bool:
+    """The two volumes make no sense next to each other (Amazon's 'Compleat 1.4mL' means calories per mL,
+    the vendor's '8.45 fl oz' is the bottle).  Such a number is no proof of a different product: unclear."""
+    s, a = _texts(offer, cand)
+    sv, av = _volume_ml(s), _volume_ml(a)
+    if not sv or not av:
+        return False
+    return max(sv, av) / min(sv, av) > SIZE_UNCLEAR_RATIO
+
+
 def cmp_volume(offer: Offer, cand: Candidate) -> Cmp:
     s, a = _texts(offer, cand)
     sv, av = _volume_ml(s), _volume_ml(a)
-    if sv is None or av is None:
+    if sv is None or av is None or volume_unclear(offer, cand):
         return Cmp.UNKNOWN
     return Cmp.MATCH if _within_tolerance(sv, av) else Cmp.MISMATCH
 
