@@ -15,9 +15,11 @@ from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
     score as score_classifier,
 )
-from services.analytics.matching_core.matching.normalize import (
+from services.analytics.data_cleaning.normalize import (
     candidate_part_number,
     brands_match,
+    candidate_brand_matches,
+    mpns_match,
     normalize_upc,
     upc_matches,
 )
@@ -39,7 +41,7 @@ from services.analytics.matching_core.matching.attr_extract import extract_vendo
 from services.analytics.matching_core.matching.lexicon import gender_tokens as _ur_gender_tokens
 from services.analytics.matching_core.matching.lexicon import get_lexicon as _ur_get_lexicon
 from services.analytics.matching_core.matching.lexicon import variant_boxes_for as _ur_variant_boxes_for
-from services.analytics.matching_core.matching.normalize import brands_match as _ur_brands_match
+from services.analytics.data_cleaning.normalize import brands_match as _ur_brands_match
 from services.analytics.matching_core.matching.variation import compare_boxes as _ur_compare_boxes
 
 _log = logging.getLogger(__name__)
@@ -132,6 +134,7 @@ def build_export_pair(
         ),
         title=_first_value(amazon, _CANDIDATE_FIELDS["title"]) or None,
         brand=_first_value(amazon, _CANDIDATE_FIELDS["brand"]) or None,
+        manufacturer=_first_value(amazon, ("Manufacturer", "manufacturer")) or None,
         upc=_first_value(amazon, _CANDIDATE_FIELDS["upc"]) or None,
         mpn=_first_value(amazon, _CANDIDATE_FIELDS["mpn"]) or candidate_part_number(amazon) or None,
         attributes={
@@ -193,16 +196,41 @@ def score_pair(
     offer, candidate = build_pair(
         source, normalized, extracted=extracted, sources=sources,
     )
-    result = score_models(offer, candidate, method=method, mode=mode)
-    # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
-    barcode_ok = bool(
-        offer.upc and candidate.upc
-        and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+    mpn_same = bool(offer.mpn and candidate.mpn and mpns_match(offer.mpn, candidate.mpn))
+    mpn_brand_match = bool(
+        mpn_same and candidate_brand_matches(offer.brand, candidate.brand, candidate.manufacturer)
     )
-    gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
-            if unified_attrs_enabled() else None)
-    if gate:
-        result = apply_gate(result, gate)
+    # A sub-brand learned from Amazon (services/analytics/brand_families.py: Hygea -> PDI) counts as the
+    # brand here, and ONLY here: same exact MPN + learned sub-brand = same item.
+    family = None
+    if mpn_same and not mpn_brand_match:
+        try:
+            from services.analytics.brand_families import family_pair
+            family = family_pair(offer.brand, candidate.brand, candidate.manufacturer)
+        except Exception:  # noqa: BLE001 - no learned pairs available: the rule works as before
+            family = None
+        mpn_brand_match = bool(family)
+    if mpn_brand_match:
+        result = MatchResult(
+            offer_id=offer.offer_id,
+            asin=candidate.asin,
+            confidence=100.0,
+            verdict=Verdict.VERIFIED,
+            signals={"mpn": 100.0, "brand": 100.0},
+            reasons=["mpn_brand_match"],
+        )
+        gate = None
+    else:
+        result = score_models(offer, candidate, method=method, mode=mode)
+        # Shared variant check on the unified attribute boxes: same for weighted, cascade, classifier.
+        barcode_ok = bool(
+            offer.upc and candidate.upc
+            and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
+        )
+        gate = (gate_for_pair(source, normalized, extracted, barcode_confirmed=barcode_ok)
+                if unified_attrs_enabled() else None)
+        if gate:
+            result = apply_gate(result, gate)
     # UPC differs, but brand + exact part number + title match: a likely match that needs a check.  With the
     # run's LLM verifier on it stays approved (the verifier audits every approval; flagged -> Review); without
     # it, nobody checks it, so it goes to Review.
@@ -215,6 +243,13 @@ def score_pair(
             "reasons": list(result.reasons) + ["upc_unconfirmed_needs_check"],
         })
     scores = result_to_scores(result, method, offer, candidate)
+    scores["mpn_brand_match"] = mpn_brand_match
+    if family:
+        scores["brand_family"] = f"{family[0]} → {family[1]}"      # shown in the reason; listed on the run page
+        explanation = scores.get("explanation")
+        if isinstance(explanation, dict):
+            explanation["summary"] = (f"Brand (learned sub-brand {family[0]} → {family[1]}) and MPN match; "
+                                      "verified at 100. Other matching rules were not applied.")
     scores["upc_unconfirmed"] = upc_unconfirmed
     if "mpn_field_conflict" in result.reasons:
         scores["mpn_field_conflict"] = True        # shown as "Item ID / MPN mismatch"
@@ -245,7 +280,7 @@ def score_pair(
 
 # Shown at the end of every score's explanation ("Matcher build ..."), so an export always tells which code
 # scored it.  Bump it with every scoring change.
-MATCHER_BUILD = "2026-11-03c (part no. printed in the listing title counts)"
+MATCHER_BUILD = "2026-11-10a (matching brand and MPN is decisive)"
 
 
 @lru_cache(maxsize=512)
@@ -272,7 +307,7 @@ def build_pair(
     extracted = extracted or {}
     offer = Offer(
         offer_id=str(source.get("row_idx", "")),
-        title=str(source.get("title") or ""),
+        title=str(extracted.get("keyword_specs") or source.get("title") or ""),
         raw_text=str(source.get("title") or ""),
         brand=str(source.get("brand") or extracted.get("brand") or "") or None,
         upc=str(source.get("upc") or "") or None,
@@ -286,7 +321,9 @@ def build_pair(
     candidate = Candidate(
         asin=str(normalized.get("asin") or ""),
         title=str(normalized.get("title") or ""),
+        matching_title=str(normalized.get("matching_title") or "") or None,
         brand=str(normalized.get("brand") or normalized.get("manufacturer") or "") or None,
+        manufacturer=str(normalized.get("manufacturer") or "") or None,
         upc=str(normalized.get("upc") or normalized.get("ean") or normalized.get("gtin") or "") or None,
         mpn=candidate_part_number(normalized) or None,
         attributes={
@@ -326,13 +363,26 @@ def result_to_scores(
     signals = dict(result.signals)
     reasons = list(result.reasons)
     confidence = float(result.confidence)
+    manufacturer_match = brands_match(offer.brand, candidate.manufacturer)
+    brand_match = candidate_brand_matches(
+        offer.brand, candidate.brand, candidate.manufacturer,
+    )
+    manufacturer_factor = (
+        [f"Amazon manufacturer matches input brand: {'yes' if manufacturer_match else 'no'}"]
+        if candidate.manufacturer else []
+    )
     mismatches = [
         reason.removesuffix("_mismatch").replace("_", " ")
         for reason in reasons
         if reason.endswith("_mismatch")
     ]
     explanation: dict[str, Any]
-    if method == "weighted":
+    if "mpn_brand_match" in reasons:
+        explanation = {
+            "summary": "Brand and MPN match; verified at 100. Other matching rules were not applied.",
+            "factors": ["Brand matches", "MPN matches"],
+        }
+    elif method == "weighted":
         names = (("upc", "UPC"), ("mpn", "part number"), ("brand", "brand"), ("title", "title"))
         used = [(label, signals[key]) for key, label in names if key in signals]
         set_aside = "upc_unconfirmed" in reasons           # UPC differs, left out (brand + part no + title)
@@ -364,6 +414,7 @@ def result_to_scores(
         explanation = {
             "summary": summary,
             "factors": [f"{label}: {value:.1f} points" for label, value in used]
+                       + manufacturer_factor
                        + ([f"Hard mismatch: {', '.join(mismatches)}"] if mismatches else []),
         }
     elif method == "cascade":
@@ -402,6 +453,7 @@ def result_to_scores(
             "summary": summary,
             "factors": [
                 f"Brand agreement: {'yes' if signals.get('brand') else 'no'}",
+                *manufacturer_factor,
                 f"UPC match: {'yes' if signals.get('upc') else 'no'}",
                 f"MPN match: {'yes' if signals.get('mpn') else 'no'}",
                 f"Title similarity: {signals.get('fuzzy', 0):.1f}%",
@@ -432,7 +484,8 @@ def result_to_scores(
             offer.upc and candidate.upc
             and upc_matches(normalize_upc(offer.upc), normalize_upc(candidate.upc))
         ),
-        "brand_confirmed": brands_match(offer.brand, candidate.brand),
+        "brand_confirmed": brand_match,
+        "manufacturer_confirmed": manufacturer_match,
         "effective_pack": None,
     }
     for key in (
@@ -613,4 +666,3 @@ def _score_pair_with_unstated_rule(
 
 _score_pair_scorer_only = score_pair
 score_pair = _score_pair_with_unstated_rule
-

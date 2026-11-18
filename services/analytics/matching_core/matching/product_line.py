@@ -44,7 +44,7 @@ def line_tokens(title: Any, brand: Any = "") -> frozenset[str]:
 
 def _part_key(part: Any) -> str:
     """A part number in one comparable form ('M-13216', 'm13216' and '13216' all -> '13216')."""
-    from services.analytics.matching_core.matching.normalize import _without_letter_prefix, base_mpn
+    from services.analytics.data_cleaning.normalize import _without_letter_prefix, base_mpn
     base = base_mpn(str(part or ""))
     return _without_letter_prefix(base) or base
 

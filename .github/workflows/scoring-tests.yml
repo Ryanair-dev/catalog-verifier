@@ -1,0 +1,31 @@
+name: scoring-tests
+
+# Runs the scoring tests on every pull request and on every push to main.
+# To make it block the Merge button: GitHub -> Settings -> Branches -> branch protection rule for main ->
+# "Require status checks to pass" -> select "scoring-tests".
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scoring-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt;
+          elif [ -f pyproject.toml ]; then pip install .;
+          fi
+          pip install pytest
+
+      - name: Scoring tests (offline, no Amazon / Claude calls)
+        run: python -m pytest -q tests/scoring

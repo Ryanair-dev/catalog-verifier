@@ -15,7 +15,7 @@ All SQLite I/O for the whole app lives in `services/database.py` — a single fi
 | `scan_catalog_rows` | Parsed catalog rows per scan |
 | `scan_amazon_rows` | Keepa/Amazon rows per scan, keyed by ASIN |
 | `scan_results` | Per-row verdict + full JSON signals |
-| `analytics_runs` | Analytics run metadata, incl. `max_rank`, `min_rank`, `vetting_mode` (TEXT DEFAULT 'cpg'), `ai_check_status`, `ai_check_done`, `ai_check_total`, `duplicate_rows_removed` (INTEGER DEFAULT 0 — duplicate catalog rows stripped at run creation), `ai_decisions_applied` (INTEGER DEFAULT 0 — set to 1 when Apply AI Decisions is clicked; reset to 0 when a new AI check is started) |
+| `analytics_runs` | Analytics run metadata, incl. `max_rank`, `min_rank`, `vetting_mode` (TEXT DEFAULT 'cpg'), `clean_amazon_titles` (INTEGER DEFAULT 0 — enable AI cleanup of Amazon candidate titles), `ai_check_status`, `ai_check_done`, `ai_check_total`, `duplicate_rows_removed` (INTEGER DEFAULT 0 — duplicate catalog rows stripped at run creation), `ai_decisions_applied` (INTEGER DEFAULT 0 — set to 1 when Apply AI Decisions is clicked; reset to 0 when a new AI check is started) |
 | `scan_candidates` | Per-candidate matches for match-from-Keepa scans. PK: `id`. Unique: `(scan_id, row_idx, asin)`. Columns: `confidence`, `verdict`, `review_status`, `match_method`, `data_json`. |
 | `analytics_catalog_rows` | Source rows per analytics run |
 | `analytics_candidates` | SP-API candidate matches with verdicts; incl. `sales_rank`, `ai_verdict`, `ai_reasoning` |
@@ -66,6 +66,7 @@ Run on every startup; safe to re-run. Current migrations:
 - `analytics_candidates.sales_rank` — INTEGER
 - `analytics_runs.max_rank` — INTEGER DEFAULT 0
 - `analytics_runs.min_rank` — INTEGER DEFAULT 0
+- `analytics_runs.clean_amazon_titles` — INTEGER DEFAULT 0 (AI cleanup of Amazon candidate titles; see `docs/features/offer_analytics.md`)
 - `analytics_candidates.ai_verdict` — TEXT
 - `analytics_candidates.ai_reasoning` — TEXT
 - `analytics_runs.ai_check_status` — TEXT
@@ -92,6 +93,8 @@ Run on every startup; safe to re-run. Current migrations:
 A fresh `sqlite3.connect()` + these 5 PRAGMA statements happen on every `_connect()` call — cheap for one-off calls, but a real cost multiplier if called in a tight per-row loop (see `docs/features/pair_manager.md`'s changelog for a real case where this caused an HTTP 524 on a large import, fixed by batching many rows under one connection).
 
 ## Changelog
+
+**2026-11-09** — Added the additive `analytics_runs.clean_amazon_titles` migration for the Offer Analysis Amazon-title cleanup option. See `docs/features/offer_analytics.md`.
 
 **Changes this session (2026-06-18) — new authoritative Azure SQL schema file `azure_sql_schema.sql` (design artifact, not yet migrated to):**
 - Full audit of the LIVE `catalog_verifier.db` (22 tables — an earlier `SCHEMA.md` was stale, missing `pair_library`/`pair_library_ids` and the newer `analytics_runs` columns) and a from-scratch Azure SQL (T-SQL) target schema, created at the project root. Distinct from an older `schema_azure_sql.sql` (a conservative 1:1 `dbo` port keeping composite PKs and original names). The NEW file follows opinionated rules: everything in the **`analytics` schema**, plural snake_case tables, a surrogate **`id INT IDENTITY(1,1)`** PK on every table with the old natural/composite keys demoted to UNIQUE constraints, `DATETIME2 DEFAULT GETUTCDATE()`, **BIT `is_*`** booleans (renames: `ai_mode→is_ai_mode`, `match_from_keepa→is_match_from_keepa`, `ai_clean_titles→is_ai_clean_titles`, `ai_decisions_applied→is_ai_decisions_applied`), sized `NVARCHAR(n)` (MAX only for per-row JSON), `DECIMAL(5,2)` for 0-100 confidence/score, `_json` suffix on JSON columns (renames: `sources/search_methods/search_terms/sub_brands/aliases/match_methods/passthrough_cols → *_json`), table renames (`abbreviation_library→abbreviation_entries`, `global_asin_cache→global_asin_caches`, `attribute_cache→attribute_caches`, `brand_library→brand_entities`, `pair_library→pair_library_entries`), indexes on every FK/asin/upc/ean/mpn + the analytics_candidates covering index `(run_id,verdict,confidence DESC)`, and explicit FK `ON DELETE` (adds the **missing** `brand_analytics_items→brand_analytics_runs` CASCADE and a new `pair_library_ids→pair_library_entries` CASCADE). Includes a commented-out DROP block, `CREATE SCHEMA` guard, `analytics.scan_stats` view, settings seed, and 208 idempotent `system` abbreviation seeds (generated from the live DB).

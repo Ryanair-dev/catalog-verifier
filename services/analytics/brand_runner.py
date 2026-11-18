@@ -51,7 +51,7 @@ from services.analytics.product_categorizer import (
     HOME, GARDEN, TOOLS, SPORTS, CLOTHING, AUTOMOTIVE,
     ELECTRONICS, ARTS, TOYS, ENTERTAINMENT,
 )
-from services.spapi import lease_catalog_api, sp_api_configured
+from services.spapi import lease_catalog_api
 
 log = logging.getLogger(__name__)
 

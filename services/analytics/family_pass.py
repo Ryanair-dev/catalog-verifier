@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import sqlite3
 import sys
 from collections import Counter, defaultdict
 from typing import Any
@@ -235,6 +234,12 @@ def plan_changes(vendor_rows: list[dict], candidates: list[dict], families: dict
                           "base_status": _status(c), "base_conf": c.get("confidence")})
             continue
         key = _key(c)
+        scores = (c.get("data") or {}).get("scores") or {}
+        if scores.get("mpn_brand_match"):
+            plans.append({"c": c, "human": False, "key": key, "target_verdict": "verified",
+                          "target_status": "", "kind": None, "reason": "", "base_verdict": "verified",
+                          "base_status": "", "base_conf": 100.0})
+            continue
         base_verdict, base_status, base_conf = _base(c)
         pair = fam["pairs"].get(key) or {}
         target_verdict, target_status, kind, reason = base_verdict, base_status, None, ""

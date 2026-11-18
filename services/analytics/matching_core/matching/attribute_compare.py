@@ -8,8 +8,8 @@ from enum import Enum
 from services.analytics.matching_core.matching.flags import EXTENDED_COUNTS
 from services.analytics.matching_core.matching.patterns import (
     COLOR_WORDS,
-    GARMENT_NORM,
-    GARMENT_SIZE_RE,
+    garment_relation,
+    garment_sizes,
     PACK_COUNT_RE,
     SIZE_RE,
     TRANSPARENCY_WORDS,
@@ -58,10 +58,23 @@ def _volume_ml(text: str) -> float | None:
     return float(m.group(1)) * factor if factor else None
 
 
+SIZE_UNCLEAR_RATIO = 10.0   # one volume more than 10x the other: probably not a real size
+
+
+def volume_unclear(offer: Offer, cand: Candidate) -> bool:
+    """The two volumes make no sense next to each other (Amazon's 'Compleat 1.4mL' means calories per mL,
+    the vendor's '8.45 fl oz' is the bottle).  Such a number is no proof of a different product: unclear."""
+    s, a = _texts(offer, cand)
+    sv, av = _volume_ml(s), _volume_ml(a)
+    if not sv or not av:
+        return False
+    return max(sv, av) / min(sv, av) > SIZE_UNCLEAR_RATIO
+
+
 def cmp_volume(offer: Offer, cand: Candidate) -> Cmp:
     s, a = _texts(offer, cand)
     sv, av = _volume_ml(s), _volume_ml(a)
-    if sv is None or av is None:
+    if sv is None or av is None or volume_unclear(offer, cand):
         return Cmp.UNKNOWN
     return Cmp.MATCH if _within_tolerance(sv, av) else Cmp.MISMATCH
 
@@ -84,22 +97,17 @@ def cmp_color(offer: Offer, cand: Candidate) -> Cmp:
 
 
 def _garment_sizes(text: str) -> set[str]:
-    out: set[str] = set()
-    for m in GARMENT_SIZE_RE.finditer(text or ""):
-        key = m.group(1).lower().replace("-", "").replace(" ", "")
-        norm = GARMENT_NORM.get(key)
-        if norm:
-            out.add(norm)
-    return out
+    # shared reader: size words, full-calf sizes (XLFC) and lone S/M/L in a size position
+    return set(garment_sizes(text))
 
 
 def cmp_size(offer: Offer, cand: Candidate) -> Cmp:
     """Garment/letter sizes (S/M/L/XL). Physical volume is cmp_volume."""
     s, a = _texts(offer, cand)
-    ss, aa = _garment_sizes(s), _garment_sizes(a)
-    if not ss or not aa:
+    rel = garment_relation(_garment_sizes(s), _garment_sizes(a))
+    if rel is None:
         return Cmp.UNKNOWN
-    return Cmp.MATCH if (ss & aa) else Cmp.MISMATCH
+    return Cmp.MATCH if rel == "match" else Cmp.MISMATCH
 
 
 def _pack_count(text: str) -> int | None:

@@ -86,7 +86,6 @@ class QueryAgent:
         response = self.client.messages.create(
             model=MODEL,
             max_tokens=max_tokens,
-            temperature=0,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
@@ -112,8 +111,12 @@ class QueryAgent:
     def _build_query(self, offer: Offer, stats: dict[str, Any]) -> tuple[str, str]:
         text = _offer_text(offer)
         output = self._call(BUILD_SYSTEM, text, stats, "build_query", max_tokens=BUILD_MAX_TOKENS)
-        query = str(output.get("search_query") or "").strip()
-        comparison_title = str(output.get("comparison_title") or "").strip()
+        search_keyword = str(output.get("search_keyword") or "").strip()
+        keyword_specs = str(output.get("keyword_specs") or "").strip()
+        query = str(output.get("search_query") or search_keyword).strip()
+        comparison_title = str(output.get("comparison_title") or keyword_specs).strip()
+        stats["search_keyword"] = search_keyword or query
+        stats["keyword_specs"] = keyword_specs or comparison_title
         # NEW: what the same step read from the title (checked later by attr_ai.py, never trusted as is)
         stats["expansions"] = output.get("expansions") if isinstance(output.get("expansions"), list) else []
         stats["attributes"] = output.get("attributes") if isinstance(output.get("attributes"), dict) else {}
@@ -151,6 +154,8 @@ class QueryAgent:
         return {
             "comparison_title": comparison_title,
             "search_query": query,
+            "search_keyword": stats.get("search_keyword") or query,
+            "keyword_specs": stats.get("keyword_specs") or comparison_title,
             "expansions": stats.get("expansions") or [],
             "attributes": stats.get("attributes") or {},
             "llm_calls": stats["llm_calls"],

@@ -41,6 +41,10 @@ from services.analytics import parse_source_rows, start_analytics_run
 from pydantic import BaseModel
 from services.analytics.runner import (
     _clean_search_query,
+    clear_orphan_post_ai,
+    post_run_ai_estimate,
+    start_post_run_ai,
+    stop_post_run_ai,
     request_pause,
     request_stop,
     resume_run,
@@ -307,13 +311,17 @@ def get_run_detail(
         # Verdict-filtered fetches skip them — the client already has them.
         if not verdict:
             rows = conn.execute(
-                "SELECT row_idx, data_json, query_agent_json FROM analytics_catalog_rows "
+                "SELECT row_idx, data_json, extracted_json, query_agent_json FROM analytics_catalog_rows "
                 "WHERE run_id=? ORDER BY row_idx",
                 (run_id,),
             ).fetchall()
             catalog_rows = []
             for row in rows:
                 catalog_row = json.loads(row["data_json"])
+                try:
+                    catalog_row["extracted"] = json.loads(row["extracted_json"] or "{}")
+                except (ValueError, TypeError):
+                    catalog_row["extracted"] = {}
                 try:
                     catalog_row["query_agent"] = json.loads(row["query_agent_json"] or "null")
                 except (ValueError, TypeError):
@@ -637,12 +645,51 @@ def get_run_detail(
         "query_agent": query_stats,
         "llm_verifier": verifier_stats,
     }
+    if run_d.get("clean_amazon_titles"):
+        from services.analytics.data_cleaning.amazon_title_cleaner import run_usage
+        run_d["amazon_title_cleaning_usage"] = run_usage(run_id)
     # AI provider problems during the run (out of credits, rate limit, bad key, outage) for the run page banner
     try:
         notices = json.loads(run_d.get("ai_notices") or "[]")
     except (TypeError, ValueError):
         notices = []
     run_d["ai_notices"] = notices if isinstance(notices, list) else []
+
+    # Post-run AI step left "running" by a server restart -> stopped, so the page does not spin forever
+    if run_d.get("post_ai_status") == "running" and clear_orphan_post_ai(run_id):
+        run_d["post_ai_status"] = "stopped"
+
+    # Vendor rows with NO candidate yet (the run page's "Not found" list; shrinks live while the AI search
+    # runs).  Only on the full load, like catalog_rows.
+    not_found: dict[str, Any] | None = None
+    if not verdict:
+        with database._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            nf_rows = conn.execute(
+                "SELECT r.row_idx, r.data_json, r.extracted_json, r.query_agent_json "
+                "FROM analytics_catalog_rows r WHERE r.run_id=? AND NOT EXISTS ("
+                "  SELECT 1 FROM analytics_candidates c WHERE c.run_id=r.run_id AND c.row_idx=r.row_idx) "
+                "ORDER BY r.row_idx",
+                (run_id,),
+            ).fetchall()
+        nf_list: list[dict[str, Any]] = []
+        for r in nf_rows[:1000]:
+            try:
+                d = json.loads(r["data_json"] or "{}")
+                ext = json.loads(r["extracted_json"] or "{}") or {}
+                trace = json.loads(r["query_agent_json"] or "null")
+            except (TypeError, ValueError):
+                d, ext, trace = {}, {}, None
+            agent = ""
+            if isinstance(trace, dict) and trace.get("used_agent"):
+                agent = "error" if trace.get("error") else "tried"
+            nf_list.append({
+                "row_idx": r["row_idx"], "upc": d.get("upc") or "", "itemid": d.get("itemid") or "",
+                "title": d.get("title") or "", "brand": d.get("brand") or "",
+                "search_keyword": ext.get("search_keyword") or "",
+                "agent": agent, "agent_error": (trace or {}).get("error") if agent == "error" else "",
+            })
+        not_found = {"count": len(nf_rows), "rows": nf_list}
 
     resp: dict[str, Any] = {
         "run": run_d,
@@ -651,6 +698,14 @@ def get_run_detail(
         "ai_verdict_counts": ai_verdict_counts,
         "asin_conflicts": asin_conflicts,
     }
+    if not_found is not None:
+        resp["not_found"] = not_found
+        try:                                   # sub-brands this run learned or used (brand_families.py)
+            from services.analytics.brand_families import pairs_for_run
+            resp["learned_brands"] = pairs_for_run(run_id)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not list learned sub-brands for run %s", run_id)
+            resp["learned_brands"] = []
     if ai_filtered_count is not None:
         resp["ai_filtered_count"] = ai_filtered_count
     return resp
@@ -1098,6 +1153,9 @@ def start_ai_check_endpoint(run_id: int, body: dict = Body(...)) -> dict[str, An
 
     if ai_check_running(run_id):
         return {"ok": True, "already_running": True}
+    from services.analytics.runner import post_run_ai_running
+    if post_run_ai_running(run_id):
+        raise HTTPException(status_code=400, detail="Another AI step is running for this run; wait for it to finish")
 
     # Reset the "applied" flag so the Apply button becomes available again after a re-check.
     with database._LOCK, database._connect() as conn:
@@ -1186,6 +1244,49 @@ def stop_eligibility_endpoint(run_id: int) -> dict[str, Any]:
                 )
             return {"ok": True, "orphan_cleared": True}
     return {"ok": True, "was_running": running}
+
+
+# ── Learned sub-brands (Hygea -> PDI ...) ─────────────────────────────────────
+@router.post("/brand_families/remove")
+def remove_brand_family(body: dict = Body(...)) -> dict[str, Any]:
+    """Body: {"sub_key": "hygea", "parent_key": "pdi"}.  The pair is never used or learned again;
+    re-score a run to apply it there."""
+    from services.analytics.brand_families import remove_pair
+    sub_key = str(body.get("sub_key") or "").strip()
+    parent_key = str(body.get("parent_key") or "").strip()
+    if not sub_key or not parent_key:
+        raise HTTPException(status_code=400, detail="sub_key and parent_key are required")
+    if not remove_pair(sub_key, parent_key):
+        raise HTTPException(status_code=404, detail="No such learned sub-brand")
+    return {"ok": True}
+
+
+# ── Post-run AI actions: LLM query fallback / LLM approval verifier ───────────
+# Used to be wizard options that ran inside the search; now buttons on a Complete run.
+
+@router.get("/runs/{run_id}/post_ai/estimate")
+def post_ai_estimate(run_id: int, include_tried: bool = False) -> dict[str, Any]:
+    """Rows / approvals each step would send and the estimated cost."""
+    with database._connect() as conn:
+        if not conn.execute("SELECT id FROM analytics_runs WHERE id=?", (run_id,)).fetchone():
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return post_run_ai_estimate(run_id, include_tried=bool(include_tried))
+
+
+@router.post("/runs/{run_id}/post_ai")
+def start_post_ai(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """Body: {"step": "fallback" | "verifier", "include_tried": false}"""
+    step = str(body.get("step") or "").strip().lower()
+    ok, reason = start_post_run_ai(run_id, step, include_tried=bool(body.get("include_tried")))
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    return {"ok": True, "started": True, "step": step}
+
+
+@router.post("/runs/{run_id}/post_ai/stop")
+def stop_post_ai(run_id: int) -> dict[str, Any]:
+    """Stop the running post-run AI step after its current row / approval."""
+    return {"ok": True, "was_running": stop_post_run_ai(run_id)}
 
 
 @router.post("/runs/{run_id}/ai_check/apply")
@@ -1562,7 +1663,8 @@ def export_analytics_run(
                    json_extract(data_json, '$.itemid') AS itemid,
                    json_extract(data_json, '$.title')  AS title,
                    json_extract(data_json, '$.brand')  AS brand,
-                   json_extract(data_json, '$.raw')    AS raw_json
+                   json_extract(data_json, '$.raw')    AS raw_json,
+                   extracted_json
             FROM analytics_catalog_rows
             WHERE run_id=? ORDER BY row_idx
             """,
@@ -1586,6 +1688,9 @@ def export_analytics_run(
                    COALESCE(
                        json_extract(data_json, '$.amazon.title'), ''
                    ) AS amz_title,
+                   COALESCE(
+                       json_extract(data_json, '$.amazon.matching_title'), ''
+                   ) AS cleaned_amz_title,
                    COALESCE(
                        json_extract(data_json, '$.amazon.brand'),
                        json_extract(data_json, '$.amazon.manufacturer'),
@@ -1618,6 +1723,10 @@ def export_analytics_run(
             d["_raw"] = json.loads(d.get("raw_json") or "{}") if pt_cols else {}
         except (ValueError, TypeError):
             d["_raw"] = {}
+        try:
+            d["_extracted"] = json.loads(d.get("extracted_json") or "{}")
+        except (ValueError, TypeError):
+            d["_extracted"] = {}
         src_by_idx[r["row_idx"]] = d
  
     found_idxs = {c["row_idx"] for c in cand_rows}
@@ -1632,9 +1741,13 @@ def export_analytics_run(
             return False
         return True
  
+    keyword_cols = ["Search Keyword", "Search Keyword + Spec"] if run_d.get("ai_clean_titles") else []
     cand_hdr = [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-        "ASIN", "Amazon Title", "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
+    ] + keyword_cols + [
+        "ASIN", "Amazon Title",
+    ] + (["Amazon Item Name"] if run_d.get("clean_amazon_titles") else []) + [
+        "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
         "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
@@ -1670,8 +1783,13 @@ def export_analytics_run(
             src.get("itemid") or "",
             src.get("title") or "",
             src.get("brand") or "",
+        ] + ([
+            (src.get("_extracted") or {}).get("search_keyword") or "",
+            (src.get("_extracted") or {}).get("keyword_specs") or "",
+        ] if run_d.get("ai_clean_titles") else []) + [
             c["asin"] or "",
             c["amz_title"] or "",
+        ] + ([c["cleaned_amz_title"] or ""] if run_d.get("clean_amazon_titles") else []) + [
             c["amz_brand"] or "",
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
@@ -1701,7 +1819,7 @@ def export_analytics_run(
     ws_nf = wb.create_sheet("Not Found")
     ws_nf.append(_hdr_row(ws_nf, [
         "Row", "Source UPC", "Source Item ID", "Source Title", "Source Brand",
-    ] + pt_cols))
+    ] + keyword_cols + pt_cols))
     for idx in sorted(src_by_idx.keys()):
         if idx in found_idxs:
             continue
@@ -1714,7 +1832,10 @@ def export_analytics_run(
             src.get("itemid") or "",
             src.get("title") or "",
             src.get("brand") or "",
-        ] + pt_values))
+        ] + ([
+            (src.get("_extracted") or {}).get("search_keyword") or "",
+            (src.get("_extracted") or {}).get("keyword_specs") or "",
+        ] if run_d.get("ai_clean_titles") else []) + pt_values))
  
     buf = io.BytesIO()
     wb.save(buf)
@@ -1759,6 +1880,7 @@ async def create_analytics_run(
     use_query_agent: bool = Form(False),
     use_llm_verifier: bool = Form(False),
     use_ai_reader: bool = Form(False),           # AI title reader (abbreviations), Claude
+    clean_amazon_titles: bool = Form(False),
     sheet_name: str = Form(""),
     passthrough_cols: str = Form(""),   # JSON array of vendor column header names to carry into export
 ) -> dict[str, Any]:
@@ -1794,11 +1916,11 @@ async def create_analytics_run(
             status_code=400,
             detail="scoring_method must be one of: weighted, cascade, classifier",
         )
-    if (use_query_agent or use_llm_verifier or use_ai_reader) and not os.getenv("ANTHROPIC_API_KEY"):
+    if (use_query_agent or use_llm_verifier or use_ai_reader or clean_amazon_titles) and not os.getenv("ANTHROPIC_API_KEY"):
         raise HTTPException(
             status_code=400,
-            detail="Set ANTHROPIC_API_KEY in .env to use the LLM query fallback, the LLM verifier "
-                   "or the AI title reader",
+            detail="Set ANTHROPIC_API_KEY in .env to use the LLM query fallback, the LLM verifier, "
+                   "the AI title reader, or Amazon title cleanup",
         )
     if ai_clean_titles and not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("OPENAI_API_KEY")):
         raise HTTPException(
@@ -1910,6 +2032,7 @@ async def create_analytics_run(
         use_query_agent=bool(use_query_agent),
         use_llm_verifier=bool(use_llm_verifier),
         use_ai_reader=bool(use_ai_reader),
+        clean_amazon_titles=bool(clean_amazon_titles),
         brand_col=saved_brand_col,
         brand_mode=saved_brand_mode,
         passthrough_cols=json.dumps(pt_cols_validated) if pt_cols_validated else "",

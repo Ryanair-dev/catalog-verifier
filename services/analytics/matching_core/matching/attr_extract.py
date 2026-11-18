@@ -28,6 +28,8 @@ except Exception:  # noqa: BLE001 - the reader works without it, the category is
 from services.analytics.matching_core.matching.patterns import (
     GARMENT_NORM,
     GARMENT_SIZE_RE,
+    full_calf_sizes,
+    garment_sizes,
     SIZE_RE,
     VOLUME_TO_ML,
     WEIGHT_RE,
@@ -250,12 +252,8 @@ def _weight_g(text: str) -> float | None:
 
 
 def _garment(text: str) -> str | None:
-    found: list[str] = []
-    for m in GARMENT_SIZE_RE.finditer(text or ""):
-        norm = GARMENT_NORM.get(m.group(1).lower().replace("-", "").replace(" ", ""))
-        if norm and norm not in found:
-            found.append(norm)
-    return "/".join(found) or None
+    # shared reader: size words, full-calf sizes (XLFC) and lone S/M/L in a size position ("- M / Regular")
+    return "/".join(garment_sizes(text)) or None
 
 
 
@@ -267,6 +265,9 @@ def _size_field(text: Any) -> str | None:
     """Clothing size from a field that is meant to hold a size: 'Medium', 'M', 'S/M', 'XS/S', 'XL'.
     Size words (Small, X-Large ...) are always read.  Bare letters (S, M, L) are trusted only when
     the whole field is nothing but sizes, never inside a title or next to other words ("1 L")."""
+    full_calf = full_calf_sizes(str(text or ""))       # "X-Large Full Calf" is XLFC, not XL
+    if full_calf:
+        return "/".join(full_calf)
     matches = list(_SIZE_TOKEN.finditer(str(text or "")))
 
     def code_of(m: re.Match) -> str | None:
@@ -515,7 +516,7 @@ def _agree(field: str, a: Any, b: Any) -> bool:
         return abs(x - y) <= 0.02 * max(abs(x), abs(y), 1e-9)
     words = lambda v: set(_norm(v).replace("/", " ").split())
     if field == "model":                                                 # part numbers: 'M-13216' = '13216'
-        from services.analytics.matching_core.matching.normalize import mpns_match
+        from services.analytics.data_cleaning.normalize import mpns_match
         return any(mpns_match(x, y) for x in str(a).split("/") for y in str(b).split("/"))
     if field in ("finish", "type"):
         return bool(set(str(a).split("/")) & set(str(b).split("/")))      # whole phrases

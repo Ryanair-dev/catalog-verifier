@@ -4028,9 +4028,7 @@
   // The rest of the pipeline endpoints stream in behind the Upload buttons
   // which re-use the existing 4-step import wizard — wired in a later pass.
 
-  // AI title-clean cost estimator.
-  // gpt-4o-mini pricing: $0.15/1M input tokens, $0.60/1M output tokens.
-  // Each title call: ~100 tokens in (system prompt + title) + ~20 tokens out.
+  // AI keyword-extraction cost estimate for the configured provider.
   function _updateAiCostHint() {
     const hint = $("#awiz-ai-cost-hint");
     if (!hint) return;
@@ -4040,13 +4038,11 @@
     const header  = (state.awiz?.headerRowIdx ?? 0) + 1;
     const rows    = Math.max(0, total - header);
     if (rows === 0) { hint.style.display = "none"; return; }
-    const inputCost  = rows * 100 * (0.15  / 1_000_000);
-    const outputCost = rows * 20  * (0.60  / 1_000_000);
-    const total_usd  = inputCost + outputCost;
-    const label = total_usd < 0.01
-      ? "< $0.01"
-      : `~$${total_usd.toFixed(2)}`;
-    hint.textContent = `est. ${label} for ${rows.toLocaleString()} rows`;
+    const format = value => value < 0.01 ? "<$0.01" : `~$${value.toFixed(2)}`;
+    // ~100 output tokens per row: the keyword fields + the abbreviation pairs of the merged title reader
+    const claudeCost = rows * (100 * (0.80 / 1_000_000) + 100 * (4.00 / 1_000_000));
+    const openaiCost = rows * (100 * (0.15 / 1_000_000) + 100 * (0.60 / 1_000_000));
+    hint.textContent = `est. Claude ${format(claudeCost)} / GPT ${format(openaiCost)} for ${rows.toLocaleString()} rows`;
     hint.style.display = "inline";
   }
 
@@ -4126,7 +4122,7 @@
       );
     }
     if (!costLines.length) {
-      costLines.push("<div><b>Optional LLM agents:</b> off; estimated cost $0.</div>");
+      costLines.push("<div><b>LLM query fallback / approval verifier:</b> not part of the search any more; start them from the run page when it finishes, which shows their cost first.</div>");
     }
 
     const queryTimeMax = queryAgent ? rows * 12 : 0;
@@ -4330,7 +4326,7 @@
                 ${r.use_query_agent ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fef3c7;color:#92400e;">query agent</span>' : ''}
                 ${r.use_llm_verifier ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#dcfce7;color:#166534;">LLM verifier</span>' : ''}
                 ${r.use_ai_reader ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#ede9fe;color:#5b21b6;">AI title reader</span>' : ''}
-                ${r.ai_clean_titles ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#e0f2fe;color:#075985;">AI reads titles</span>' : ''}
+                ${r.ai_clean_titles ? '<span style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#e0f2fe;color:#075985;">AI keywords</span>' : ''}
                 ${(() => { try { return JSON.parse(r.ai_notices || "[]").length; } catch { return 0; } })() ? '<span title="An AI step could not work in this run; open it for details" style="display:inline-block;margin-left:4px;padding:1px 7px;font-size:10px;font-weight:700;border-radius:10px;vertical-align:middle;background:#fee2e2;color:#991b1b;">⚠ AI problem</span>' : ''}
               </div>
               <div class="text-xs mt-0.5" style="color: #6b7480;">
@@ -4545,6 +4541,14 @@
         state.analyticsRun.tabPageData = {};
       }
       state.analyticsRun._lastStatus = j.run?.status;
+      // A post-run AI step (Find missing with AI / AI audit approvals) changes candidates while the run stays
+      // Complete: refresh the verdict tabs whenever its progress moves, so results show up live.
+      const postAiKey = `${j.run?.post_ai_status || ""}|${j.run?.post_ai_done || 0}|` +
+        `${j.run?.ai_check_status || ""}|${j.run?.ai_decisions_applied || 0}`;
+      if (state.analyticsRun._lastPostAiKey && state.analyticsRun._lastPostAiKey !== postAiKey) {
+        state.analyticsRun.tabPageData = {};
+      }
+      state.analyticsRun._lastPostAiKey = postAiKey;
       renderAnalyticsRunDetail(j);
 
       // Auto-fetch the current verdict tab if its server-paginated page is missing.
@@ -4554,9 +4558,10 @@
         await _fetchVerdictPage(currentTab, state.analyticsRun.page || 1);
       }
 
-      // Poll while the catalog search or scorer pipeline is active.
+      // Poll while the catalog search or scorer pipeline is active (or a post-run AI step runs).
       _clearAnalyticsRunPoll();
-      if (_runIsActive(j.run || {})) {
+      if (_runIsActive(j.run || {}) || (j.run || {}).post_ai_status === "running"
+          || (j.run || {}).ai_check_status === "Running") {
         state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 2000);
       }
     } catch (e) {
@@ -4620,6 +4625,21 @@
   });
 
   // Build a short human-readable reason explaining the verdict.
+  // The AI check's suggestion for one candidate (ai_verdict / ai_reasoning), shown under the reason.
+  function _aiCheckBadge(c) {
+    const v = c.ai_verdict;
+    if (!v) return "";
+    const look = {
+      approve:   ["#dcfce7", "#166534", "AI suggests: approve"],
+      reject:    ["#fee2e2", "#991b1b", "AI suggests: reject"],
+      uncertain: ["#f1f5f9", "#475569", "AI: uncertain"],
+    }[v] || ["#f1f5f9", "#475569", `AI: ${v}`];
+    return `<div style="margin-top:4px;white-space:normal;">
+      <span style="display:inline-block;padding:1px 7px;font-size:0.68rem;font-weight:700;border-radius:4px;background:${look[0]};color:${look[1]};">${escapeHtml(look[2])}</span>
+      ${c.ai_reasoning ? `<span style="color:#64748b;"> ${escapeHtml(c.ai_reasoning)}</span>` : ""}
+    </div>`;
+  }
+
   function _verdictReason(c) {
     const sc = (c.data && c.data.scores) || {};
     const v  = (c.verdict || "").toLowerCase();
@@ -4639,7 +4659,7 @@
     if (audit.flagged) {
       return `LLM verifier: ${(audit.reason || "flagged for review").trim()}`;
     }
-    if (audit.error) return "LLM verifier could not check this approval";
+    if (audit.error) return `LLM verifier could not check this approval: ${String(audit.error).slice(0, 200)}`;
 
     // Hard-reject signals (checked before confidence)
     if (sc.size_mismatch)          return "Size mismatch";
@@ -4679,6 +4699,9 @@
       const p = sc.effective_pack;
       return p > 1 ? `Pack ×${p} on Amazon` : "Pack mismatch";
     }
+
+    // brand + MPN rule through a sub-brand learned from Amazon (Hygea → PDI)
+    if (sc.brand_family && v === "verified") return `Brand + MPN match (sub-brand ${sc.brand_family})`;
 
     // UPC match contributed to score
     if (sc.upc_match) {
@@ -4750,6 +4773,9 @@
   function renderAnalyticsRunDetail(j) {
     const run  = j.run || {};
     const cand = Array.isArray(j.candidates) ? j.candidates : [];
+    document.querySelectorAll(".analytics-keyword-column").forEach(column => {
+      column.classList.toggle("hidden", !run.ai_clean_titles);
+    });
 
     const modeLabel = run.vetting_mode === "medical" ? "Medical" : "CPG";
     const modeBadgeColor = run.vetting_mode === "medical" ? "#dbeafe" : "#f0fdf4";
@@ -4777,6 +4803,19 @@
         `LLM verifier: ${verifierStats.approvals_audited} audited, ` +
         `${verifierStats.flagged} flagged${verifierStats.errors ? `, ${verifierStats.errors} errors` : ""}`
       );
+    }
+    if (run.clean_amazon_titles) {
+      const cleanUsage = run.amazon_title_cleaning_usage || {};
+      if (cleanUsage.titles) {
+        agentSummary.push(
+          `Amazon item cleaning: ${Number(cleanUsage.titles).toLocaleString()} unique titles · ` +
+          `${Number(cleanUsage.title_chars || 0).toLocaleString()} title characters · ` +
+          `${(Number(cleanUsage.tokens_in || 0) + Number(cleanUsage.tokens_out || 0)).toLocaleString()} tokens · ` +
+          `$${Number(cleanUsage.cost_usd || 0).toFixed(4)} actual`
+        );
+      } else {
+        agentSummary.push("Amazon item cleaning: actual cost appears as batches finish");
+      }
     }
     $("#analytics-run-subtitle").textContent =
       [methods, when, `${run.total_catalog_items || 0} catalog rows`, ...agentSummary]
@@ -4989,7 +5028,268 @@
       const canFilterBrands = s4 === "complete" || s4 === "paused" || s4 === "stopped" || s4 === "error";
       filterBrandsBtn.classList.toggle("hidden", !canFilterBrands);
     }
+
+    _renderPostAi(run, j);
+    _renderLearnedBrands(j);
+    // the AI tools row above the results: shown only when one of its buttons is visible
+    const aiBar = $("#analytics-run-ai-toolbar");
+    if (aiBar) aiBar.classList.toggle("hidden",
+      ![...aiBar.querySelectorAll("button")].some(b => !b.classList.contains("hidden")));
   }
+
+  // ---- Sub-brands learned from Amazon (services/analytics/brand_families.py) --------------------------
+  function _renderLearnedBrands(j) {
+    const box = $("#analytics-run-brands-card");
+    if (!box) return;
+    const pairs = Array.isArray(j.learned_brands) ? j.learned_brands : [];
+    box.classList.toggle("hidden", !pairs.length);
+    if (!pairs.length) return;
+    const runId = state.analyticsRun.id;
+    box.innerHTML =
+      `<div style="font-weight:700;margin-bottom:4px;">Learned brands</div>` +
+      `<div style="color:#15803d;margin-bottom:6px;">These count as the same brand: learned from Amazon (the same MPN listed with both brands) or confirmed by AI. Remove one if it is wrong.</div>` +
+      pairs.map(p => {
+        const removed = p.status === "removed";
+        const where = p.learned_in_run === runId ? "learned in this run" : `learned in run ${p.learned_in_run}`;
+        return `<div style="display:flex;align-items:center;gap:8px;margin:2px 0;${removed ? "opacity:0.55;" : ""}">
+          <b>${escapeHtml(p.sub_brand)} → ${escapeHtml(p.parent_brand)}</b>
+          <span style="color:#4b5563;">(${p.source === "ai" ? "AI: " + escapeHtml(p.note || "same brand family") : "MPN " + escapeHtml(p.evidence_mpn || "")}, ${escapeHtml(where)}${p.used_in_this_run ? ", used here" : ""})</span>
+          ${removed ? '<span style="color:#991b1b;">removed — re-score to apply</span>'
+            : `<button type="button" class="btn btn-secondary text-xs" data-brand-remove="${escapeHtml(p.sub_key)}|${escapeHtml(p.parent_key)}" style="padding:1px 8px;">Remove</button>`}
+        </div>`;
+      }).join("");
+    box.querySelectorAll("[data-brand-remove]").forEach(btn => btn.addEventListener("click", async () => {
+      const [sub_key, parent_key] = btn.dataset.brandRemove.split("|");
+      const ok = await showConfirm({
+        title: "Remove this sub-brand?",
+        message: "It will not be used or learned again. Re-score this run to update its verdicts.",
+        confirmText: "Remove", cancelText: "Cancel",
+      });
+      if (!ok) return;
+      try {
+        await api("/api/analytics/brand_families/remove", { method: "POST", body: { sub_key, parent_key } });
+        await fetchAnalyticsRunDetail();
+      } catch (e) { showToast("Could not remove: " + (e.message || e), "error"); }
+    }));
+  }
+
+  // ---- Post-run AI steps (LLM query fallback / LLM approval verifier) -------
+  // They used to be wizard options inside the search; now the run finishes first, the user sees what was
+  // found and what was not ("Not found" list), and starts them here.
+  const _POST_AI_LABEL = { fallback: "Find missing with AI", verifier: "AI audit approvals" };
+
+  function _renderPostAi(run, j) {
+    const s = (run.status || "").toLowerCase();
+    const complete = s === "complete";
+    const running = run.post_ai_status === "running";
+    const step = run.post_ai_step || "";
+    const checking = run.ai_check_status === "Running";          // the AI check of Review items
+
+    // header buttons: only on a Complete run, hidden while one AI step works
+    $("#analytics-run-ai-fallback")?.classList.toggle("hidden", !complete || running || checking);
+    $("#analytics-run-ai-verify")?.classList.toggle("hidden", !complete || running || checking);
+    $("#analytics-run-post-ai-stop")?.classList.toggle("hidden", !running);
+    _renderAiCheck(run, j, complete, running);
+
+    // progress card
+    const card = $("#analytics-run-post-ai-card");
+    if (card) {
+      card.classList.toggle("hidden", !running);
+      if (running) {
+        const d = run.post_ai_done || 0, t = run.post_ai_total || 0;
+        $("#analytics-run-post-ai-phase").textContent = `${_POST_AI_LABEL[step] || "AI step"}…`;
+        $("#analytics-run-post-ai-sub").textContent = run.post_ai_message || "";
+        $("#analytics-run-post-ai-counts").textContent = t > 0 ? `${d.toLocaleString()} / ${t.toLocaleString()}` : "Starting…";
+        $("#analytics-run-post-ai-bar").style.width = (t > 0 ? Math.min(100, (d / t) * 100) : 0) + "%";
+      }
+    }
+    // last result line (done / stopped / error), until the next step starts
+    const res = $("#analytics-run-post-ai-result");
+    if (res) {
+      const last = !running && run.post_ai_status && run.post_ai_message;
+      res.classList.toggle("hidden", !last);
+      if (last) {
+        const err = run.post_ai_status === "error";
+        res.style.background = err ? "#fef2f2" : "#f5f3ff";
+        res.style.borderColor = err ? "#fecaca" : "#ddd6fe";
+        res.style.color = err ? "#991b1b" : "#5b21b6";
+        res.textContent = `${_POST_AI_LABEL[step] || "AI step"} — ${run.post_ai_message}`;
+      }
+    }
+
+    // "Not found" list: vendor rows with no candidate (shrinks live while the AI search runs)
+    const nf = j.not_found;
+    const nfCard = $("#analytics-run-notfound-card");
+    if (!nfCard || !nf) return;
+    const showList = (complete || running || s === "paused" || s === "stopped" || s === "error") && nf.count > 0;
+    nfCard.classList.toggle("hidden", !showList);
+    if (!showList) return;
+    $("#analytics-run-notfound-count").textContent = nf.count.toLocaleString();
+    const tried = nf.rows.filter(r => r.agent === "tried").length;
+    $("#analytics-run-notfound-note").textContent =
+      (tried ? `${tried.toLocaleString()} already searched by AI` : "") +
+      (nf.count > nf.rows.length ? `${tried ? " · " : ""}first ${nf.rows.length.toLocaleString()} shown` : "");
+    $("#analytics-run-notfound-ai")?.classList.toggle("hidden", !complete || running);
+    const body = $("#analytics-run-notfound-body");
+    if (body) {
+      const aiCell = r => r.agent === "tried" ? '<span style="color:#64748b;">searched, nothing found</span>'
+        : r.agent === "error" ? `<span style="color:#b91c1c;" title="${escapeHtml(r.agent_error || "")}">failed — will retry</span>`
+        : (running && step === "fallback") ? '<span style="color:#7c3aed;">queued…</span>'
+        : '<span style="color:#cbd5e1;">—</span>';
+      body.innerHTML = nf.rows.map(r => `
+        <tr>
+          <td>${Number(r.row_idx) + 1}</td>
+          <td>${escapeHtml(r.upc || "")}${r.upc && r.itemid ? "<br>" : ""}<span style="color:#64748b;">${escapeHtml(r.itemid || "")}</span></td>
+          <td>${escapeHtml(r.title || "")}</td>
+          <td>${escapeHtml(r.brand || "")}</td>
+          <td>${escapeHtml(r.search_keyword || "")}</td>
+          <td class="text-xs">${aiCell(r)}</td>
+        </tr>`).join("");
+    }
+  }
+
+  async function _startPostAi(step) {
+    const id = state.analyticsRun.id; if (!id) return;
+    let est = null;
+    try { est = await api(`/api/analytics/runs/${id}/post_ai/estimate`); } catch (e) {
+      showToast("Could not estimate: " + (e.message || e), "error"); return;
+    }
+    if (!est.anthropic_key) { showToast("Set ANTHROPIC_API_KEY in .env to use the LLM steps.", "error"); return; }
+    const money = v => v < 0.01 ? "<$0.01" : `~$${v.toFixed(2)}`;
+    let title, message;
+    if (step === "fallback") {
+      const f = est.fallback;
+      if (!f.rows_to_send) {
+        showToast(f.not_found_rows ? "Every not-found row was already searched by AI." : "Every row has candidates — nothing to search.", "info");
+        return;
+      }
+      title = "Find missing rows with AI?";
+      message = `Claude rebuilds the Amazon search for ${f.rows_to_send.toLocaleString()} row${f.rows_to_send === 1 ? "" : "s"} with no candidates` +
+        (f.already_tried ? ` (${f.already_tried.toLocaleString()} already searched by AI are skipped)` : "") +
+        `. Estimated cost ${money(f.cost_usd)}–${money(f.cost_usd_high)} (Claude Sonnet). New candidates appear as each row finishes; you can stop at any time.`;
+    } else {
+      const v = est.verifier;
+      if (!v.approvals_to_audit) { showToast("No unaudited approvals to check.", "info"); return; }
+      title = "Audit approvals with AI?";
+      message = `Claude double-checks ${v.approvals_to_audit.toLocaleString()} approval${v.approvals_to_audit === 1 ? "" : "s"}; flagged ones move to Review. ` +
+        `Estimated cost ${money(v.cost_usd)} (Claude Sonnet). You can stop at any time; what is audited is kept.`;
+    }
+    const ok = await showConfirm({ title, message, confirmText: "Start", cancelText: "Cancel" });
+    if (!ok) return;
+    try {
+      await api(`/api/analytics/runs/${id}/post_ai`, { method: "POST", body: { step } });
+      _clearAnalyticsRunPoll();
+      state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 600);
+    } catch (e) { showToast("Could not start: " + (e.message || e), "error"); }
+  }
+
+  $("#analytics-run-ai-fallback")?.addEventListener("click", () => _startPostAi("fallback"));
+  $("#analytics-run-notfound-ai")?.addEventListener("click", () => _startPostAi("fallback"));
+  $("#analytics-run-ai-verify")?.addEventListener("click", () => _startPostAi("verifier"));
+  $("#analytics-run-post-ai-stop")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    try { await api(`/api/analytics/runs/${id}/post_ai/stop`, { method: "POST" }); } catch (_) {}
+    _clearAnalyticsRunPoll();
+    state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
+  });
+  // ---- AI check of Review items (services/analytics/ai_check.py) -------------
+  // Claude suggests approve / reject / uncertain per Review candidate; the suggestions show in the Reason
+  // column and change nothing until the user clicks "Apply AI decisions".
+  function _renderAiCheck(run, j, complete, postAiRunning) {
+    const st = run.ai_check_status || "";
+    const checking = st === "Running";
+    const counts = j.ai_verdict_counts || {};
+    const nApprove = counts.approve || 0, nReject = counts.reject || 0, nUnsure = counts.uncertain || 0;
+    const finished = st === "Done" || st === "Stopped";
+    const canApply = complete && !checking && !postAiRunning && finished
+      && !run.ai_decisions_applied && (nApprove + nReject) > 0;
+
+    $("#analytics-run-ai-check")?.classList.toggle("hidden", !complete || checking || postAiRunning);
+    $("#analytics-run-ai-check-stop")?.classList.toggle("hidden", !checking);
+    const applyBtn = $("#analytics-run-ai-check-apply");
+    if (applyBtn) {
+      applyBtn.classList.toggle("hidden", !canApply);
+      applyBtn.textContent = `Apply AI decisions (${nApprove.toLocaleString()} approve · ${nReject.toLocaleString()} reject)`;
+    }
+
+    const card = $("#analytics-run-ai-check-card");
+    if (card) {
+      card.classList.toggle("hidden", !checking);
+      if (checking) {
+        const d = run.ai_check_done || 0, t = run.ai_check_total || 0;
+        $("#analytics-run-ai-check-counts").textContent = t > 0 ? `${d.toLocaleString()} / ${t.toLocaleString()}` : "Starting…";
+        $("#analytics-run-ai-check-bar").style.width = (t > 0 ? Math.min(100, (d / t) * 100) : 0) + "%";
+      }
+    }
+    const res = $("#analytics-run-ai-check-result");
+    if (res) {
+      let text = "";
+      if (st.startsWith("Error")) text = `AI check — ${st}`;
+      else if (finished && run.ai_decisions_applied) text = "AI check — decisions applied.";
+      else if (finished) text = `AI check ${st === "Stopped" ? "stopped" : "done"}: ${nApprove.toLocaleString()} approve, ` +
+        `${nReject.toLocaleString()} reject, ${nUnsure.toLocaleString()} uncertain. ` +
+        "Check the suggestions in the Reason column, then click Apply AI decisions.";
+      res.classList.toggle("hidden", !text || checking);
+      res.textContent = text;
+    }
+  }
+
+  $("#analytics-run-ai-check")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    let est;
+    try { est = await api(`/api/analytics/runs/${id}/ai_check/estimate?verdict=review`); } catch (e) {
+      showToast("Could not estimate: " + (e.message || e), "error"); return;
+    }
+    const n = est.candidate_count || 0;
+    if (!n) { showToast("No Review items to check.", "info"); return; }
+    const cost = Number(est.cost_usd_est || 0);
+    const ok = await showConfirm({
+      title: "AI check Review items?",
+      message: `Claude suggests approve / reject / uncertain for ${n.toLocaleString()} Review item${n === 1 ? "" : "s"} ` +
+        `(estimated ${cost < 0.01 ? "<$0.01" : "~$" + cost.toFixed(2)}). Nothing changes until you review the suggestions ` +
+        "and click Apply AI decisions.",
+      confirmText: "Start", cancelText: "Cancel",
+    });
+    if (!ok) return;
+    try {
+      await api(`/api/analytics/runs/${id}/ai_check`, { method: "POST", body: { verdict: "review" } });
+      _clearAnalyticsRunPoll();
+      state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 600);
+    } catch (e) { showToast("Could not start: " + (e.message || e), "error"); }
+  });
+
+  $("#analytics-run-ai-check-stop")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    try { await api(`/api/analytics/runs/${id}/ai_check/stop`, { method: "POST" }); } catch (_) {}
+    _clearAnalyticsRunPoll();
+    state.analyticsRun.poll = setTimeout(fetchAnalyticsRunDetail, 800);
+  });
+
+  $("#analytics-run-ai-check-apply")?.addEventListener("click", async () => {
+    const id = state.analyticsRun.id; if (!id) return;
+    const c = state.analyticsRun.data?.ai_verdict_counts || {};
+    const ok = await showConfirm({
+      title: "Apply AI decisions?",
+      message: `${(c.approve || 0).toLocaleString()} suggested approve → Approved, ` +
+        `${(c.reject || 0).toLocaleString()} suggested reject → Not Approved. Uncertain ones stay in Review.`,
+      confirmText: "Apply", cancelText: "Cancel",
+    });
+    if (!ok) return;
+    try {
+      const r = await api(`/api/analytics/runs/${id}/ai_check/apply`, { method: "POST" });
+      showToast(`Applied: ${r.approved} approved, ${r.rejected} rejected.`, "success");
+      state.analyticsRun.tabPageData = {};
+      await fetchAnalyticsRunDetail();
+    } catch (e) { showToast("Could not apply: " + (e.message || e), "error"); }
+  });
+
+  $("#analytics-run-notfound-toggle")?.addEventListener("click", () => {
+    const wrap = $("#analytics-run-notfound-wrap");
+    if (!wrap) return;
+    const open = wrap.classList.toggle("hidden") === false;
+    const caret = $("#analytics-run-notfound-caret");
+    if (caret) caret.textContent = open ? "▾" : "▸";
+  });
 
   // ---- Offer Analysis: Brand filter modal (mirrors Brand Analytics' own
   //      category filter exactly, scoped to Amazon brand instead of BSR
@@ -5175,6 +5475,7 @@
   function renderAnalyticsRunCandidates() {
     const j = state.analyticsRun.data;
     const tab = state.analyticsRun.tab;
+    const showKeywordColumns = !!j?.run?.ai_clean_titles;
     const isVerdictTab = tab !== "All";
     const tabPageEntry = (state.analyticsRun.tabPageData || {})[tab];
     const isLoading = state.analyticsRun.tabLoading === tab;
@@ -5209,8 +5510,9 @@
       if (!q) return true;
       const src = srcByIdx[c.row_idx] || {};
       const amz = (c.data && c.data.amazon) || {};
+      const ext = src.extracted || {};
       const hay = [
-        src.title, src.brand, src.upc, src.itemid,
+        src.title, src.brand, src.upc, src.itemid, ext.search_keyword, ext.keyword_specs, amz.matching_title,
         c.asin, amz.title, amz.brand, amz.manufacturer,
       ].map(v => String(v || "").toLowerCase()).join(" ");
       return hay.includes(q);
@@ -5350,6 +5652,7 @@
                       :                    "badge-not";
       const amz = (c.data && c.data.amazon) || {};
       const amzTitle = amz.title || "";
+      const amzItemName = amz.matching_title || "";
       const amzBrand = amz.brand || amz.manufacturer || "";
       const sources = Array.isArray(c.sources) ? c.sources.join(", ") : "";
       const label  = _VERDICT_LABEL[v] || (c.verdict || "");
@@ -5384,6 +5687,7 @@
       const conflictBadge = conflictRows
         ? `<span class="has-tooltip" data-tooltip="${escapeHtml(conflictTooltip)}" style="display:inline-block;margin-left:4px;padding:1px 6px;font-size:0.68rem;font-weight:700;border-radius:4px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:help;">⚠ Conflict</span>`
         : "";
+      const keywordFields = src.extracted || {};
  
       return `
         <tr>
@@ -5392,14 +5696,21 @@
             <div>${escapeHtml(src.upc || "—")}</div>
             <div style="color:#94a3b8;">${escapeHtml(src.itemid || "")}</div>
           </td>
-          <td style="max-width:260px;">
+          <td style="max-width:260px;min-width:180px;">
             <div class="text-sm" style="color: var(--navy-800);">${escapeHtml(src.title || "")}</div>
             <div class="text-xs" style="color:#94a3b8;">${escapeHtml(src.brand || "")}</div>
             ${queryAgentDetails}
           </td>
+          <td class="analytics-keyword-column analytics-keyword-spec-column${showKeywordColumns ? "" : " hidden"}" style="white-space:normal;overflow-wrap:anywhere;color:#0369a1;">${escapeHtml(keywordFields.keyword_specs || "")}</td>
           <td class="font-mono text-xs"><a href="${escapeHtml(_amazonUrl(c.asin))}" target="_blank" rel="noopener noreferrer" title="Open on Amazon" style="color:#4f46e5;text-decoration:none;">${escapeHtml(c.asin || "")}</a>${conflictBadge}</td>
-          <td style="max-width:300px;">
-            <div class="text-sm" style="color: #475569;">${escapeHtml(amzTitle)}</div>
+          <td class="analytics-amazon-title-column">
+            ${amzItemName
+              ? `<div class="text-sm" style="color:#166534;font-weight:600;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzItemName)}</div>
+                 <details style="margin-top:5px;font-size:11px;color:#64748b;">
+                   <summary style="cursor:pointer;">Original Amazon title</summary>
+                   <div style="padding-top:4px;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzTitle)}</div>
+                 </details>`
+              : `<div class="text-sm" style="color:#475569;white-space:normal;overflow-wrap:anywhere;">${escapeHtml(amzTitle)}</div>`}
           </td>
           <td class="text-xs">${escapeHtml(amzBrand)}</td>
           <td class="text-xs">${escapeHtml(sources)}</td>
@@ -5411,7 +5722,7 @@
           <td>
             <span class="badge ${verdictCls}">${escapeHtml(label)}</span>
           </td>
-          <td class="analytics-reason-cell text-xs" style="width:380px;min-width:380px;max-width:520px;color:#64748b;white-space:normal;">${reasonDetails}${scorerDetails}</td>
+          <td class="analytics-reason-cell text-xs" style="width:380px;min-width:380px;max-width:520px;color:#64748b;white-space:normal;">${reasonDetails}${_aiCheckBadge(c)}${scorerDetails}</td>
           <td class="text-right">${actionButtons(c)}</td>
         </tr>`;
     }).join("");
@@ -6691,6 +7002,7 @@
     fd.append("use_query_agent", $("#awiz-query-agent")?.checked ? "true" : "false");
     fd.append("use_llm_verifier", $("#awiz-llm-verifier")?.checked ? "true" : "false");
     fd.append("use_ai_reader", $("#awiz-ai-reader")?.checked ? "true" : "false");
+    fd.append("clean_amazon_titles", $("#awiz-amazon-title-cleaner")?.checked ? "true" : "false");
     if (state.awiz.selectedSheet) fd.append("sheet_name", state.awiz.selectedSheet);
     const ptCols = Array.from(state.awiz.passthroughCols || []);
     if (ptCols.length) fd.append("passthrough_cols", JSON.stringify(ptCols));

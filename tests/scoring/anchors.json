@@ -1,0 +1,2836 @@
+[
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B07PXHMQ73",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Disinfecting Cleaning Wipes, 12 Pack Case, 160 Count Each, Large Surface Wipes (6\" x 6.75\"), Multi-Surface Germicidal Cleaner for Home Health, Medical, Commercial Use",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "purple"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01MAUN1DI",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Ethyl Alcohol Hand Sanitizing Wipe Individual Packet 10 Wipes each 10 Packs",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13872",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Germ Wipe, 6\" x 6.75\", 160/Carton",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01MAUMZBQ",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "PDI Sani-Cloth AF3 Alcohol & Fragrance Free Disinfecting Wipes, 160 Wipes Each, Multi-Surface Germicidal Cleaning, Large, 6\" x 6.75\" Size",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13872",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Germ Wipe, 6\" x 6.75\", 160/Carton",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B073R9F16Y",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3, Surface Disinfecting Wipes, Fragrance Free, Alcohol-Free, Large Canister, 160 Wipes",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13872",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Germ Wipe, 6\" x 6.75\", 160/Carton",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00ZVV7QZA",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Alcohol-Free Disposable Disinfectant Wipes - 160 Wipes",
+   "brand": "SANI CLOTH"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D41900",
+   "upc": "",
+   "mpn": "D41900",
+   "title": "Castile Soap Towelette, 5\" x 7.7\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00ZQETJOI",
+   "upc": "",
+   "mpn": "D41900",
+   "title": "PDI Castile Soap Towelettes, Face and Hand Cleansing, 100 Individually Wrapped Wipes Per Box",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D41900",
+   "upc": "",
+   "mpn": "D41900",
+   "title": "Castile Soap Towelette, 5\" x 7.7\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01CJU0U9E",
+   "upc": "",
+   "mpn": "D41900",
+   "title": "PDI Healthcare D41900 Castile Soap Wipe with Coconut Oil, Premoistened Facial Cleansing Towelette for Travel, 5 in x 7.7 in Size, Pack of 1000",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D41900",
+   "upc": "",
+   "mpn": "D41900",
+   "title": "Castile Soap Towelette, 5\" x 7.7\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00HFCVNH0",
+   "upc": "",
+   "mpn": "BD2199",
+   "title": "PDI Castile Soap Towelette - Premoistened Facial Cleansing Wipe with Coconut Oil, Great for Travel - Individual Packet, 7.7 in. x 5in., 100 Count, 3 Packs, 300 Total",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_C22370",
+   "upc": "",
+   "mpn": "C22370",
+   "title": "Lint-Free Sterile Saline Wipes",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0GM33K4PQ",
+   "upc": "",
+   "mpn": "C22370",
+   "title": "Sterile Saline Wipes, 576 Count, Individually Wrapped Saline Wipes for Eye Cleansing, Newborns, Kids & Piercing Aftercare, Gentle Skin & Wound Cleansing | Case Pack (24 Boxes)",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13472",
+   "upc": "",
+   "mpn": "P13472",
+   "title": "Sani-Hands Wipe, Alcohol, Medium Canister, 6\" x 7.5\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0189OAFI0",
+   "upc": "",
+   "mpn": "P13472",
+   "title": "PDI Healthcare P13472 Sani-Hands Instant Hand Sanitizing Wipes, Medium, 6\" x 7.5\" (12 Canisters of 135 Wipes, 1620 Total)",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_H59200",
+   "upc": "",
+   "mpn": "H59200",
+   "title": "Sani-Cloth AF3 Wipe, Individually Wrapped",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01DJGOX90",
+   "upc": "",
+   "mpn": "H59200",
+   "title": "Sani-Cloth AF3 Large 5\" x 8\" Individual Packets, Alcohol and Fragrance Free Surface Disinfection, 1 Box of 50 Packets",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P86984",
+   "upc": "",
+   "mpn": "P86984",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 7.5\" x 15\", 75 per X-Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B07K31ZY6F",
+   "upc": "",
+   "mpn": "P86984",
+   "title": "Super Sani-Cloth X-Large Disinfectant Wipes, 6-Pack (450 Count), 75 XL 7.5\" x 15\" Wipes, Hospital-Grade Surface Cleaning and Disinfecting",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_A580FW",
+   "upc": "",
+   "mpn": "A580FW",
+   "title": "WIPE, TABLE TURNERS,",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B06XQ6FZ3F",
+   "upc": "",
+   "mpn": "A580FW",
+   "title": "PDI Sani-Professional Cleaning Wipe, Multi-Surface, Fresh Scent, Degreasing, Non - Streak, For Kitchen, Restaurant Tables, Glass, Treated Wood, 90 Count, Pack of 12 (1080 Total Wipes)",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P54072",
+   "upc": "",
+   "mpn": "P54072",
+   "title": "Sani-Cloth Bleach Germicidal Disposable Wipes, 6\" x 10.5\", 75-Count Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00DJGRTKG",
+   "upc": "",
+   "mpn": "P54072",
+   "title": "Sani-Cloth Bleach Disposable Wipe - Hospital-Grade Surface Cleaner for Bathroom, Equipment - Large Canister, 6 inch. x 10.5 inch, 75 Total",
+   "brand": "Sani Professional"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D25431",
+   "upc": "",
+   "mpn": "D25431",
+   "title": "See Clear Lens Cleaning Wipes",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B004YTYTFK",
+   "upc": "",
+   "mpn": "PDID25431",
+   "title": "PDI See Clear Lens Cleaning Wipes, Non-Streaking & Anti-Static for Glasses, Eyeglasses, Loupes & Safety Eyewear, 1 Box of 120 Individually Wrapped Packets, Large 6\" x 5\"",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P03672",
+   "upc": "",
+   "mpn": "P03672",
+   "title": "Easy Screen Cleaning Wipes, 6\" x 9\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01E6BEGBM",
+   "upc": "",
+   "mpn": "P03672",
+   "title": "Easy Screen Cleaning Wipes, Electronic Screen Cleaning, Laptops, Monitors, Phone, Tablet, TV Screen Cleaning Wipe, 70 Wipes per Canister, Large 9\"x 6\" Durable Wipe",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q89072",
+   "upc": "",
+   "mpn": "Q89072",
+   "title": "Sani-Cloth Disinfectant Wipe",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00589V44Y",
+   "upc": "",
+   "mpn": "Q89072",
+   "title": "Sani-Cloth Plus Hard Surface Disinfectant Wipe, 160 Count, Q89072 - Case of 12 = 1920 Wipes",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_B16400",
+   "upc": "",
+   "mpn": "B16400",
+   "title": "Adhesive Tape Remover Pad",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B073WCC74S",
+   "upc": "",
+   "mpn": "B16400",
+   "title": "PDI Healthcare B16400 Adhesive Tape Remover Pad, 1.2\" Width, 2.6\" Length, Pack of 100",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P84172",
+   "upc": "",
+   "mpn": "P84172",
+   "title": "WIPES, SANI-CLOTH, 6X5, BLEACH, DISPOSABLE",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0BZFK66YK",
+   "upc": "",
+   "mpn": "P84172",
+   "title": "PDI Sani-Cloth Bleach Disinfecting and Cleaning, 160 Count Canister, Medium 6\" x 5\" Wipes, Hospital-Grade Bleach for Healthcare, Vet, and C. Diff Households",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D74800",
+   "upc": "",
+   "mpn": "D74800",
+   "title": "Perineal Obstetrical Towelette",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0GZ5NV2NC",
+   "upc": "",
+   "mpn": "D74800",
+   "title": "Hygea Obstetrical Towelette, Postpartum Care, Feminine Personal Cleansing Wipe With Benzalkonium Chloride, Individually Wrapped, 100 Wipes Per Box",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_B19600",
+   "upc": "",
+   "mpn": "B19600",
+   "title": "Prevantics Device Swab, 1 mL, 100/bx",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B073WD1MCD",
+   "upc": "",
+   "mpn": "B19600",
+   "title": "PDI Healthcare B19600 Prevantics Device Swab & Strip, 3.125\" Length, 1.125\" Diameter (Pack of 100)",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P56784",
+   "upc": "",
+   "mpn": "P56784",
+   "title": "Sanitizing Wipes, No Rinse, 7.75\" x 9\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B085BNML6M",
+   "upc": "",
+   "mpn": "P56784",
+   "title": "Pdi Sani-Wipe™ Non-Rinse Food Contact Hard-Surface Sanitizing Wipe, 7.75\" x 9\", 95/can",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_A500F48",
+   "upc": "",
+   "mpn": "A500F48",
+   "title": "Hygea Flushable Personal Cleansing Cloths, 48/Pack",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0731MTGT5",
+   "upc": "",
+   "mpn": "A500F48",
+   "title": "LOT OF 3 - Hygea Flushable Personal Cleansing Cloths 48 wipes each",
+   "brand": "Hygea"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P25784",
+   "upc": "",
+   "mpn": "P25784",
+   "title": "Sani-Cloth Bleach Germicidal Disposable Wipes, 7.5\" x 15\", 65-Count X-Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0C445JVD7",
+   "upc": "",
+   "mpn": "P25784",
+   "title": "Sani-Cloth Bleach XL Disinfecting Wipes, 1 Canister (65 XL Wipes), 7.5\" x 15\", EPA-Registered Bleach Wipes for Healthcare, Bathrooms, Veterinary Use & Large Surface Areas",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_J14143",
+   "upc": "",
+   "mpn": "J14143",
+   "title": "Hygea Multipurpose Washcloth, 9.5\" x 11.5\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00CFBC3WA",
+   "upc": "",
+   "mpn": "J14143",
+   "title": "Hygea Premium Multi-Purpose Washcloths 6-Pack; 60 Count with Aloe and Vitamin E",
+   "brand": "PDI"
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P92084",
+   "upc": "",
+   "mpn": "P92084",
+   "title": "PDI SANI-HANDS® INSTANT HAND SANITIZING WIPES",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B086RMBNLS",
+   "upc": "",
+   "mpn": "P92084",
+   "title": "Sani-Hands Instant Hand Sanitizing Wipes",
+   "brand": "Sani Professional",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "pdi_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7645610",
+   "upc": "",
+   "mpn": "7645610",
+   "title": "Leukoplast - Leukoplast Elastic - 5 cm x 7.6 cm Stretchable Lightweight Fabric Dressing",
+   "brand": "Leukoplast"
+  },
+  "candidate": {
+   "asin": "B0BPV7LT3T",
+   "upc": "",
+   "mpn": "7645610",
+   "title": "Leukoplast Elastic Fabric Adhesive Bandages, Patch 2 x 3 in., Box of 50",
+   "brand": "Leukoplast",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7645606",
+   "upc": "",
+   "mpn": "7645606",
+   "title": "Leukoplast - Leukoplast Elastic - 2.5 cm x 7.6 cm Stretchable Lightweight Fabric Dressing",
+   "brand": "Leukoplast"
+  },
+  "candidate": {
+   "asin": "B0BPTS1LL4",
+   "upc": "",
+   "mpn": "7645606",
+   "title": "Leukoplast Elastic Fabric Adhesive Bandages, Strip, 1 x 3 in., Box of 100",
+   "brand": "Leukoplast",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_6039633",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST - Sensifoot Diabetic Support Sock Knee High - L - White - Closed Toe Diabetic Support Sock Knee High",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0F48P9QRC",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST SensiFoot Compression Stockings, 8-15 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_HB4414",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue - Hydrofera Blue CLASSIC - 10.2 cm x 10.2 cm Polyvinyl Alcohol (PVA) Foam Antibacterial Dressing",
+   "brand": "Hydrofera Blue"
+  },
+  "candidate": {
+   "asin": "B000VCYKS0",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue Bacteriostatic Foam Dressing 4\" X 4\", Box of 10",
+   "brand": "Hydrofera Blue"
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_HB4414",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue - Hydrofera Blue CLASSIC - 10.2 cm x 10.2 cm Polyvinyl Alcohol (PVA) Foam Antibacterial Dressing",
+   "brand": "Hydrofera Blue"
+  },
+  "candidate": {
+   "asin": "B003XCR82U",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue Bacteriostatic Foam Dressing 4\" X 4\", each",
+   "brand": "Hydrofera"
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7847702",
+   "upc": "",
+   "mpn": "7847702",
+   "title": "JOBST - Relief Waist High - M / Regular - Beige - Open Toe Effective Affordable Waist High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B000GCOKM6",
+   "upc": "",
+   "mpn": "114661",
+   "title": "JOBST Relief Waist High 20-30 mmHg Compression Stockings Pantyhose, Open Toe, Beige, Medium - 7847702",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7528913",
+   "upc": "",
+   "mpn": "7528913",
+   "title": "JOBST - Sport Knee High - XL / Regular - Dark/Light Grey - Closed Toe Athletic Knee High Compression Sock",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B00K1KRBRE",
+   "upc": "",
+   "mpn": "7528913",
+   "title": "JOBST Sport Compression Socks, 15-20 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black/gray"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7805203",
+   "upc": "",
+   "mpn": "7805203",
+   "title": "JOBST - Relief Knee High - L / Regular/Standard - Beige - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0C91Q7JDS",
+   "upc": "",
+   "mpn": "7805203",
+   "title": "JOBST Relief 20-30 mmHg Compression Stockings, Knee High, Closed Toe | Compression Socks for Women/ Men for Tired, Aching or Swollen Legs, Minor Varicosities | Beige, Large",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7805202",
+   "upc": "",
+   "mpn": "7805202",
+   "title": "JOBST - Relief Knee High - L / Regular/Standard - Beige - Open Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B00427I90U",
+   "upc": "",
+   "mpn": "114627",
+   "title": "JOBST Relief Knee High Graduated Compression Socks, 20-30 mmHg - Comfortable Unisex Design - Open Toe, Beige, Large",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7797604",
+   "upc": "",
+   "mpn": "7797604",
+   "title": "JOBST - Relief Knee High - XLFC / Regular/Standard - Black - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0012041K2",
+   "upc": "",
+   "mpn": "114735",
+   "title": "JOBST Relief Knee High Graduated Compression Socks 20-30mmHg - Comfortable Unisex Design - Closed Toe, Black, X-Large Full Calf",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7534401",
+   "upc": "",
+   "mpn": "7534401",
+   "title": "JOBST - Relief Knee High - XLFC / Regular/Standard - Beige - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B000GCMZV4",
+   "upc": "",
+   "mpn": "7797601",
+   "title": "JOBST Relief Knee High Graduated Compression Socks, 20-30 mmHg - Comfortable Unisex Design - Closed Toe, Beige, X-Large Full Calf",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7534002",
+   "upc": "",
+   "mpn": "7534002",
+   "title": "JOBST - Relief Knee High - M / Regular/Standard - Black - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0012XWJ08",
+   "upc": "",
+   "mpn": "114813",
+   "title": "JOBST Relief Knee High Graduated Compression Socks, 15-20 mmHg - Comfortable Unisex Design - Closed Toe, Black, Medium",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7534001",
+   "upc": "",
+   "mpn": "7534001",
+   "title": "JOBST - Relief Knee High - M / Regular/Standard - Beige - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B003AKMTY2",
+   "upc": "",
+   "mpn": "",
+   "title": "JOBST Relief 15-20 mmHg Compression Stockings, Knee High, Closed Toe, Beige, Medium",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7804405",
+   "upc": "",
+   "mpn": "7804405",
+   "title": "JOBST - Relief Thigh High - L / Regular/Dot - Beige - Open Toe Effective Affordable Thigh High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B001O1LA44",
+   "upc": "",
+   "mpn": "114202",
+   "title": "JOBST Relief Thigh High Graduated Compression Stockings 20-30mmHg - Comfortable Unisex Design with Silicone Dot Band - Open Toe, Beige, Large",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7804306",
+   "upc": "",
+   "mpn": "7804306",
+   "title": "JOBST - Relief Thigh High - M / Regular/Dot - Beige - Closed Toe Effective Affordable Thigh High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B00427N86U",
+   "upc": "",
+   "mpn": "114209",
+   "title": "JOBST Relief 20-30 mmHg Thigh High Compression Stockings with Silicone Band, Closed Toe, Beige, Medium",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_HB6614",
+   "upc": "",
+   "mpn": "HB6614",
+   "title": "Hydrofera Blue - Hydrofera Blue CLASSIC - 15.2 cm x 15.2 cm Polyvinyl Alcohol (PVA) Foam Antibacterial Dressing",
+   "brand": "Hydrofera Blue"
+  },
+  "candidate": {
+   "asin": "B01N22CLBP",
+   "upc": "",
+   "mpn": "19184",
+   "title": "50HB6614EA - Hydrofera Blue Foam Dressing Without Border 6 x 6",
+   "brand": "Hydrofera Blue"
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "run_export",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7847802",
+   "upc": "",
+   "mpn": "7847802",
+   "title": "JOBST - Relief Waist High - L / Regular - Beige - Open Toe Effective Affordable Waist High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B000GCPZ3Y",
+   "title": "JOBST Relief Waist High Graduated Compression Stockings 20-30mmHg - Comfortable Unisex Design - Open Toe, Beige, Large",
+   "brand": "JOBST",
+   "mpn": "",
+   "upc": "",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "asin_lookup",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7805207",
+   "upc": "",
+   "mpn": "7805207",
+   "title": "JOBST - Relief Knee High - L / Regular/Standard - Black - Closed Toe Effective Affordable Knee High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0C91PYCRH",
+   "title": "JOBST 20-30mmHg Relief Compression Socks Knee High Closed Toe Compression Socks Women/Men for Tired, Sore or Swollen Legs, Minor Varicosities, Black, L",
+   "brand": "JOBST",
+   "mpn": "7805207",
+   "upc": "035664439095",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "asin_lookup",
+  "category": "mpn_match"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7804305",
+   "upc": "",
+   "mpn": "7804305",
+   "title": "JOBST - Relief Thigh High - M / Regular/Dot - Beige - Open Toe Effective Affordable Thigh High Compression Stocking",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0012XYIM0",
+   "title": "JOBST Relief 20-30 mmHg Thigh High Compression Stockings with Silicone Band, Open Toe, Beige, Medium",
+   "brand": "JOBST",
+   "mpn": "114201",
+   "upc": "",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "asin_lookup",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7616800",
+   "upc": "",
+   "mpn": "7616800",
+   "title": "Leukotape - Leukotape P - 3.8 cm x 13.7 m - Tan High Adhesive Rigid Strapping Tape",
+   "brand": "Leukotape"
+  },
+  "candidate": {
+   "asin": "B01LXPJZC6",
+   "title": "BSN Leukotape P Sports Tape 1.5'' x 15 Yard Roll #76168 Each Use with Cover-Roll",
+   "brand": "Leukotape",
+   "mpn": "76168",
+   "upc": "884981688033"
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "asin_lookup",
+  "category": "size_variant"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7144302",
+   "upc": "",
+   "mpn": "7144302",
+   "title": "Hypafix - Hypafix - 10 cm x 10 m Non-Woven Adhesive Fixation Sheet",
+   "brand": "Hypafix"
+  },
+  "candidate": {
+   "asin": "B0081Q3PXE",
+   "title": "BSN Hypafix Wide-Area Dressing Fixation, Roll of Tape, 10cm x 10m (4 in x 11 yds)",
+   "brand": "BSN Medical",
+   "mpn": "7144301",
+   "upc": ""
+  },
+  "is_match": true,
+  "_source": "essity_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "asin_lookup",
+  "category": "sub_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0BFDPKXHG",
+   "upc": null,
+   "mpn": null,
+   "title": "OXO Good Grips Mini Angled Measuring Tools (2 Oz Cup + Jigger)",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0FV1MQL2L",
+   "upc": "",
+   "mpn": "",
+   "title": "Sani-Hands Hand Sanitizing Wipes Bundle – 1 Canister (135 Wipes) + 3 Travel Packs (20 Wipes Each) – 70% Ethyl Alcohol Formula with Aloe & Vitamin E – FDA Food Code Compliant – Kills 99.99% of Bacteria",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7616800",
+   "upc": "",
+   "mpn": "7616800",
+   "title": "Leukotape - Leukotape P - 3.8 cm x 13.7 m - Tan High Adhesive Rigid Strapping Tape",
+   "brand": "Leukotape"
+  },
+  "candidate": {
+   "asin": "B000FMMTKM",
+   "upc": "",
+   "mpn": "7616845552",
+   "title": "Leukotape P 1.5-Inch x 15-Yds & Cover-roll Stretch 2-Inch x 10-Yds Combo Pack (One Roll Each)",
+   "brand": "BSN Medical",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0FV1186J9",
+   "upc": "",
+   "mpn": "",
+   "title": "Bundle of Sani-Hands Instant Hand Sanitizer Wipes 100 Packets/Box + Easy Screen Cleaning Wipes for Touchscreens, Electronics, Phones, Tablets, Monitors, TV Screens, 70 Wipes/Canister",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13472",
+   "upc": "",
+   "mpn": "P13472",
+   "title": "Sani-Hands Wipe, Alcohol, Medium Canister, 6\" x 7.5\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0FV1MQL2L",
+   "upc": "",
+   "mpn": "",
+   "title": "Sani-Hands Hand Sanitizing Wipes Bundle – 1 Canister (135 Wipes) + 3 Travel Packs (20 Wipes Each) – 70% Ethyl Alcohol Formula with Aloe & Vitamin E – FDA Food Code Compliant – Kills 99.99% of Bacteria",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P03672",
+   "upc": "",
+   "mpn": "P03672",
+   "title": "Easy Screen Cleaning Wipes, 6\" x 9\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0FV1186J9",
+   "upc": "",
+   "mpn": "",
+   "title": "Bundle of Sani-Hands Instant Hand Sanitizer Wipes 100 Packets/Box + Easy Screen Cleaning Wipes for Touchscreens, Electronics, Phones, Tablets, Monitors, TV Screens, 70 Wipes/Canister",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P03672",
+   "upc": "",
+   "mpn": "P03672",
+   "title": "Easy Screen Cleaning Wipes, 6\" x 9\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0CNDFWJQP",
+   "upc": "",
+   "mpn": "EW236",
+   "title": "EVEO Electronic Wipes Screen Cleaner - Screen Wipes TV Screen Cleaner Wipes, Computer Screen Wipes, Laptop Screen Cleaner, ipad & Monitor Cleaner, Screen Cleaning Wipes - [90 Wipes + Microfiber Cloth]",
+   "brand": "EVEO",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_A500F48",
+   "upc": "",
+   "mpn": "A500F48",
+   "title": "Hygea Flushable Personal Cleansing Cloths, 48/Pack",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0DSQWQCHM",
+   "upc": "",
+   "mpn": "MTT50TRIALPACKS",
+   "title": "goodwipes Flushable Wipes - Rosewater, 153 Wipes (3 Pack + 3 Singles)",
+   "brand": "goodwipes"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P92084",
+   "upc": "",
+   "mpn": "P92084",
+   "title": "PDI SANI-HANDS® INSTANT HAND SANITIZING WIPES",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0FV1MQL2L",
+   "upc": "",
+   "mpn": "",
+   "title": "Sani-Hands Hand Sanitizing Wipes Bundle – 1 Canister (135 Wipes) + 3 Travel Packs (20 Wipes Each) – 70% Ethyl Alcohol Formula with Aloe & Vitamin E – FDA Food Code Compliant – Kills 99.99% of Bacteria",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "bundle"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_10791",
+   "upc": "",
+   "mpn": "10791",
+   "title": "Bushcraft BlackBlade™ (C) High CarbonSteel Outdoor Knife PinPac",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B0H3VKL48D",
+   "upc": "",
+   "mpn": "",
+   "title": "BPSKNIVES Adventurer Basic - Fixed-Blade Carbon Steel Bushcraft Knife with Leather Sheath - Camping Knives - Outdoor Full Tang Utility Knives - Survival Tactical Camp Knife",
+   "brand": "BPSKNIVES",
+   "attributes": {
+    "color": [
+     "light brown"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00ZVV7QZA",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Alcohol-Free Disposable Disinfectant Wipes - 160 Wipes",
+   "brand": "SANI CLOTH"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_HB4414",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue - Hydrofera Blue CLASSIC - 10.2 cm x 10.2 cm Polyvinyl Alcohol (PVA) Foam Antibacterial Dressing",
+   "brand": "Hydrofera Blue"
+  },
+  "candidate": {
+   "asin": "B0FS2D9K66",
+   "upc": "",
+   "mpn": "SEL14944BX",
+   "title": "Blue Foam Dressings, 4\"x4\" - 10 Absorbent Foam Dressings with Antimicrobial Ingredients - Good for Moderate to Heavy Exudate Wounds - Works for Ulcers, Burns, Post-Op, Lacerations, Abrasions, and More",
+   "brand": "Gentell Select"
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0DPXZX2BX",
+   "upc": "",
+   "mpn": "5066160",
+   "title": "McKesson Germicidal Disinfecting Wipes [480 Count], Alcohol Cleaning Disinfectant Cloths, Hospital Grade Multi-Surface Cleansing, 160 Wipes, 3 Pack",
+   "brand": "McKesson"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_HB4414",
+   "upc": "",
+   "mpn": "HB4414",
+   "title": "Hydrofera Blue - Hydrofera Blue CLASSIC - 10.2 cm x 10.2 cm Polyvinyl Alcohol (PVA) Foam Antibacterial Dressing",
+   "brand": "Hydrofera Blue"
+  },
+  "candidate": {
+   "asin": "B094NCD16W",
+   "upc": "",
+   "mpn": "",
+   "title": "Dimora Silicone Foam Dressing 4\"x4\" Silver Ag Sterile with Adhesive Border",
+   "brand": "Dimora"
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B095FC5PRM",
+   "upc": "",
+   "mpn": "MCWIPES80CT4PK",
+   "title": "MagiCare 75% Large Alcohol Wipes (4-80ct pks, 320ct), Hand Sanitizer Wipes",
+   "brand": "MAGICARE"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7237801",
+   "upc": "",
+   "mpn": "7237801",
+   "title": "Hypafix - Hypafix Transparent - 10 cm x 10 m Waterproof Adhesive Transparent Film in Roll",
+   "brand": "Hypafix"
+  },
+  "candidate": {
+   "asin": "B000CDP1I6",
+   "upc": "",
+   "mpn": "4209",
+   "title": "Hypafix Dressing Retention Tape: 2\" X 11 Yds Each",
+   "brand": "Smith & Nephew"
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B0DNG3SCQG",
+   "upc": "",
+   "mpn": "RFRSH4X80ALCHCORRECTUPC",
+   "title": "Large Alcohol Wipes (320 Count) 75% Unscented Alcohol Hand Sanitizer Wipes",
+   "brand": "REFRESHIFY",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7237801",
+   "upc": "",
+   "mpn": "7237801",
+   "title": "Hypafix - Hypafix Transparent - 10 cm x 10 m Waterproof Adhesive Transparent Film in Roll",
+   "brand": "Hypafix"
+  },
+  "candidate": {
+   "asin": "B09LVP88JN",
+   "upc": "",
+   "mpn": "ROLL004",
+   "title": "Hion Tattoo Aftercare Waterproof Bandage Transparent Film Dressing 4 Inch x 11 Yard Roll Tattoo Cover Up Tape Second Skin Adhesive Bandage Wound Cover for Swimming Shower Shield",
+   "brand": "Hion",
+   "attributes": {
+    "color": [
+     "transparent"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_D43600",
+   "upc": "",
+   "mpn": "D43600",
+   "title": "Sani-Hands Wipe, Alcohol, Individually Packed, 8\" x 5.3\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B086RMBNLS",
+   "upc": "",
+   "mpn": "P92084",
+   "title": "Sani-Hands Instant Hand Sanitizing Wipes",
+   "brand": "Sani Professional",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7237801",
+   "upc": "",
+   "mpn": "7237801",
+   "title": "Hypafix - Hypafix Transparent - 10 cm x 10 m Waterproof Adhesive Transparent Film in Roll",
+   "brand": "Hypafix"
+  },
+  "candidate": {
+   "asin": "B09PNWWMGN",
+   "upc": "",
+   "mpn": "902090510",
+   "title": "Transparent Film Dressing - 2.3\" x 2.7\" (20 Pack) - Waterproof Adhesive Wound Bandages for Post-Surgical Shower, IV Shield, Tattoo Aftercare, Clear Breathable Dressing Patches by HEALQU",
+   "brand": "Healqu",
+   "attributes": {
+    "color": [
+     "clear"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13872",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "Sani-Cloth AF3 Germ Wipe, 6\" x 6.75\", 160/Carton",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B00DJGRTKG",
+   "upc": "",
+   "mpn": "P54072",
+   "title": "Sani-Cloth Bleach Disposable Wipe - Hospital-Grade Surface Cleaner for Bathroom, Equipment - Large Canister, 6 inch. x 10.5 inch, 75 Total",
+   "brand": "Sani Professional"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0000CCY1Y",
+   "upc": "719812004754",
+   "mpn": "1056988",
+   "title": "OXO Good Grips Angled Measuring Cups with Markings, Multi Size 3-Piece Set",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_10791",
+   "upc": "",
+   "mpn": "10791",
+   "title": "Bushcraft BlackBlade™ (C) High CarbonSteel Outdoor Knife PinPac",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B004ZAIXSC",
+   "upc": "",
+   "mpn": "M11824",
+   "title": "Morakniv Companion Fixed Blade Outdoor Knife with Stainless Steel Blade, 4.1-Inch, Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01MAUMZBQ",
+   "upc": "",
+   "mpn": "P13872",
+   "title": "PDI Sani-Cloth AF3 Alcohol & Fragrance Free Disinfecting Wipes, 160 Wipes Each, Multi-Surface Germicidal Cleaning, Large, 6\" x 6.75\" Size",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7645610",
+   "upc": "",
+   "mpn": "7645610",
+   "title": "Leukoplast - Leukoplast Elastic - 5 cm x 7.6 cm Stretchable Lightweight Fabric Dressing",
+   "brand": "Leukoplast"
+  },
+  "candidate": {
+   "asin": "B0BPTS1LL4",
+   "upc": "",
+   "mpn": "7645606",
+   "title": "Leukoplast Elastic Fabric Adhesive Bandages, Strip, 1 x 3 in., Box of 100",
+   "brand": "Leukoplast",
+   "attributes": {
+    "color": [
+     "beige"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B07871K1H6",
+   "upc": "719812002019",
+   "mpn": "1050030",
+   "title": "OXO International 1050030 Good Grips Measuring Cup, Angled, Plastic, 4-Cups - Quantity 6",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_10791",
+   "upc": "",
+   "mpn": "10791",
+   "title": "Bushcraft BlackBlade™ (C) High CarbonSteel Outdoor Knife PinPac",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B0GVSYD5B3",
+   "upc": "",
+   "mpn": "14698",
+   "title": "Morakniv AMBERG BLACKBLADE - CARBON STEEL KNIFE - BLACK SKIES",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B01N1ZIW7X",
+   "upc": "",
+   "mpn": "Q89072",
+   "title": "PDI Sani-Cloth Plus Germicidal Cloth, Pack of 160, 6\" x 6-3/4\" Large Wipes",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "quat and isopropyl alcohol"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7645610",
+   "upc": "",
+   "mpn": "7645610",
+   "title": "Leukoplast - Leukoplast Elastic - 5 cm x 7.6 cm Stretchable Lightweight Fabric Dressing",
+   "brand": "Leukoplast"
+  },
+  "candidate": {
+   "asin": "B0BPV7DSQ2",
+   "upc": "",
+   "mpn": "7645612",
+   "title": "Leukoplast Elastic Fabric Adhesive Bandages, Patch 1.5 x 2 in., Box of 100",
+   "brand": "Leukoplast",
+   "attributes": {
+    "color": [
+     "tan"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00A2KDAIW",
+   "upc": "719812035000",
+   "mpn": "1250080",
+   "title": "OXO Good Grips Adjustable Liquid Measuring Cup, 2 Cup Capacity",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_10791",
+   "upc": "",
+   "mpn": "10791",
+   "title": "Bushcraft BlackBlade™ (C) High CarbonSteel Outdoor Knife PinPac",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B01N2ISF1D",
+   "upc": "",
+   "mpn": "M12772",
+   "title": "Morakniv Craftline Basic 511 Fixed-Blade Knife with High Carbon Steel Blade and Combi-Sheath, 3.6 Inch",
+   "brand": "Morakniv",
+   "attributes": {}
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B073WBHT16",
+   "upc": "",
+   "mpn": "H04082",
+   "title": "PDI Super Sani-Cloth Germicidal Disposable Wipe, Large, Individual, 5\" x 8\"",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_7645610",
+   "upc": "",
+   "mpn": "7645610",
+   "title": "Leukoplast - Leukoplast Elastic - 5 cm x 7.6 cm Stretchable Lightweight Fabric Dressing",
+   "brand": "Leukoplast"
+  },
+  "candidate": {
+   "asin": "B0BPTFMFFL",
+   "upc": "",
+   "mpn": "7645604",
+   "title": "Leukoplast Elastic Fabric Adhesive Bandages, Strip, 1 x 3 in., Box of 300",
+   "brand": "Leukoplast",
+   "attributes": {
+    "color": [
+     "tan"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_product_same_brand"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_11824",
+   "upc": "",
+   "mpn": "11824",
+   "title": "Companion (S) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B07G4G6TJW",
+   "upc": "",
+   "mpn": "YKM12210",
+   "title": "Morakniv Companion HeavyDuty (C) Fixed Blade Outdoor Knife Carbon Steel Blade with Sheath Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B07BXYHJGQ",
+   "upc": "",
+   "mpn": "21046",
+   "title": "Super Sani-Cloth X-Large Germicidal Disposable Wipe, Hospital-Grade Disinfection, Purple Top, 1 Canister of 75 XL 5'' x 8'' Wipes",
+   "brand": "PDI",
+   "attributes": {
+    "color": [
+     "white"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_6039633",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST - Sensifoot Diabetic Support Sock Knee High - L - White - Closed Toe Diabetic Support Sock Knee High",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0F48QL2VS",
+   "upc": "",
+   "mpn": "6039603",
+   "title": "JOBST SensiFoot Compression Stockings, 8-15 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_11827",
+   "upc": "",
+   "mpn": "11827",
+   "title": "Companion (S) Military Green Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B005EOJAKI",
+   "upc": "",
+   "mpn": "M12494",
+   "title": "Morakniv Companion Fixed Blade Outdoor Knife with Stainless Steel Blade, 4.1-Inch, Orange (M-11824)",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_Q55172",
+   "upc": "",
+   "mpn": "Q55172",
+   "title": "Super Sani-Cloth Germicidal Disposable Wipes, 6\" x 6.75\", 160 per Large Canister",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B07K31ZY6F",
+   "upc": "",
+   "mpn": "P86984",
+   "title": "Super Sani-Cloth X-Large Disinfectant Wipes, 6-Pack (450 Count), 75 XL 7.5\" x 15\" Wipes, Hospital-Grade Surface Cleaning and Disinfecting",
+   "brand": "PDI"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_6039633",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST - Sensifoot Diabetic Support Sock Knee High - L - White - Closed Toe Diabetic Support Sock Knee High",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0F48QZQYD",
+   "upc": "",
+   "mpn": "6039602",
+   "title": "JOBST SensiFoot Compression Stockings, 8-15 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12495",
+   "upc": "",
+   "mpn": "12495",
+   "title": "Companion HeavyDuty (C) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B07G4G6TJW",
+   "upc": "",
+   "mpn": "YKM12210",
+   "title": "Morakniv Companion HeavyDuty (C) Fixed Blade Outdoor Knife Carbon Steel Blade with Sheath Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13472",
+   "upc": "",
+   "mpn": "P13472",
+   "title": "Sani-Hands Wipe, Alcohol, Medium Canister, 6\" x 7.5\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B095FC5PRM",
+   "upc": "",
+   "mpn": "MCWIPES80CT4PK",
+   "title": "MagiCare 75% Large Alcohol Wipes (4-80ct pks, 320ct), Hand Sanitizer Wipes",
+   "brand": "MAGICARE"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_6039633",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST - Sensifoot Diabetic Support Sock Knee High - L - White - Closed Toe Diabetic Support Sock Knee High",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0F48QF2Y3",
+   "upc": "",
+   "mpn": "7714002",
+   "title": "JOBST SensiFoot Compression Stockings, 8-15 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "black"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12495",
+   "upc": "",
+   "mpn": "12495",
+   "title": "Companion HeavyDuty (C) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B004ZAIXSC",
+   "upc": "",
+   "mpn": "M11824",
+   "title": "Morakniv Companion Fixed Blade Outdoor Knife with Stainless Steel Blade, 4.1-Inch, Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "keyword",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "pdi_live_P13472",
+   "upc": "",
+   "mpn": "P13472",
+   "title": "Sani-Hands Wipe, Alcohol, Medium Canister, 6\" x 7.5\"",
+   "brand": "PDI"
+  },
+  "candidate": {
+   "asin": "B095F1Q2N5",
+   "upc": "",
+   "mpn": "MCWIPESCAN1002PK",
+   "title": "MagiCare 75% Large Alcohol Wipes (2, 100ct Canisters), Hand Sanitizer Wipes",
+   "brand": "MAGICARE"
+  },
+  "is_match": false,
+  "_source": "pdi_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "essity_live_6039633",
+   "upc": "",
+   "mpn": "6039633",
+   "title": "JOBST - Sensifoot Diabetic Support Sock Knee High - L - White - Closed Toe Diabetic Support Sock Knee High",
+   "brand": "JOBST"
+  },
+  "candidate": {
+   "asin": "B0F48NZ756",
+   "upc": "",
+   "mpn": "6039623",
+   "title": "JOBST SensiFoot Compression Stockings, 8-15 mmHg, Knee High",
+   "brand": "JOBST",
+   "attributes": {
+    "color": [
+     "navy"
+    ]
+   }
+  },
+  "is_match": false,
+  "_source": "essity_live",
+  "_confidence_in_label": "answer_key_inferred",
+  "_found_via": "run_export",
+  "category": "other_size_or_color"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B000079XWB",
+   "upc": "719812002019",
+   "mpn": "4080570034",
+   "title": "OXO Good Grips 4-Cup Angled Measuring Cup",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_11824",
+   "upc": "",
+   "mpn": "11824",
+   "title": "Companion (S) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B005EOJAKI",
+   "upc": "",
+   "mpn": "M12494",
+   "title": "Morakniv Companion Fixed Blade Outdoor Knife with Stainless Steel Blade, 4.1-Inch, Orange (M-11824)",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "mpn",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_11827",
+   "upc": "",
+   "mpn": "11827",
+   "title": "Companion (S) Military Green Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B004ZAIXSC",
+   "upc": "",
+   "mpn": "M11824",
+   "title": "Morakniv Companion Fixed Blade Outdoor Knife with Stainless Steel Blade, 4.1-Inch, Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_11863",
+   "upc": "",
+   "mpn": "11863",
+   "title": "Companion (C) Military Green Sport- & Friluftskniv",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B004TNWD40",
+   "upc": "",
+   "mpn": "M12159",
+   "title": "Morakniv Companion Carbon Steel Fixed-Blade Knife with Sheath, 4.1 Inch, Military Green",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12494",
+   "upc": "",
+   "mpn": "12494",
+   "title": "Companion HeavyDuty (C) Military Green Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B009NZVZ3E",
+   "upc": "",
+   "mpn": "M12495",
+   "title": "Morakniv Companion Heavy-Duty Carbon Steel Fixed-Blade Knife with Sheath, 4.1 Inch",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "green"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_12495",
+   "upc": "",
+   "mpn": "12495",
+   "title": "Companion HeavyDuty (C) Hi-Vis Orange Outdoor Sports Knife",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B009XDR0NK",
+   "upc": "",
+   "mpn": "M11999",
+   "title": "Morakniv Companion Heavy-Duty Carbon Steel Fixed-Blade Knife with Sheath, 4.1 Inch",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "morakniv_live_13507",
+   "upc": "",
+   "mpn": "13507",
+   "title": "Kansbol med Multi-Mount (S) Burnt Orange",
+   "brand": "Morakniv"
+  },
+  "candidate": {
+   "asin": "B07PTXZ9SR",
+   "upc": "",
+   "mpn": "FT02348",
+   "title": "Morakniv Kansbol Fixed Blade",
+   "brand": "Morakniv",
+   "attributes": {
+    "color": [
+     "orange"
+    ]
+   }
+  },
+  "is_match": true,
+  "_source": "morakniv_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "title_only"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_1",
+   "upc": "719812031026",
+   "mpn": "1410280",
+   "title": "Etched Twisting Tea Ball",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B008H2JMFW",
+   "upc": "719812031026",
+   "mpn": "1410280",
+   "title": "OXO Brew Twisting Ball Tea Infuser - Fine Mesh, Stainless Steel",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_0",
+   "upc": "760172011852",
+   "mpn": "52100",
+   "title": "Sport Lightweight Hidden",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B0744NG1NL",
+   "upc": "760172011852",
+   "mpn": "052100-BLK-S",
+   "title": "Injinji Sport Lightweight Hidden (Small, Black)",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_2",
+   "upc": "840097701639",
+   "mpn": "11327300",
+   "title": "Garlic Press",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B09QBDRCRK",
+   "upc": "840097701639",
+   "mpn": "11327300",
+   "title": "OXO Good Grips Stainless Steel Garlic Press",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_1",
+   "upc": "760172011869",
+   "mpn": "52100",
+   "title": "Sport Lightweight Hidden",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B0744NQ461",
+   "upc": "760172011869",
+   "mpn": "052100-BLK-M",
+   "title": "Injinji Sport Lightweight Hidden (Medium, Black)",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_2",
+   "upc": "840097701639",
+   "mpn": "11327300",
+   "title": "Garlic Press",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0F4NGTRJ2",
+   "upc": "840097701639",
+   "mpn": "4080570795",
+   "title": "Stainless Garlic Press OXO",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_2",
+   "upc": "760172011876",
+   "mpn": "52100",
+   "title": "Sport Lightweight Hidden",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B0744NPNXQ",
+   "upc": "760172011876",
+   "mpn": "052100-BLK-L",
+   "title": "Injinji Sport Lightweight Hidden (Large, Black)",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_3",
+   "upc": "719812687858",
+   "mpn": "11262700",
+   "title": "OXO Good Grips Glass Salad Spinner",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B09KG9Q57N",
+   "upc": "719812687858",
+   "mpn": "11262700",
+   "title": "OXO Good Grips Glass Salad Spinner, Large 6.22-Qt, Lettuce & Fruit Washer",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_3",
+   "upc": "760172011890",
+   "mpn": "52230",
+   "title": "Sport Original Weight Mini-Crew",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B00AK8E9KY",
+   "upc": "760172011890",
+   "mpn": "52230",
+   "title": "Injinji 2.0 Men's Sport Mini Crew Toesocks, Black, Medium",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_4",
+   "upc": "719812025575",
+   "mpn": "1155700",
+   "title": "OXO GG V-BLADE MANDOLINE",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B001THGPDO",
+   "upc": "719812025575",
+   "mpn": "1155700",
+   "title": "OXO Good Grips V-Blade Mandoline Slicer",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_4",
+   "upc": "760172011906",
+   "mpn": "52230",
+   "title": "Sport Original Weight Mini-Crew",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B00AK8E9MM",
+   "upc": "760172011906",
+   "mpn": "52230",
+   "title": "Injinji 2.0 Men's Sport Mini Crew Toesocks, Black, Large",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_5",
+   "upc": "840097701189",
+   "mpn": "13322800",
+   "title": "OXO GG Folding Dish Rack",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B09BVYVFZQ",
+   "upc": "840097701189",
+   "mpn": "13322800",
+   "title": "OXO Good Grips Aluminum Fold Flat Dish Drying Rack, 2-Tier, with Drainboard",
+   "brand": "OXO"
+  },
+  "is_match": true,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "injinji_5",
+   "upc": "760172011920",
+   "mpn": "52270",
+   "title": "Sport Original Weight Crew",
+   "brand": "INJINJI"
+  },
+  "candidate": {
+   "asin": "B00AK8E41S",
+   "upc": "760172011920",
+   "mpn": "052270BLK S Black",
+   "title": "Injinji 2.0 Men's Sport Crew Toesocks, Black, Small",
+   "brand": "INJINJI"
+  },
+  "is_match": true,
+  "_source": "injinji_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "upc",
+  "category": "upc_match"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00005RKOE",
+   "upc": "719812709819",
+   "mpn": "70981V6",
+   "title": "OXO Good Grips 2 Cup Angled Measuring Cup",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0033X4DJ0",
+   "upc": "719812002637",
+   "mpn": "1050584V4UK",
+   "title": "OXO 1050584V4UK Good Grips Angled Measuring Jug, 250 ml",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0CKTT3D16",
+   "upc": "840097707372",
+   "mpn": "11384700",
+   "title": "OXO Good Grips Glass Measuring Cup Set, 2 Cup & 4 Cup with Non-Slip Handle",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00NBBS1WY",
+   "upc": "719812030982",
+   "mpn": null,
+   "title": "MEASURE CUP ANGLE 2OZ",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00154GH5C",
+   "upc": "719812002675",
+   "mpn": "1050588V3MLNYK",
+   "title": "OXO 1 Litre Angled Measuring Jug, Transparent",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00C264CT0",
+   "upc": "719812030982",
+   "mpn": "1109880V6",
+   "title": "Oxo Good Grips Angled Measuring Cup 0.25-cup",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B015CQZCHM",
+   "upc": "719812046129",
+   "mpn": "11161100MLNYKEU",
+   "title": "OXO GG 1 CUP SQUEEZE & POUR SILICONE MEASURING CUP, CLEAR",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B0B498PW9S",
+   "upc": null,
+   "mpn": null,
+   "title": "OXO Good Grips 3-Piece Angled Measuring Cup Set (Black) and OXO Good Grips 3-Piece Plastic Mixing Bowl Set (White/Black)",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00LE6FO4Q",
+   "upc": "719812042459",
+   "mpn": "11124400",
+   "title": "OXO Good Grips 7-Piece Nesting Measuring Beaker Set - Multicolored",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00U65VM60",
+   "upc": "719812042183",
+   "mpn": "11121701",
+   "title": "Oxo Measuring Cup Set 6 pcs in Black, 8.89 x 12.7 x 24.77 cm",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00L9X1G1Y",
+   "upc": "719812041124",
+   "mpn": "B00L9X1G1Y",
+   "title": "OXO Good Grips 6-Piece Plastic Measuring Cups- White",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ },
+ {
+  "offer": {
+   "offer_id": "oxo_0",
+   "upc": "1050588V6UK",
+   "mpn": "1050588",
+   "title": "OXO GG 4 CUP ANGLED MEASURING CUP - INTL - TRITAN",
+   "brand": "OXO"
+  },
+  "candidate": {
+   "asin": "B00L9X2CWQ",
+   "upc": "719812041100",
+   "mpn": "ZZP-875",
+   "title": "OXO Good Grips 6- Piece Plastic Measuring Cups",
+   "brand": "OXO"
+  },
+  "is_match": false,
+  "_source": "oxo_live",
+  "_confidence_in_label": "human_verified",
+  "_found_via": "keyword",
+  "category": "wrong_other"
+ }
+]

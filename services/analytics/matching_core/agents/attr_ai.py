@@ -589,6 +589,65 @@ def record_from_agent_trace(run_id: Any, row_idx: int, title: str, part_number: 
         conn.close()
 
 
+def record_from_keyword_extraction(run_id: Any, row_idx: int, title: str, part_number: str, fields: dict,
+                                   model: str = "", prompt_version: str = "") -> bool:
+    """The vendor keyword generation (brand_extractor) now also decodes the title's abbreviations and reads
+    its attributes.  Keep what it read on the row as the SAME data_json["ai_unabbrev"] record the AI title
+    reader used to write, so the matcher (attr_extract) uses it with no second AI call.  Learned pairs
+    (abbreviations_learned.csv) are merged in and beat the AI's, exactly as in the old reader; AI pairs the
+    person has not seen before become word-library suggestions.  A row that already has a record of the same
+    prompt version, or a record the query agent / old title reader wrote, keeps it.
+    Returns True when something was saved."""
+    if not isinstance(fields, dict):
+        return False
+    pairs_in = fields.get("expansions")
+    attrs_in = fields.get("attrs") or fields.get("attributes")
+    from services import database
+    conn = _db()
+    try:
+        row = conn.execute("SELECT data_json FROM analytics_catalog_rows WHERE run_id = ? AND row_idx = ?",
+                           (run_id, row_idx)).fetchone()
+        if not row:
+            return False
+        data = _json(row["data_json"])
+        current = data.get("ai_unabbrev") if isinstance(data.get("ai_unabbrev"), dict) else None
+        if current and (current.get("prompt_version") == prompt_version
+                        or str(current.get("source") or "").startswith("query_agent")):
+            return False
+        title = title or str(data.get("title") or "")
+        if not title:
+            return False
+        learned = learned_pairs()
+        learned_hits = [{"from": t, "to": learned[_norm_token(t)]}
+                        for t in abbreviated_tokens(title, data.get("brand")) if _norm_token(t) in learned]
+        learned_kept, _ = check_pairs(title, learned_hits)
+        ai_kept, dropped = check_pairs(title, pairs_in)
+        learned_keys = {_norm_token(x["from"]) for x in learned_kept}
+        ai_kept = [x for x in ai_kept if _norm_token(x["from"]) not in learned_keys]   # a rule beats the AI
+        pairs = [{**x, "source": "learned"} for x in learned_kept] + [{**x, "source": "ai"} for x in ai_kept]
+        attributes, dropped_attributes = check_attributes(title, attrs_in, part_number or str(data.get("itemid") or ""))
+        if not pairs and not attributes:
+            return False
+        data["ai_unabbrev"] = {
+            "expanded_title": apply_pairs(title, pairs) if pairs else title,
+            "original_title": title, "pairs": pairs, "attributes": attributes, "dropped": dropped,
+            "dropped_attributes": dropped_attributes, "agent_comparison_title": "",
+            "why": ["read during vendor keyword generation"],
+            "model": model or "", "source": "brand_extractor",
+            "prompt_version": prompt_version or "", "from_cache": False,
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with database._LOCK:
+            conn.execute("UPDATE analytics_catalog_rows SET data_json = ? WHERE run_id = ? AND row_idx = ?",
+                         (json.dumps(data, default=str), run_id, row_idx))
+            conn.commit()
+        for x in ai_kept:
+            _suggest(conn, "abbreviation", _norm_token(x["from"]), x["to"], title, run_id)
+        return True
+    finally:
+        conn.close()
+
+
 # --------------------------------------------------------------------------- #
 # 3a. Unknown color names -> suggestions (never a verdict change)
 # --------------------------------------------------------------------------- #

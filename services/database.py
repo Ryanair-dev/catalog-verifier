@@ -202,6 +202,7 @@ def init_db() -> None:
             scoring_method TEXT DEFAULT 'weighted',
             use_query_agent INTEGER DEFAULT 0,
             use_llm_verifier INTEGER DEFAULT 0,
+            clean_amazon_titles INTEGER DEFAULT 0,
             total_catalog_items INTEGER DEFAULT 0,
             total_candidates_found INTEGER DEFAULT 0,
             verified_count INTEGER DEFAULT 0,
@@ -309,6 +310,10 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE analytics_runs ADD COLUMN use_llm_verifier INTEGER DEFAULT 0"
             )
+        if not _column_exists(conn, "analytics_runs", "clean_amazon_titles"):
+            conn.execute(
+                "ALTER TABLE analytics_runs ADD COLUMN clean_amazon_titles INTEGER DEFAULT 0"
+            )
         # additive migrations — AI title reader as a run option, finished search tiers (resume),
         # AI provider notices for the run page (out of credits, rate limit, bad key, outage)
         if not _column_exists(conn, "analytics_runs", "use_ai_reader"):
@@ -317,6 +322,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE analytics_runs ADD COLUMN tiers_done TEXT DEFAULT '[]'")
         if not _column_exists(conn, "analytics_runs", "ai_notices"):
             conn.execute("ALTER TABLE analytics_runs ADD COLUMN ai_notices TEXT DEFAULT '[]'")
+        # additive migration — post-run AI actions from the run page (LLM query fallback / approval verifier)
+        for _col, _ddl in (("post_ai_step", "TEXT"), ("post_ai_status", "TEXT"),
+                           ("post_ai_done", "INTEGER DEFAULT 0"), ("post_ai_total", "INTEGER DEFAULT 0"),
+                           ("post_ai_message", "TEXT")):
+            if not _column_exists(conn, "analytics_runs", _col):
+                conn.execute(f"ALTER TABLE analytics_runs ADD COLUMN {_col} {_ddl}")
 
         # additive migration — brand column/text saved at wizard time for rescore pre-population
         if not _column_exists(conn, "analytics_runs", "brand_col"):
