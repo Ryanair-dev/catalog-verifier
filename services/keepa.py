@@ -292,6 +292,9 @@ def _flatten_product(p: dict, s30: dict, s90: dict) -> dict:
         "offer_count_fba": _karr(s90, "current", _IDX_COUNT_FBA),
         "offer_count_fbm": _karr(s90, "current", _IDX_COUNT_FBM),
         "reviews_rating_count": _karr(s90, "current", _IDX_RATING),
+        # Star rating (Keepa idx 16, stored x10: 45 = 4.5) -- additive, read by
+        # Competitor Analysis only (2026-11-03).
+        "rating": (lambda v: round(v / 10, 1) if isinstance(v, (int, float)) else None)(_karr(s90, "current", 16)),
         "sales_rank_current": _karr(s90, "current", _IDX_SALES_RANK),
         "sales_rank_30d": _karr(s30, "avg30", _IDX_SALES_RANK),
         "url": f"https://www.amazon.com/dp/{p.get('asin')}",
@@ -432,6 +435,57 @@ def fetch_products(asins, on_progress=None, should_cancel=None) -> dict:
     for key, row in fresh.items():
         row["buybox_seller_name"] = names.get(row.get("buybox_seller_id"))
     _product_cache_put(fresh)
+    return out
+
+
+def fetch_monthly_sold(asins) -> dict:
+    """{ASIN: monthlySold or None} -- Amazon's "N+ bought in past month" figure
+    for the WHOLE ASIN (all sellers), None = below Amazon's display threshold /
+    unknown. Used by Toolbox > Brand Check's Notes column (2026-11-04).
+
+    Deliberately a bare /product call (history=0, no stats/offers/buybox):
+    verified live 2026-11-04 it costs 1 token/ASIN and still carries
+    `monthlySold`, vs 12/ASIN for fetch_products' full two-call fetch. Reuses
+    fetch_products' 2-day keepa_product_cache when an ASIN is already there.
+    Raises RuntimeError if Keepa isn't configured or a batch fails outright,
+    so the caller can say "unavailable" instead of reporting a false "no sales"."""
+    if not is_configured():
+        raise RuntimeError("Keepa is not configured (KEEPA_API missing)")
+    uniq = sorted({a.strip().upper() for a in asins if a})
+    out: dict = {}
+    for a, row in _product_cache_get(uniq).items():
+        out[a] = row.get("monthly_sold_quantity")
+    to_fetch = [a for a in uniq if a not in out]
+    if not to_fetch:
+        return out
+    sess = _session()
+    for i in range(0, len(to_fetch), _PRODUCT_BATCH):
+        batch = to_fetch[i:i + _PRODUCT_BATCH]
+        for attempt in range(8):
+            _wait_tokens(sess, max(5, len(batch)))
+            try:
+                r = sess.get(f"{_ENDPOINT}/product", timeout=60, params={
+                    "domain": _DOMAIN, "asin": ",".join(batch), "history": 0})
+            except requests.RequestException:
+                cancellable_sleep(min(30, 3 * 2 ** attempt), None)
+                continue
+            if r.status_code in (400, 401, 402, 403):
+                raise RuntimeError(f"Keepa fatal {r.status_code}: {r.text[:200]}")
+            if r.status_code != 200:
+                cancellable_sleep(min(30, 3 * 2 ** attempt), None)
+                continue
+            j = r.json()
+            if j.get("error"):
+                if "token" in str(j["error"]).lower():
+                    cancellable_sleep(min(60, 6 * (attempt + 1)), None)
+                    continue
+                raise RuntimeError(f"Keepa error: {j['error']}")
+            for p in j.get("products") or []:
+                if p.get("asin"):
+                    out[p["asin"].strip().upper()] = _kval(p.get("monthlySold"))
+            break
+        else:
+            raise RuntimeError("Keepa /product failed after retries")
     return out
 
 

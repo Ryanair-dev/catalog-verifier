@@ -56,6 +56,7 @@ _FILL_BLUE = PatternFill("solid", fgColor=Color(theme=8, tint=0.8))   # UPC/ASIN
 _FILL_GMED = PatternFill("solid", fgColor=Color(theme=9, tint=0.4))   # Buy Box current
 _FILL_GLT  = PatternFill("solid", fgColor=Color(theme=9, tint=0.8))   # BB 30d/90d
 _FILLS = {"blue": _FILL_BLUE, "gmed": _FILL_GMED, "glt": _FILL_GLT}
+_FILL_DERIVED = PatternFill("solid", fgColor="FFFF00")   # SKU derived from a shadow/kit
 
 # Full column layout: (header, data number_format, data fill key, data bold, center).
 # Matched to `Atlantic analytics 6.8.2026.xlsx` PLUS 8 inserted SellerCloud columns:
@@ -70,11 +71,17 @@ TEMPLATE_COLS = [
     ("Vendor Title", None, None, False, False), ("Amazon title", None, None, False, False),
     ("qty/case", None, None, False, True), ("Available qty", None, None, False, True),
     ("OR33", None, None, False, True), ("On order", None, None, False, True),
-    ("FBA total", None, None, False, True), ("30d sales", None, None, False, True),
+    ("FBA total", None, None, False, True),
+    # 2026-11-10: Amazon FBA inbound (working + shipped + receiving) -- already
+    # INCLUDED in "FBA total" (verified: total = warehouse + inbound on every
+    # inbound row). Its "Inbound value" column was removed 2026-11-17 (user).
+    ("FBA inbound", None, None, False, True),
+    ("30d sales", None, None, False, True),
     ("Estimated Monthly Units Sold", None, None, True, True), ("amz pack", None, None, True, True),
     ("Last cost", _ACCT, None, False, True), ("Vendor", None, None, False, False),
     ("Product Cost", _ACCT, None, False, False), ("Product cost * amz pack", _ACCT, None, False, False),
     ("Buy Box Price current", _ACCT, "gmed", True, True),
+    ("BB Fluctuation", "General", None, False, True),   # 2026-11-17, see bb_fluctuation_formula
     ("BB Price 30d", _CUR, "glt", False, True), ("BB Price 90d", _CUR, "glt", False, True),
     ("Net Profit", "0.00", None, False, False), ("Net Margin", "0%", None, False, False),
     ("ROI", "0%", None, False, False),
@@ -95,7 +102,39 @@ def L(name):
 
 # columns that are NEW (not in the loaded template) and need header styling
 _NEW_HEADER_COLS = ("Offer Vendor", "SKU", "FBA SKU", "Available qty", "OR33", "On order", "FBA total",
-                    "30d sales", "Last cost", "Vendor")
+                    "FBA inbound", "30d sales", "Last cost", "Vendor", "BB Fluctuation")
+
+
+def insert_template_cols(ws) -> None:
+    """Insert the blank columns the template doesn't have, at the positions
+    TEMPLATE_COLS expects (shared by this export and services/seller_analytics.py
+    so the two can never drift apart). Positions come from COL, so adding a
+    column to TEMPLATE_COLS only means bumping the matching count here."""
+    ws.insert_cols(COL["Offer Vendor"], 3)    # Offer Vendor, SKU, FBA SKU  (after UPC)
+    ws.insert_cols(COL["Available qty"], 6)   # Available qty, OR33, On order, FBA total,
+                                              # FBA inbound, 30d sales (after qty/case)
+    ws.insert_cols(COL["Last cost"], 2)       # Last cost, Vendor  (after amz pack)
+    ws.insert_cols(COL["BB Fluctuation"], 1)  # BB Fluctuation (after Buy Box Price current)
+
+
+BB_FLUCT_THRESHOLD = 0.10   # current Buy Box >= 10% above OR below the 30d or 90d one
+
+
+def bb_fluctuation_formula(cur: str, d30: str, d90: str, threshold: float = BB_FLUCT_THRESHOLD) -> str:
+    """Excel formula for the "BB Fluctuation" column (2026-11-17, user's
+    buy-box-fluctuation rule): "Fluctuates" when the current Buy Box is >= the
+    threshold away (either direction) from the 30d OR the 90d Buy Box, blank
+    when there's no current price. IFERROR per ratio because Excel's OR doesn't
+    short-circuit, so a 0/blank 30d or 90d would otherwise give #DIV/0!.
+    `cur`/`d30`/`d90` are cell refs for the row (e.g. "Y2")."""
+    t = threshold
+    return (f'=IF(N({cur})=0,"",IF(OR(IFERROR(ABS({cur}/{d30}-1)>={t},FALSE),'
+            f"IFERROR(ABS({cur}/{d90}-1)>={t},FALSE)),\"Fluctuates\",\"Doesn't fluctuate\"))")
+
+
+def bb_fluctuation_rule(dxf):
+    """Red fill/font on "Fluctuates" cells (same red as the sheet's other flags)."""
+    return Rule(type="cellIs", operator="equal", formula=['"Fluctuates"'], dxf=dxf)
 
 _ROBOTO = Font(name="Roboto", size=12)                 # header font (matches template)
 _BOLD = Font(name="Calibri", size=11, bold=True)       # bold data (matches manual)
@@ -269,131 +308,176 @@ def _inlist(vals):
 
 
 def _sku_data_by_asin(asins: list[str], asin_to_upc: dict[str, str] | None = None) -> dict:
-    """{asin: {main_sku, fba_sku, on_order, or33, upc}} from the live SellerCloud
-    view (Ford Medical).
+    """{asin: {...}} SKU data from the live SellerCloud view (Ford Medical) -- see
+    _sku_data_all. History: main SKU keyed by UPC since 2026-10-27 (the real
+    parent is often never listed on Amazon itself); every SKU shown, not one
+    picked, since 2026-11-17. `asin_to_upc` is the caller's UPC per ASIN
+    (Vendor Offers always has it; Seller Analytics doesn't, and reads back the
+    returned `upc`)."""
+    return _sku_data_all(asins, asin_to_upc)
 
-    Main SKU is looked up by UPC, not ASIN -- mirroring the user's own "SC
-    data.xlsx" reference file (its "Sku Data extended" tab keys the parent/
-    main SKU off UPC; its "FBA"/"FBM" Power Queries separately group by ASIN).
-    Fixed 2026-10-27, per user report that SKU/FBA SKU (among other columns)
-    were coming back inaccurate: the true parent/main SellerCloud SKU is
-    often never itself listed on Amazon -- only its FBA/FBM shadow children
-    carry a real ASIN -- so filtering this view by ASIN AND FulfilledBy=
-    'Merchant' could silently return nothing, or the wrong row, whenever the
-    real main SKU's own ASIN column was blank or stale. UPC doesn't have
-    that problem; it's the stable identifier of the underlying product.
-    FBA SKU keeps the ASIN-based lookup (FulfilledBy='Amazon'), since that
-    IS the SKU actually listed under that exact ASIN -- that half was never
-    the bug.
 
-    `asin_to_upc` is the caller's own UPC -> ASIN(s) assignment (an ASIN has
-    exactly one UPC; a UPC can have several ASINs, so this is the per-ASIN
-    reverse lookup) -- Vendor Offers' export always has this (it starts from
-    a UPC). Seller Analytics (`services/seller_analytics.py`) does NOT --
-    it starts from a bare ASIN list with no known UPC yet, and actually uses
-    this function's own `upc` return value to discover one. For any ASIN
-    with no entry in `asin_to_upc`, this falls back to the original
-    ASIN-keyed main-SKU query for just that ASIN, so that caller doesn't
-    regress -- it was never the half of this that was wrong."""
+def _sku_data_all(asins: list[str], asin_to_upc: dict[str, str] | None = None) -> dict:
+    """2026-11-17 rewrite, per user (they clean SellerCloud data from this export):
+    show EVERY SKU under one identifier instead of picking one.
+
+      * SKU (main)  = every Active SKU whose UPC (digits only, leading zeros and
+        dashes ignored -- '0-7006628005-0' counts) is this UPC and which is not a
+        shadow (ShadowOf), not a kit (sellercloud.bvc_Product_Bundle) and not a
+        suffixed listing (-FBA<n>/-FBM<n>/_QY<n>). Several = data to clean up.
+      * FBA SKU     = every other Active, Amazon-fulfilled SKU listed under this ASIN
+        (shadows/kits). FBM SKUs are left out (user: "only FBA"). Several = data
+        to check.
+      * No main under the UPC but the ASIN has shadows/kits -> the main is taken
+        from them (ShadowOf parent, else the kit's component SKUs) and flagged
+        `main_derived` (the export paints that SKU cell yellow).
+
+    Returns {asin: {main_sku, fba_sku (single best, used for Last cost / On order
+    / OR33 lookups), main_skus, fba_skus (comma lists for display), main_derived,
+    on_order, or33, upc}}. Callers without a UPC per ASIN (Seller Analytics) use
+    the ASIN's own SKUs for the main instead."""
     asin_to_upc = asin_to_upc or {}
     clean_asins = [a.strip().upper() for a in asins if a]
-    upcs = sorted({u for u in asin_to_upc.values() if u})
-    asins_without_upc = [a for a in clean_asins if not asin_to_upc.get(a)]
+    _strip = lambda s: re.sub(r"(_QY\d+|-FB[AM]\d*)+$", "", s) if s else s
+    _digits = lambda s: "".join(ch for ch in str(s or "") if ch.isdigit())
+    _pid = lambda r: (r.get("ProductID") or "").strip()
+    _suffixed = re.compile(r"(-FB[AM]\d*$|_QY\d+)", re.I)
+    cols_sql = ("UPC, ProductID, ShadowOf, FulfilledBy, Status, OnOrder, InventoryPhysicalQty, "
+                "LastPurchasedOn, LTRIM(RTRIM(ASIN)) asin")
 
-    # Matched on _bkey (leading zeros ignored), not the exact string: SellerCloud
-    # often drops the UPC's leading zero or pads it to EAN/GTIN length -- e.g.
-    # DRE007152 is stored as '30985007152' while the Victory offer has
-    # '030985007152', so an exact IN missed its main SKU (2026-10-28, user
-    # report; ~8.9k SC rows are 11-digit, ~7.6k 13, ~3.8k 14). Each UPC is
-    # queried in every zero-padded form from its bare digits up to 14 digits.
-    main_by_upc: dict = {}                       # keyed by _bkey(upc)
-    for chunk in _chunks({_bkey(u) for u in upcs if _bkey(u)}, n=300):
+    # 1. every Ford row whose UPC (dashes/spaces removed) is one of ours
+    rows_by_upc: dict = {}
+    keys = {_bkey(u) for u in asin_to_upc.values() if _bkey(u)}
+    for chunk in _chunks(keys, n=300):
         variants = {k.zfill(n) for k in chunk for n in range(len(k), 15)}
         try:
             rows, cols = _azure_rows(
-                "SELECT UPC, ProductID, ShadowOf, FulfilledBy, Status, "
-                "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
-                "FROM analytics.sku_data_extended_view "
-                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(UPC)) IN ({_inlist(variants)})")
+                f"SELECT {cols_sql} FROM analytics.sku_data_extended_view "
+                "WHERE CompanyName LIKE 'Ford%' AND "
+                f"REPLACE(REPLACE(LTRIM(RTRIM(UPC)),'-',''),' ','') IN ({_inlist(variants)})")
         except Exception as exc:  # noqa: BLE001
-            log.warning("[template_export] sku view (main by UPC) query failed: %s", str(exc)[:120])
+            log.warning("[template_export] sku view (by UPC) query failed: %s", str(exc)[:120])
             continue
-        by: dict = {}
         for r in rows:
             d = dict(zip(cols, r))
-            by.setdefault(_bkey(d["UPC"]), []).append(d)
-        for upc, rs in by.items():
-            merch = [r for r in rs if r["FulfilledBy"] == "Merchant"]
-            mkey = lambda r: (r["Status"] == "Active", not (r["ShadowOf"] or ""),
-                              r["LastPurchasedOn"] or dt.datetime.min)
-            main = max(merch, key=mkey) if merch else (max(rs, key=mkey) if rs else None)
-            # main SKU = the base/parent: prefer ShadowOf; else strip the shadow
-            # suffixes (-FBA/-FBM/_QY<n>) off the ProductID → the base SKU.
-            base = ((main or {}).get("ShadowOf") or (main or {}).get("ProductID")) if main else None
-            main_sku = re.sub(r"(_QY\d+|-FB[AM])+$", "", base) if base else None
-            main_by_upc[upc] = {
-                "main_sku": main_sku,
-                "on_order": (main or {}).get("OnOrder"),
-                "or33": (main or {}).get("InventoryPhysicalQty"),
-            }
+            rows_by_upc.setdefault(_bkey(_digits(d["UPC"])), []).append(d)
 
-    fba_by_asin: dict = {}
+    # 2. every Ford row listed under one of our ASINs (any fulfilment)
+    rows_by_asin: dict = {}
     for chunk in _chunks(clean_asins):
         try:
             rows, cols = _azure_rows(
-                "SELECT LTRIM(RTRIM(ASIN)) asin, ProductID, UPC "
-                "FROM analytics.sku_data_extended_view "
-                f"WHERE CompanyName LIKE 'Ford%' AND FulfilledBy = 'Amazon' "
-                f"AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)})")
+                f"SELECT {cols_sql} FROM analytics.sku_data_extended_view "
+                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)})")
         except Exception as exc:  # noqa: BLE001
-            log.warning("[template_export] sku view (fba by ASIN) query failed: %s", str(exc)[:120])
+            log.warning("[template_export] sku view (by ASIN) query failed: %s", str(exc)[:120])
             continue
         for r in rows:
             d = dict(zip(cols, r))
-            fba_by_asin.setdefault(d["asin"], d)   # first Amazon row wins, same as before
+            rows_by_asin.setdefault((d["asin"] or "").upper(), []).append(d)
 
-    # Fallback for callers with no known UPC per ASIN (Seller Analytics) --
-    # the original ASIN-keyed main-SKU query, scoped to just those ASINs, so
-    # that caller keeps the exact behavior it had before this fix.
-    main_by_asin_fallback: dict = {}
-    for chunk in _chunks(asins_without_upc):
+    # 3. which of those SKUs are kits, and their component SKUs
+    kit_parts: dict = {}
+    pids = {_pid(r).upper() for rs in (*rows_by_upc.values(), *rows_by_asin.values()) for r in rs if _pid(r)}
+    for chunk in _chunks(pids, n=500):
         try:
             rows, cols = _azure_rows(
-                "SELECT LTRIM(RTRIM(ASIN)) asin, ProductID, ShadowOf, FulfilledBy, Status, "
-                "OnOrder, InventoryPhysicalQty, LastPurchasedOn "
-                "FROM analytics.sku_data_extended_view "
-                f"WHERE CompanyName LIKE 'Ford%' AND LTRIM(RTRIM(ASIN)) IN ({_inlist(chunk)}) "
-                "AND FulfilledBy = 'Merchant'")
+                "SELECT LTRIM(RTRIM(ProductId)) kit, LTRIM(RTRIM(ChildProductId)) part "
+                f"FROM sellercloud.bvc_Product_Bundle WHERE LTRIM(RTRIM(ProductId)) IN ({_inlist(chunk)})")
         except Exception as exc:  # noqa: BLE001
-            log.warning("[template_export] sku view (main by ASIN fallback) query failed: %s", str(exc)[:120])
+            log.warning("[template_export] kit lookup failed: %s", str(exc)[:120])
             continue
-        by: dict = {}
-        for r in rows:
-            d = dict(zip(cols, r))
-            by.setdefault(d["asin"], []).append(d)
-        for asin, rs in by.items():
-            mkey = lambda r: (r["Status"] == "Active", not (r["ShadowOf"] or ""),
-                              r["LastPurchasedOn"] or dt.datetime.min)
-            main = max(rs, key=mkey)
-            base = main.get("ShadowOf") or main.get("ProductID")
-            main_sku = re.sub(r"(_QY\d+|-FB[AM])+$", "", base) if base else None
-            main_by_asin_fallback[asin] = {
-                "main_sku": main_sku,
-                "on_order": main.get("OnOrder"),
-                "or33": main.get("InventoryPhysicalQty"),
-            }
+        for k, part in rows:
+            kit_parts.setdefault((k or "").upper(), []).append(part)
+
+    def is_main(r) -> bool:
+        p = _pid(r)
+        return (r.get("Status") == "Active" and p and not (r.get("ShadowOf") or "").strip()
+                and p.upper() not in kit_parts and not _suffixed.search(p))
+
+    # primary main among several: not a '.FDS' copy, latest PO, shortest, alphabetical
+    mrank = lambda r: (_pid(r).upper().endswith(".FDS"), -((r.get("LastPurchasedOn") or dt.datetime.min).toordinal()),
+                       len(_pid(r)), _pid(r))
+    # FBA list order: Amazon-fulfilled first, real '-FBA' SKUs, has a parent, alphabetical
+    frank = lambda r: (r.get("FulfilledBy") != "Amazon", "-FBA" not in _pid(r).upper(),
+                       not (r.get("ShadowOf") or "").strip(), _pid(r))
 
     out: dict = {}
+    derived_needed: set = set()
     for asin in clean_asins:
         upc = asin_to_upc.get(asin)
-        fba = fba_by_asin.get(asin)
-        entry = dict(main_by_upc.get(_bkey(upc), {})) if upc else dict(main_by_asin_fallback.get(asin, {}))
-        entry["fba_sku"] = (fba or {}).get("ProductID")
-        # Only needed by Seller Analytics (an ASIN we don't carry has no
-        # vendor-offer UPC to key off of, so this is the fallback source
-        # when Keepa's own UPC/EAN list comes back empty for it).
-        entry["upc"] = upc or (fba or {}).get("UPC")
-        out[asin] = entry
+        a_rows = rows_by_asin.get(asin, [])
+        u_rows = rows_by_upc.get(_bkey(upc), []) if upc else a_rows
+        mains = sorted({_pid(r).upper(): r for r in u_rows if is_main(r)}.values(), key=mrank)
+        main_ids = {_pid(m).upper() for m in mains}
+        # FBA only (user 2026-11-17: "we do not need any FBM skus, only FBA")
+        listings = sorted({_pid(r).upper(): r for r in a_rows
+                           if r.get("Status") == "Active" and r.get("FulfilledBy") == "Amazon"
+                           and _pid(r).upper() not in main_ids and not is_main(r)}.values(), key=frank)
+        # the parent(s) this ASIN's listings point at: ShadowOf, kit components, base name
+        parents: list = []
+        for f in listings:
+            for p in ([(f.get("ShadowOf") or "").strip()] + kit_parts.get(_pid(f).upper(), [])
+                      + [_strip(_pid(f))]):
+                if p and p.upper() not in {x.upper() for x in parents}:
+                    parents.append(p)
+        derived = False
+        if mains:
+            linked = [m for m in mains if _pid(m).upper() in {p.upper() for p in parents}]
+            primary = (linked or mains)[0]
+            main_list = [_pid(m) for m in mains]
+        else:
+            # no main under this UPC: take it from the shadows/kits -- ShadowOf
+            # parent, else the kit's components, else the name with _QY<n>/-FB[AM]<n>
+            # stripped but ONLY if that SKU really exists (checked below)
+            real = []
+            for f in listings:
+                cands = [(f.get("ShadowOf") or "").strip()] + kit_parts.get(_pid(f).upper(), [])
+                if not any(cands):
+                    base = _strip(_pid(f))
+                    cands = [base] if base and base.upper() != _pid(f).upper() else []
+                for p in cands:
+                    if p and p.upper() not in {x.upper() for x in real}:
+                        real.append(p)
+            main_list, primary, derived = real, None, bool(real)
+            derived_needed.update(p.upper() for p in real)
+        out[asin] = {
+            "main_sku": _pid(primary) if primary else (main_list[0] if main_list else None),
+            "main_skus": ", ".join(main_list) or None,
+            "main_derived": derived,
+            "fba_sku": next((_pid(f) for f in listings if f.get("FulfilledBy") == "Amazon"), None),
+            "fba_skus": ", ".join(_pid(f) for f in listings) or None,
+            "on_order": (primary or {}).get("OnOrder"),
+            "or33": (primary or {}).get("InventoryPhysicalQty"),
+            "upc": upc or next((r.get("UPC") for r in a_rows if r.get("UPC")), None),
+        }
+
+    # On order / OR33 for mains that were only derived from a shadow/kit
+    if derived_needed:
+        info: dict = {}
+        lookup_ok = True
+        for chunk in _chunks(derived_needed, n=500):
+            try:
+                rows, cols = _azure_rows(
+                    "SELECT LTRIM(RTRIM(ProductID)) pid, OnOrder, InventoryPhysicalQty "
+                    f"FROM analytics.sku_data_extended_view WHERE LTRIM(RTRIM(ProductID)) IN ({_inlist(chunk)})")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[template_export] derived main lookup failed: %s", str(exc)[:120])
+                lookup_ok = False
+                continue
+            for pid, oo, q in rows:
+                info[(pid or "").upper()] = (oo, q)
+        for e in out.values():
+            if not e["main_derived"]:
+                continue
+            # keep only derived mains that really exist in SellerCloud (if the
+            # check itself failed, keep them all rather than silently drop them)
+            keep = [p.strip() for p in (e["main_skus"] or "").split(",")
+                    if p.strip() and (p.strip().upper() in info or not lookup_ok)]
+            e["main_skus"] = ", ".join(keep) or None
+            e["main_sku"] = keep[0] if keep else None
+            e["main_derived"] = bool(keep)
+            e["on_order"], e["or33"] = info.get(keep[0].upper(), (None, None)) if keep else (None, None)
     return out
 
 
@@ -416,6 +500,29 @@ def _fba_total_by_asin(asins: list[str]) -> dict:
                 f"AND LTRIM(RTRIM(asin)) IN ({_inlist(chunk)}) GROUP BY LTRIM(RTRIM(asin))")
         except Exception as exc:  # noqa: BLE001
             log.warning("[template_export] fba inventory query failed: %s", str(exc)[:120])
+            continue
+        for r in rows:
+            d = dict(zip(cols, r))
+            out[d["asin"]] = _f(d["q"]) or 0
+    return out
+
+
+def _fba_inbound_by_asin(asins: list[str]) -> dict:
+    """{asin: FBA inbound qty} -- working + shipped + receiving, summed across the
+    ASIN's FBA SKUs on the same table-wide latest snapshot _fba_total_by_asin
+    uses (so the two columns always describe the same day). Part of FBA total."""
+    out: dict = {}
+    for chunk in _chunks([a.strip().upper() for a in asins if a]):
+        try:
+            rows, cols = _azure_rows(
+                "SELECT LTRIM(RTRIM(asin)) asin, SUM(ISNULL(fulfilled_by_amazon_inbound_working_quantity,0)"
+                " + ISNULL(fulfilled_by_amazon_inbound_shipped_quantity,0)"
+                " + ISNULL(fulfilled_by_amazon_inbound_receiving_quantity,0)) q "
+                "FROM amazon.amazon_fulfilled_by_amazon_manage_inventory "
+                "WHERE dte = (SELECT MAX(dte) FROM amazon.amazon_fulfilled_by_amazon_manage_inventory) "
+                f"AND LTRIM(RTRIM(asin)) IN ({_inlist(chunk)}) GROUP BY LTRIM(RTRIM(asin))")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[template_export] fba inbound query failed: %s", str(exc)[:120])
             continue
         for r in rows:
             d = dict(zip(cols, r))
@@ -852,6 +959,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     # SellerCloud + Amazon + SellerSnap enrichment for the chosen ASINs
     sku_by_asin = _sku_data_by_asin(chosen_asins, asin_to_upc)   # SKU / FBA SKU / on order / OR33
     fba_total = _fba_total_by_asin(chosen_asins)                 # FBA total (Amazon FBA inventory)
+    fba_inbound = _fba_inbound_by_asin(chosen_asins)             # FBA inbound (part of FBA total)
     snap30 = _sellersnap_30d_by_asin(chosen_asins)               # 30d sales fallback (SellerSnap)
     report30 = sp_reports.get_units_30d() if live else {}        # 30d sales (SP-API Sales & Traffic, cached daily)
     last_po = _last_po_by_sku(                                    # Last cost + Vendor (latest PO ≥ 2025)
@@ -914,9 +1022,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
     #    headers of the shifted columns; we only style the new blanks) ──
     wb = load_workbook(_TEMPLATE)
     ws = wb["Analytics"]
-    ws.insert_cols(2, 3)     # Offer Vendor, SKU, FBA SKU  (after UPC)
-    ws.insert_cols(12, 5)    # Available qty, OR33, On order, FBA total, 30d sales (after qty/case)
-    ws.insert_cols(19, 2)    # Last cost, Vendor  (after amz pack)
+    insert_template_cols(ws)
     ws.cell(row=1, column=COL["qty/case"]).value = "qty/case"
     for name in _NEW_HEADER_COLS:
         c = COL[name]
@@ -931,7 +1037,10 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
         k, win, upc, asin, pack, sku = d["k"], d["win"], d["upc"], d["asin"], d["pack"], d["sku"]
         rowd = {
             "UPC/EAN": int(upc) if str(upc).isdigit() else upc,
-            "SKU": sku.get("main_sku"), "FBA SKU": sku.get("fba_sku"),
+            # every main under the UPC / every listing under the ASIN, comma-
+            # separated (several = SellerCloud data to clean up) -- 2026-11-17
+            "SKU": sku.get("main_skus") or sku.get("main_sku"),
+            "FBA SKU": sku.get("fba_skus") or sku.get("fba_sku"),
             "ASIN": asin,
             "Link": f'=HYPERLINK("https://www.amazon.com/dp/"&{L("ASIN")}{r})' if asin else None,
             "Offer Vendor": d["win_vendor"],
@@ -940,6 +1049,7 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             "Available qty": win.get("avail"),
             "OR33": sku.get("or33"), "On order": sku.get("on_order"),
             "FBA total": fba_total.get((asin or "").strip().upper()),
+            "FBA inbound": fba_inbound.get((asin or "").strip().upper()),
             "30d sales": _units_30d(asin, report30, snap30),
             "Estimated Monthly Units Sold": d["monthly"], "amz pack": pack,
             "Last cost": (last_po.get(sku.get("main_sku")) or (None, None))[0],
@@ -947,6 +1057,8 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
             "Product Cost": round(d["prod_cost"], 4),
             "Product cost * amz pack": f'={L("Product Cost")}{r}*{L("amz pack")}{r}',
             "Buy Box Price current": round(d["bb_cur"], 2),
+            "BB Fluctuation": bb_fluctuation_formula(f'{L("Buy Box Price current")}{r}',
+                                                     f'{L("BB Price 30d")}{r}', f'{L("BB Price 90d")}{r}'),
             "BB Price 30d": z(k.get("buybox_30d")), "BB Price 90d": z(k.get("buybox_90d")),
             "Net Profit": (f'={L("Buy Box Price current")}{r}-{L("Product cost * amz pack")}{r}'
                            f'-{L("FBA Fee")}{r}-{L("Referral Fee")}{r}-{L("Storage Fee")}{r}-{L("Prep & Out fee")}{r}'),
@@ -979,6 +1091,8 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
                 cell.font = _HYPERLINK_FONT
             if center:
                 cell.alignment = _CENTER
+        if sku.get("main_derived"):   # main taken from the shadow/kit: no main under this UPC
+            ws.cell(row=r, column=COL["SKU"]).fill = _FILL_DERIVED
         r += 1
 
     # highlight duplicate UPC + ASIN values (Excel-standard red) + restore the
@@ -1007,6 +1121,8 @@ def build_template_xlsx(upcs: list[str] | None = None, focus_vendor: str | None 
                 f"{col}2:{col}{last}",
                 Rule(type="cellIs", operator=operator, formula=[formula], dxf=dxf),
             )
+        ws.conditional_formatting.add(f'{L("BB Fluctuation")}2:{L("BB Fluctuation")}{last}',
+                                      bb_fluctuation_rule(dxf))
 
     # AutoFilter: insert_cols shifts cell data/styles but does NOT widen the
     # template's own auto_filter.ref ("A1:AI1", its original 35-column width)
