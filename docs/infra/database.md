@@ -38,6 +38,7 @@ All SQLite I/O for the whole app lives in `services/database.py` — a single fi
 | `background_jobs` | Shared "survive a restart" shadow table for in-memory background jobs. See `docs/infra/job_persistence.md`. |
 | `storage_fee_cache` | 90-day TTL cache of computed FBA storage fees per ASIN (was 60 days — extended 2026-10-19). See `docs/features/toolbox.md`. |
 | `keepa_product_cache` | 2-day TTL cache of Keepa live `/product` results per ASIN. See `docs/infra/keepa.md`. |
+| `run_families_cache` | 45-day TTL cache of an Offer Analysis run's families (gzipped JSON, no verdicts), keyed by `run_id`; rebuilt when the run's fingerprint or `vendor_families.FILE_VERSION` changes. Created lazily by `routers/run_families.py`. See `docs/features/offer_analytics.md`. |
 | `eligibility_cache` | 7-day TTL cache of SP-API eligibility status per ASIN — opt-in, used only by `enrich_asins` (Vendor Offers/PO Analytics/Seller Analytics). See `docs/infra/sp_api.md`. |
 | `health_check_runs` / `health_check_results` | Weekly catalog health-check job (Eligibility + DOG over the Pair Library). See `docs/features/pair_manager.md`. |
 | `brand_mappings` | Legacy Excel-import brand→manufacturer/purchaser/sourcer fallback for Create SKUs. See `docs/features/create_skus.md`. |

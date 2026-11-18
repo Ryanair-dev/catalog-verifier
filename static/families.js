@@ -1,27 +1,27 @@
 /* ============================================================================
-   Families in the Analytics run table (read only: changes no verdict).  v6
+   Families of an Analytics run, as an on-demand list (read only: changes no verdict).  v10
 
-   In the normal candidates table:
-     - each row: a colored stripe on the left + family tag under the row number ("F3")
-     - Reason cell: relation label (exact variant / other variant / ...) + why
-     - Vendor title cell: what the AI title reader found for that row, if anything
-       ("AI: finish satin nickel · type privacy")
-   Above the table, ONE compact bar:
-     - "Products with variants": a chip per family that has several vendor rows
-       (single-row products are hidden behind "+N single products")
-     - click a chip = show ONLY that family (all its pairs, every verdict, on the
-       All tab); click again or "show all" to get everything back
-     - one short line on what the AI did (details on hover)
+   A "Families" button next to "Export Excel" opens a list above the candidates table:
+     - products with variants first (several vendor rows), single products behind a toggle
+     - each family: name, brand, rows, what varies, approved / in-review counts
+     - click a family = its vendor rows and every Amazon pair, with the relation
+       (exact variant / other variant / ...) and why
+     - "Show in table" = the normal table shows ONLY that family (all its pairs, every
+       verdict, on the All tab); "show all" gets everything back
 
-   Needs the 2-line change in app.js renderAnalyticsRunCandidates (paste file).
-   Data: GET /api/run-families/{run_id}   (routers/run_families.py)
-   index.html under app.js:  <script src="/static/families.js?v=7"></script>
-   Console check:  window.__familiesPanel -> "v6 loaded"
+   Nothing is loaded until the button is clicked. The server caches the families of a run
+   for 45 days (routers/run_families.py); verdicts in the list are always current.
+   "Rebuild" forces a fresh build.
+
+   Needs the 2-line change in app.js renderAnalyticsRunCandidates (window.__familyFilterRows).
+   Data: GET /api/run-families/{run_id}[?refresh=1]   (routers/run_families.py)
+   index.html under app.js:  <script src="/static/families.js?v=10"></script>
+   Console check:  window.__familiesPanel -> "v10 loaded"
    ========================================================================== */
 (() => {
   "use strict";
   if (window.__familiesPanel) return;
-  window.__familiesPanel = "v6 loaded";
+  window.__familiesPanel = "v10 loaded";
 
   const REL_STYLE = {
     "exact variant":      { bg: "#dcfce7", fg: "#166534" },
@@ -31,17 +31,21 @@
     "other product":      { bg: "#f1f5f9", fg: "#475569" },
     "other brand":        { bg: "#f1f5f9", fg: "#94a3b8" },
   };
+  const VERDICT = {
+    verified:     { label: "Approved",     fg: "#16a34a" },
+    review:       { label: "Review",       fg: "#b45309" },
+    not_approved: { label: "Not approved", fg: "#94a3b8" },
+  };
   const PALETTE = ["#2563eb", "#db2777", "#16a34a", "#ea580c", "#7c3aed", "#0891b2",
                    "#ca8a04", "#dc2626", "#4f46e5", "#059669", "#c026d3", "#65a30d"];
-  const REFRESH_MS = 60000;
 
   const st = {
     runId: null,
-    byKey: null, sharedBy: null, rowFamily: null, aiRows: {}, ai: null,
-    families: [], colorOf: {},
-    loadedAt: 0, loading: false, observer: null,
-    filter: null,
+    open: false, loading: false, error: "",
+    data: null,                 // the API response for st.runId, with .families decorated
+    expanded: new Set(),        // family ids opened in the list
     showSingles: false,
+    filter: null,               // family id shown alone in the table
   };
   window.__familyFilterRows = null;            // read by app.js renderAnalyticsRunCandidates
 
@@ -57,93 +61,67 @@
     return name.trim() || f.name || f.id;
   }
 
-  // ---- which run is open --------------------------------------------------
-  function noteRun(id) {
-    if (!id) return;
-    ensureUi();
-    watchTable();
-    if (id !== st.runId) {
-      st.runId = id;
-      st.byKey = st.sharedBy = st.rowFamily = null;
-      st.families = []; st.colorOf = {}; st.aiRows = {}; st.ai = null;
-      st.showSingles = false;
-      setFilter(null, false);
-      st.loadedAt = 0;
-      renderLegend();
-      load();
-    } else if (Date.now() - st.loadedAt > REFRESH_MS) {
-      load();
-    }
+  function age(builtAt) {
+    const t = Date.parse(String(builtAt || "").replace(" ", "T") + "Z");
+    if (!t) return "";
+    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (mins < 2) return "just now";
+    if (mins < 90) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 36) return `${hours} h ago`;
+    return `${Math.round(hours / 24)} days ago`;
   }
 
-  window.addEventListener("analytics-run-opened", (e) => noteRun(Number(e.detail && e.detail.runId)));
-
-  const _origFetch = window.fetch;
-  window.fetch = function (input, init) {
-    try {
-      const url = typeof input === "string" ? input : (input && input.url) || "";
-      const method = String((init && init.method) || (input && input.method) || "GET").toUpperCase();
-      const m = url.match(/\/api\/analytics\/runs\/(\d+)(?:[?\/#]|$)/);
-      if (m && method === "GET") noteRun(Number(m[1]));
-    } catch (_) { /* never break the app's own request */ }
-    return _origFetch.apply(this, arguments);
-  };
-
-  // a verdict tab (not "All") ends the family filter: those tabs load one server page at a time
-  document.addEventListener("click", (e) => {
-    const tab = e.target.closest && e.target.closest("#view-analytics-run .run-tab");
-    if (tab && st.filter && tab.dataset.runTab !== "All") setFilter(null, false);
-  }, true);
-
-  ensureUi();
-  setInterval(ensureUi, 1500);
+  // ---- which run is open --------------------------------------------------
+  window.addEventListener("analytics-run-opened", (e) => {
+    const id = Number(e.detail && e.detail.runId);
+    if (!id || id === st.runId) return;
+    st.runId = id;
+    st.data = null; st.error = ""; st.open = false;
+    st.expanded = new Set(); st.showSingles = false;
+    setFilter(null, false);
+    render();
+  });
 
   // ---- data ----------------------------------------------------------------
-  async function load() {
+  async function load(refresh) {
     const id = st.runId;
     if (!id || st.loading) return;
-    st.loading = true;
+    st.loading = true; st.error = "";
+    render();
     try {
-      const r = await _origFetch(`/api/run-families/${id}`);
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      const r = await fetch(`/api/run-families/${id}${refresh ? "?refresh=1" : ""}`);
+      if (!r.ok) {
+        let msg = `${r.status} ${r.statusText}`;
+        try { const j = await r.json(); if (j.detail) msg = String(j.detail); } catch {}
+        throw new Error(msg);
+      }
       const j = await r.json();
       if (st.runId !== id) return;
-      const byKey = {}, sharedBy = {}, rowFamily = {}, colorOf = {}, counts = {};
-      (j.pairs || []).forEach(p => {
-        byKey[`${p.row}|${p.asin}`] = p;
-        const c = (counts[p.family] ||= { approved: 0, review: 0, pairs: 0 });
-        c.pairs += 1;
-        if (p.verdict === "verified") {
-          c.approved += 1;
-          (sharedBy[`${p.family}|${p.asin}`] ||= []).push(p.row);
-        } else if (p.verdict === "review") {
-          c.review += 1;
-        }
-      });
+      const pairsBy = {};
+      (j.pairs || []).forEach(p => { (pairsBy[p.family] ||= []).push(p); });
       let multiIndex = 0;
-      const families = (j.families || []).map(f => {
+      j.families = (j.families || []).map(f => {
         const rows = (f.rows || []).map(r => String(r.row));
-        // colors go to the families with variants first, so the few that matter get distinct colors
-        const color = rows.length > 1 ? PALETTE[multiIndex++ % PALETTE.length] : "#94a3b8";
-        colorOf[f.id] = color;
-        rows.forEach(r => { rowFamily[r] = f.id; });
-        const c = counts[f.id] || {};
-        return { id: f.id, name: f.name, brand: f.brand, rows, varying: f.varying || {}, color,
-                 approved: c.approved || 0, review: c.review || 0, pairs: c.pairs || 0 };
+        const pairs = pairsBy[f.id] || [];
+        return {
+          ...f, rowLabels: rows, pairs,
+          color: rows.length > 1 ? PALETTE[multiIndex++ % PALETTE.length] : "#94a3b8",
+          approved: pairs.filter(p => p.verdict === "verified").length,
+          review: pairs.filter(p => p.verdict === "review").length,
+        };
       });
-      Object.assign(st, { byKey, sharedBy, rowFamily, colorOf, families, loadedAt: Date.now(),
-                          ai: j.ai || null, aiRows: j.ai_rows || {} });
+      st.data = j;
       if (st.filter) setFilter(st.filter, false);
-      renderLegend();
-      decorate(true);
     } catch (e) {
-      console.warn("[families] could not load:", e);
+      if (st.runId === id) st.error = e.message || String(e);
     } finally {
       st.loading = false;
+      render();
     }
   }
 
-  // ---- show one family only -------------------------------------------------------
+  // ---- show one family only in the table --------------------------------------------
   function rerenderTable(goToAll) {
     const all = document.querySelector('#view-analytics-run .run-tab[data-run-tab="All"]');
     const active = document.querySelector("#view-analytics-run .run-tab.active");
@@ -152,195 +130,173 @@
   }
 
   function setFilter(fid, redraw = true) {
-    const fam = st.families.find(f => f.id === fid);
+    const fam = st.data && st.data.families.find(f => f.id === fid);
     st.filter = fam ? fid : null;
-    window.__familyFilterRows = fam ? new Set(fam.rows) : null;
+    window.__familyFilterRows = fam ? new Set(fam.rowLabels) : null;
     if (redraw) rerenderTable(Boolean(fam));
-    renderLegend();
   }
 
-  // ---- the normal table ------------------------------------------------------
-  function watchTable() {
-    const body = document.getElementById("analytics-run-candidates-body");
-    if (!body || st.observer) return;
-    st.observer = new MutationObserver(() => decorate(false));
-    st.observer.observe(body, { childList: true });
+  // a verdict tab (not "All") ends the family filter: those tabs load one server page at a time
+  document.addEventListener("click", (e) => {
+    const tab = e.target.closest && e.target.closest("#view-analytics-run .run-tab");
+    if (tab && st.filter && tab.dataset.runTab !== "All") { setFilter(null, false); render(); }
+  }, true);
+
+  // ---- the list ---------------------------------------------------------------
+  function relChip(rel) {
+    const s = REL_STYLE[rel] || { bg: "#f1f5f9", fg: "#475569" };
+    return `<span style="display:inline-block;padding:1px 8px;border-radius:99px;font-weight:600;white-space:nowrap;background:${s.bg};color:${s.fg};">${esc(rel)}</span>`;
   }
 
-  function decorate(force) {
-    const body = document.getElementById("analytics-run-candidates-body");
-    if (!body || !st.byKey) return;
-    body.querySelectorAll("tr").forEach(tr => {
-      const cells = tr.children;
-      if (cells.length < 4) return;
-      const row = (cells[0].textContent || "").replace(/F\d+$/, "").trim();
-      const m = (cells[3].textContent || "").match(/\b[A-Z0-9]{10}\b/);
-      if (!row || !m) return;
-      const key = `${row}|${m[0]}`;
-      if (!force && tr.dataset.famKey === key) return;
-      tr.dataset.famKey = key;
-      tr.querySelectorAll(".fam-label, .fam-tag, .fam-ai").forEach(el => el.remove());
-
-      const fid = st.rowFamily[row];
-      const fam = st.families.find(f => f.id === fid);
-      tr.dataset.fam = fid || "";
-      if (fam && fam.rows.length > 1) {              // only products with variants get a stripe and a tag
-        cells[0].style.boxShadow = `inset 4px 0 0 ${fam.color}`;
-        cells[0].insertAdjacentHTML("beforeend",
-          `<div class="fam-tag" title="${esc(fam.name)}" style="margin-top:3px;font-size:10px;font-weight:700;color:${fam.color};white-space:nowrap;">${esc(fid)}</div>`);
-      } else {
-        cells[0].style.boxShadow = "";
-      }
-      const ai = st.aiRows[row];
-      if (ai && cells[2]) {
-        const found = Object.entries(ai.attributes || {}).map(([b, v]) => `${b} ${v.value}`).join(" · ");
-        const decoded = (ai.pairs || []).map(p => `${p.from} = ${p.to}`).join(", ");
-        const tip = [found && `found: ${found}`, decoded && `decoded: ${decoded}`,
-                     ai.expanded_title && `read as: ${ai.expanded_title}`,
-                     (ai.why || []).length && `why the AI looked: ${ai.why.join("; ")}`].filter(Boolean).join("\n");
-        if (found || decoded) {
-          cells[2].insertAdjacentHTML("beforeend",
-            `<div class="fam-ai" title="${esc(tip)}" style="margin-top:3px;font-size:11px;color:#7c3aed;">AI: ${esc(found || decoded)}</div>`);
-        }
-      }
-      const p = st.byKey[key];
-      if (p) {
-        const cell = tr.querySelector(".analytics-reason-cell") || cells[13] || cells[cells.length - 2];
-        if (cell) cell.insertAdjacentHTML("afterbegin", labelHtml(p));
-      }
-    });
-  }
-
-  function labelHtml(p) {
-    const s = REL_STYLE[p.relation] || { bg: "#f1f5f9", fg: "#475569" };
-    const others = ((st.sharedBy || {})[`${p.family}|${p.asin}`] || []).filter(r => String(r) !== String(p.row));
-    const shared = p.verdict === "verified" && others.length
-      ? `<div style="margin-top:2px;color:#92400e;">⚠ also approved for row ${others.map(esc).join(", ")} (same product)</div>`
-      : "";
-    const variant = p.listing_variant ? ` · listing: ${esc(p.listing_variant)}` : "";
-    return `<div class="fam-label" style="margin-bottom:4px;font-size:11px;line-height:1.35;color:#64748b;">
-      <span style="display:inline-block;padding:1px 8px;border-radius:99px;font-weight:600;white-space:nowrap;background:${s.bg};color:${s.fg};">${esc(p.relation)}</span>
-      <span>${esc(p.why)}${variant}</span>${shared}
-    </div>`;
-  }
-
-  function hover(fid) {
-    if (st.filter) return;
-    const body = document.getElementById("analytics-run-candidates-body");
-    if (!body) return;
-    body.querySelectorAll("tr").forEach(tr => {
-      tr.style.opacity = !fid || tr.dataset.fam === fid ? "" : "0.3";
-      tr.style.transition = "opacity 120ms";
-    });
-  }
-
-  // ---- the bar above the table ----------------------------------------------------
-  function chipHtml(f, small) {
-    const on = st.filter === f.id;
-    const varies = Object.keys(f.varying).map(b => b.replace("_code", "")).join(", ");
-    const title = `${f.name}\nrows ${f.rows.join(", ")}${varies ? "\nvaries by " + varies : ""}` +
-                  `\n${f.approved} approved · ${f.review} in review\nclick: show only this product`;
-    const counts = (f.approved ? `<span style="color:#16a34a;font-weight:700;">✓${f.approved}</span>` : "")
-                 + (f.review ? `<span style="color:#b45309;font-weight:700;">?${f.review}</span>` : "");
-    return `<button type="button" class="fam-chip" data-fid="${esc(f.id)}" title="${esc(title)}"
-        style="display:inline-flex;align-items:center;gap:5px;margin:2px 6px 2px 0;padding:${small ? "1px 8px 1px 5px" : "3px 10px 3px 6px"};
-               border:1px solid ${on ? f.color : "#e2e8f0"};outline:${on ? `2px solid ${f.color}` : "none"};border-radius:99px;
-               background:#fff;cursor:pointer;font-size:${small ? "10.5px" : "11.5px"};color:#334155;white-space:nowrap;max-width:260px;
-               opacity:${st.filter && !on ? "0.5" : "1"};">
-        <span style="width:9px;height:9px;border-radius:3px;background:${f.color};flex:0 0 auto;"></span>
-        <span style="overflow:hidden;text-overflow:ellipsis;">${esc(shortName(f))}</span>
-        ${f.rows.length > 1 ? `<span style="color:#94a3b8;">${f.rows.length}</span>` : ""}
-        ${counts}
-      </button>`;
+  function aiText(ai) {
+    if (!ai) return "";
+    const found = Object.entries(ai.attributes || {}).map(([b, v]) => `${b} ${v && v.value}`).join(" · ");
+    return found ? `<div style="font-size:11px;color:#7c3aed;">AI: ${esc(found)}</div>` : "";
   }
 
   function aiLine() {
-    const a = st.ai;
-    if (!a) return "";
-    let text, tip;
-    if (!a.switch_on) {
-      text = "AI title reading: off";
-      tip = "Set ANTHROPIC_API_KEY (and leave MATCH_AI_TITLE_ATTRS unset or =1) to switch it on.";
-    } else if (!a.rows_checked) {
-      text = "AI title reading: not run for this run yet";
-      tip = `Click Re-score: it reads the titles where the rules are not enough.\n` +
-            `If it still says this, check the server log for "Attribute AI router failed".`;
-    } else {
-      text = `AI read ${a.rows_checked} of ${a.rows_total} titles (the rest: rules were enough) · ` +
-             `found something in ${a.rows_with_result}`;
-      tip = `${a.attributes_found} attributes found, ${a.pairs_ai} abbreviations decoded by the AI, ` +
-            `${a.pairs_learned} by learned rules.\nRows with a finding show "AI: ..." under the vendor title.`;
-    }
-    return `<span title="${esc(tip)}" style="font-size:11px;color:#7c3aed;cursor:help;white-space:nowrap;">✦ ${esc(text)}</span>`;
+    const a = st.data && st.data.ai;
+    if (!a || !a.switch_on) return "";
+    return `<span title="${esc(`${a.attributes_found || 0} attributes found by the AI title reader`)}"
+      style="font-size:11px;color:#7c3aed;cursor:help;white-space:nowrap;">✦ AI found something in ${a.rows_with_result || 0} of ${a.rows_total || 0} titles</span>`;
   }
 
-  function renderLegend() {
-    let box = document.getElementById("fam-legend");
+  function familyHtml(f) {
+    const open = st.expanded.has(f.id);
+    const on = st.filter === f.id;
+    const varies = Object.keys(f.varying || {}).map(b => b.replace("_code", "")).join(", ");
+    const head = `
+      <div data-fam-toggle="${esc(f.id)}" style="display:flex;align-items:center;gap:10px;padding:7px 10px;cursor:pointer;">
+        <span style="color:#94a3b8;width:10px;">${open ? "▾" : "▸"}</span>
+        <span style="width:10px;height:10px;border-radius:3px;background:${f.color};flex:0 0 auto;"></span>
+        <span style="font-weight:600;color:#334155;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.name)}">${esc(shortName(f))}</span>
+        <span style="color:#64748b;white-space:nowrap;">${esc(f.brand || "")}</span>
+        <span style="color:#94a3b8;white-space:nowrap;">${f.rowLabels.length} row${f.rowLabels.length === 1 ? "" : "s"}</span>
+        ${varies ? `<span style="color:#94a3b8;white-space:nowrap;">varies by ${esc(varies)}</span>` : ""}
+        <span style="white-space:nowrap;min-width:110px;text-align:right;">
+          ${f.approved ? `<span style="color:#16a34a;font-weight:700;">✓${f.approved}</span> ` : ""}
+          ${f.review ? `<span style="color:#b45309;font-weight:700;">?${f.review}</span> ` : ""}
+          <span style="color:#94a3b8;">${f.pairs.length} pairs</span>
+        </span>
+        <button type="button" data-fam-filter="${esc(f.id)}" class="row-action-btn" style="font-size:11px;${on ? `outline:2px solid ${f.color};` : ""}">
+          ${on ? "Showing in table" : "Show in table"}</button>
+      </div>`;
+    if (!open) return `<div style="border-top:1px solid #edf0f5;">${head}</div>`;
+
+    const rows = (f.rows || []).map(r => `
+      <tr><td style="padding:3px 8px;color:#64748b;">${esc(r.row)}</td>
+          <td style="padding:3px 8px;">${esc(r.title)}${aiText(r.ai)}</td>
+          <td style="padding:3px 8px;color:#64748b;">${esc(r.variant || "")}</td>
+          <td style="padding:3px 8px;color:#94a3b8;">${esc(r.upc || "")}</td></tr>`).join("");
+    const pairs = f.pairs.map(p => {
+      const v = VERDICT[p.verdict] || { label: p.verdict || "", fg: "#64748b" };
+      return `
+      <tr><td style="padding:3px 8px;color:#64748b;">${esc(p.row)}</td>
+          <td style="padding:3px 8px;white-space:nowrap;"><a href="https://www.amazon.com/dp/${esc(p.asin)}" target="_blank" rel="noopener">${esc(p.asin)}</a></td>
+          <td style="padding:3px 8px;">${esc(p.amazon_title)}${p.listing_variant ? `<div style="color:#94a3b8;">listing: ${esc(p.listing_variant)}</div>` : ""}</td>
+          <td style="padding:3px 8px;">${relChip(p.relation)}<div style="color:#64748b;">${esc(p.why)}</div></td>
+          <td style="padding:3px 8px;white-space:nowrap;color:${v.fg};font-weight:600;">${esc(v.label)}${p.review_status ? `<div style="font-weight:400;color:#94a3b8;">${esc(p.review_status)}</div>` : ""}</td>
+          <td style="padding:3px 8px;text-align:right;color:#64748b;">${p.confidence == null ? "" : Number(p.confidence).toFixed(1)}</td></tr>`;
+    }).join("");
+    const th = (t) => `<th style="padding:3px 8px;text-align:left;font-weight:600;color:#64748b;">${t}</th>`;
+    return `<div style="border-top:1px solid #edf0f5;background:#fafbfd;">${head}
+      <div style="padding:0 10px 10px 30px;font-size:11.5px;">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+          <tr>${th("Row")}${th("Vendor title")}${th("Variant")}${th("UPC")}</tr>${rows}</table>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr>${th("Row")}${th("ASIN")}${th("Amazon title")}${th("Relation")}${th("Verdict")}${th("Conf.")}</tr>
+          ${pairs || `<tr><td colspan="6" style="padding:3px 8px;color:#94a3b8;">no candidates</td></tr>`}</table>
+      </div></div>`;
+  }
+
+  function render() {
+    ensureUi();
+    let box = document.getElementById("fam-list");
     const wrap = document.getElementById("analytics-run-candidates-wrap");
     if (!box && wrap && wrap.parentNode) {
       box = document.createElement("div");
-      box.id = "fam-legend";
-      box.style.cssText = "padding:8px 16px;border-bottom:1px solid #edf0f5;background:#fff;";
+      box.id = "fam-list";
+      box.style.cssText = "border-bottom:1px solid #edf0f5;background:#fff;font-size:12px;";
       wrap.parentNode.insertBefore(box, wrap);
-      box.addEventListener("mouseover", (e) => {
-        const ch = e.target.closest(".fam-chip");
-        if (ch) hover(ch.dataset.fid);
-      });
-      box.addEventListener("mouseout", (e) => {
-        const ch = e.target.closest(".fam-chip");
-        if (ch && !ch.contains(e.relatedTarget)) hover(null);
-      });
-      box.addEventListener("click", (e) => {
-        if (e.target.closest("[data-fam-clear]")) { setFilter(null); return; }
-        if (e.target.closest("[data-fam-singles]")) { st.showSingles = !st.showSingles; renderLegend(); return; }
-        const ch = e.target.closest(".fam-chip");
-        if (!ch) return;
-        hover(null);
-        setFilter(st.filter === ch.dataset.fid ? null : ch.dataset.fid);
-      });
+      box.addEventListener("click", onListClick);
     }
+    const btn = document.getElementById("fam-open-btn");
+    if (btn) btn.textContent = st.open ? "Hide families" : "Families";
     if (!box) return;
-    if (!st.families.length) { box.style.display = "none"; return; }
+    if (!st.open) { box.style.display = "none"; return; }
     box.style.display = "block";
 
-    const multi = st.families.filter(f => f.rows.length > 1);
-    const singles = st.families.filter(f => f.rows.length <= 1);
-    const fam = st.families.find(f => f.id === st.filter);
-
-    const multiChips = multi.length
-      ? multi.map(f => chipHtml(f, false)).join("")
-      : `<span style="font-size:12px;color:#94a3b8;">no product has several rows in this file</span>`;
-    const singlesToggle = singles.length
-      ? `<button type="button" data-fam-singles class="row-action-btn" style="margin:2px 0;font-size:11px;">
-           ${st.showSingles ? "hide" : "+"} ${singles.length} single product${singles.length === 1 ? "" : "s"}</button>`
-      : "";
-    const singlesRow = st.showSingles && singles.length
-      ? `<div style="display:flex;flex-wrap:wrap;margin-top:4px;padding-top:4px;border-top:1px dashed #e2e8f0;">
-           ${singles.map(f => chipHtml(f, true)).join("")}</div>`
-      : "";
-    const banner = fam
-      ? `<div style="display:flex;align-items:center;gap:8px;margin-top:6px;padding:5px 10px;border-radius:8px;background:#f8fafc;border:1px solid ${fam.color};font-size:12px;color:#334155;">
-           <span style="width:9px;height:9px;border-radius:3px;background:${fam.color};"></span>
-           <span>Only <b>${esc(shortName(fam))}</b> · rows ${esc(fam.rows.join(", "))} · ${fam.pairs} pairs, every verdict</span>
-           <button type="button" data-fam-clear class="row-action-btn" style="margin-left:auto;">show all</button>
-         </div>`
-      : "";
-
-    box.innerHTML = `
-      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;">
-        <span style="font-size:12px;font-weight:700;color:#334155;white-space:nowrap;">Products with variants</span>
-        <div style="display:flex;flex-wrap:wrap;align-items:center;flex:1;min-width:200px;">${multiChips}${singlesToggle}</div>
+    const d = st.data;
+    let bar, list = "";
+    if (st.loading) {
+      bar = `<span style="color:#64748b;">Building families… the first time can take about a minute for a big run.</span>`;
+    } else if (st.error) {
+      bar = `<span style="color:#dc2626;">Families could not load: ${esc(st.error)}</span>
+             <button type="button" data-fam-retry class="row-action-btn" style="font-size:11px;">Try again</button>`;
+    } else if (d) {
+      const multi = d.families.filter(f => f.rowLabels.length > 1);
+      const singles = d.families.filter(f => f.rowLabels.length <= 1);
+      const fam = d.families.find(f => f.id === st.filter);
+      bar = `
+        <span style="font-weight:700;color:#334155;">${multi.length} product${multi.length === 1 ? "" : "s"} with variants</span>
+        <span style="color:#94a3b8;">· ${singles.length} single</span>
         ${aiLine()}
-      </div>
-      ${singlesRow}
-      ${banner}`;
+        <span style="margin-left:auto;color:#94a3b8;" title="Families are kept for ${d.cache_days} days and rebuilt when the run changes. Verdicts are always current.">built ${esc(age(d.built_at))}</span>
+        <button type="button" data-fam-rebuild class="row-action-btn" style="font-size:11px;">Rebuild</button>
+        ${fam ? `<button type="button" data-fam-clear class="row-action-btn" style="font-size:11px;">Show all in table</button>` : ""}`;
+      list = (multi.length ? multi.map(familyHtml).join("")
+                           : `<div style="padding:7px 10px;color:#94a3b8;border-top:1px solid #edf0f5;">No product has several rows in this file.</div>`)
+        + (singles.length ? `<div style="border-top:1px solid #edf0f5;padding:6px 10px;">
+             <button type="button" data-fam-singles class="row-action-btn" style="font-size:11px;">
+               ${st.showSingles ? "Hide" : "Show"} ${singles.length} single product${singles.length === 1 ? "" : "s"}</button></div>` : "")
+        + (st.showSingles ? singles.map(familyHtml).join("") : "");
+    } else {
+      bar = "";
+    }
+    box.innerHTML = `
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:8px 16px;">${bar}</div>
+      <div style="max-height:420px;overflow:auto;padding:0 6px;">${list}</div>`;
   }
 
-  // ---- "Export families" button next to "Export Excel" --------------------------
+  function onListClick(e) {
+    const t = e.target;
+    const filt = t.closest("[data-fam-filter]");
+    if (filt) {
+      e.stopPropagation();
+      setFilter(st.filter === filt.dataset.famFilter ? null : filt.dataset.famFilter);
+      render(); return;
+    }
+    if (t.closest("[data-fam-clear]")) { setFilter(null); render(); return; }
+    if (t.closest("[data-fam-singles]")) { st.showSingles = !st.showSingles; render(); return; }
+    if (t.closest("[data-fam-rebuild]")) { load(true); return; }
+    if (t.closest("[data-fam-retry]")) { load(false); return; }
+    if (t.closest("a")) return;
+    const tog = t.closest("[data-fam-toggle]");
+    if (tog) {
+      const id = tog.dataset.famToggle;
+      st.expanded.has(id) ? st.expanded.delete(id) : st.expanded.add(id);
+      render();
+    }
+  }
+
+  function onOpen() {
+    if (!st.runId) { alert("Open a run first (or reload the page), then click Families again."); return; }
+    st.open = !st.open;
+    if (st.open && !st.data && !st.loading) load(false);
+    else render();
+  }
+
+  // ---- "Families" + "Export families" buttons next to "Export Excel" --------------
   function ensureUi() {
-    if (document.getElementById("fam-export-btn")) return;
     const exportBtn = document.getElementById("analytics-run-export");
-    if (!exportBtn) return;
+    if (!exportBtn || document.getElementById("fam-open-btn")) return;
+    const open = document.createElement("button");
+    open.id = "fam-open-btn";
+    open.type = "button";
+    open.className = exportBtn.className;
+    open.textContent = "Families";
+    open.title = "List this run's products and their variants (built on demand, kept 45 days)";
+    open.addEventListener("click", onOpen);
     const dl = document.createElement("button");
     dl.id = "fam-export-btn";
     dl.type = "button";
@@ -349,7 +305,10 @@
     dl.title = "Download the families workbook (Families + Pairs sheets)";
     dl.addEventListener("click", onExport);
     exportBtn.insertAdjacentElement("afterend", dl);
+    exportBtn.insertAdjacentElement("afterend", open);
   }
+  ensureUi();
+  setInterval(ensureUi, 1500);
 
   async function onExport() {
     const id = st.runId;
@@ -357,7 +316,7 @@
     const btn = document.getElementById("fam-export-btn");
     if (btn) { btn.disabled = true; btn.textContent = "Exporting…"; }
     try {
-      const r = await _origFetch(`/api/run-families/${id}/export`);
+      const r = await fetch(`/api/run-families/${id}/export`);
       if (!r.ok) {
         let msg = `${r.status} ${r.statusText}`;
         try { const j = await r.json(); if (j.detail) msg = String(j.detail); } catch {}

@@ -14,12 +14,7 @@
 (() => {
   "use strict";
 
-    // Families panel (static/families.js): loaded once, adds "Group by family" + "Export families" on a run page.
-  if (!document.querySelector('script[src="/static/families.js"]')) {
-    const _famScript = document.createElement("script");
-    _famScript.src = "/static/families.js";
-    document.head.appendChild(_famScript);
-  }
+  // Families list (static/families.js) is loaded by its own <script> tag in index.html.
 
   // ---------- Query helpers -----------------------------------------------
   const $  = (s, root = document) => root.querySelector(s);

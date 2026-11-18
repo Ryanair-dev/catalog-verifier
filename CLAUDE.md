@@ -87,6 +87,7 @@ catalog-verifier/
 │   ├── scans.py                     Scan lifecycle + verify engine + AI re-check
 │   ├── verify.py                    Legacy single-shot verify (kept for compat)
 │   ├── analytics.py                 Analytics (Offer Analysis) runs CRUD + verdict overrides + export
+│   ├── run_families.py              Offer Analysis run families: on-demand list + workbook; build cached 45 days (run_families_cache)
 │   ├── brand_analytics.py           Brand Analytics CRUD + discover + AI fill + export
 │   ├── reports.py                   Reports dashboards (PO P&L today; more register here as built)
 │   ├── po_analytics.py              PO Analytics on-demand run + automation endpoints
@@ -162,6 +163,7 @@ catalog-verifier/
 ├── static/
 │   ├── index.html                   SPA shell
 │   ├── app.js                       All UI logic
+│   ├── families.js                  Offer Analysis run page: "Families" list (loads only when clicked) + "Export families"
 │   ├── create_po.js                 Create SKUs wizard (self-contained module)
 │   ├── create_po.css                Create SKUs wizard styling (scoped .cpo)
 │   ├── price_desk.html              Vendor Offers / Price Desk page (served standalone or iframed)
