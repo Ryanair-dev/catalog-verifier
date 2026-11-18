@@ -173,3 +173,35 @@ def pos_for_purchaser(name: str) -> set[int]:
         return set()
     finally:
         conn.close()
+
+
+def all_board_pos() -> set[int] | None:
+    """Every PO number on the Inbound Shipments board, in ANY state (active,
+    archived, deleted), whoever the purchaser is. Reports' PO P&L uses it to
+    leave Monday in charge of every PO that is on the board, and only guess the
+    purchaser for POs that never were. None when the board can't be read (so a
+    caller doesn't mistake a failed query for "nothing is on the board")."""
+    if not azure_sql.is_configured():
+        return None
+    try:
+        conn = azure_sql._connect()
+    except Exception:  # noqa: BLE001
+        log.exception("[monday_eta] Azure connection failed")
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT po.link_text_value
+            FROM monday.items i
+            JOIN monday.column_values po ON po.item_id = i.id AND po.column_id = %s
+            WHERE i.board_id = %s
+            """,
+            (_col_id(_FIELDS["po_number"]), INBOUND_BOARD_ID),
+        )
+        return {int(r[0].strip()) for r in cur.fetchall() if r[0] and r[0].strip().isdigit()}
+    except Exception:  # noqa: BLE001
+        log.exception("[monday_eta] board PO query failed")
+        return None
+    finally:
+        conn.close()

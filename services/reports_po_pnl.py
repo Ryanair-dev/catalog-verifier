@@ -43,10 +43,14 @@ No Supply, Adjustment, Add Product) has po_number always NULL. So this
 filter alone already scopes correctly to real vendor POs without needing an
 explicit source_type clause.
 
-KNOWN GAP (see services/monday_eta.py `pos_for_purchaser`'s own docstring):
-the Purchaser filter only sees POs on the CURRENT live Inbound Shipments
-board. An older PO that's since been archived off that board won't be found
-by purchaser, even if it still has real P&L data sitting in this view.
+PO scope (which POs are "this purchaser's"): Monday's Inbound Shipments board
+decides for every PO that is on it (any item state), via
+monday_eta.pos_for_purchaser. A PO that was never put on the board (2026-11-18:
+PO 47708, Cencora, plus ~8.4k others in this view) falls back to the purchaser
+most of its SKUs belong to (SellerCloud SKU `Purchaser`, e.g. 'VictoriaV') --
+see _off_board_pos_for. Checked live: on the 657 Avi/Victoria POs Monday does
+list, that SKU-majority rule names Avi/Victoria for 564 (86%; most misses are
+MasonB), so off-board POs are a best guess, not Monday's word.
 """
 from __future__ import annotations
 
@@ -54,6 +58,7 @@ import logging
 import re
 import threading
 import time
+from collections import Counter
 
 from services import azure_sql, monday_eta
 
@@ -206,6 +211,68 @@ def _build_lock(key: str) -> threading.Lock:
         return _build_locks.setdefault(key, threading.Lock())
 
 
+def _purchaser_codes(purchaser: str) -> set[str]:
+    """SellerCloud SKU `Purchaser` codes (lower-case) for the names in `purchaser`
+    ("Avi Schoemann, Victoria Romanoff" -> {"avis", "victoriav"}). A code is the
+    purchaser's email local part from fps.purchaser_department_members
+    ('VictoriaV@fordmed.com' -> 'victoriav'); a name not in that table (Avi
+    Schoemann, checked live 2026-11-18) falls back to first name + last initial,
+    which is the pattern every code there follows ('AviS' exists on SKUs)."""
+    names = [n.strip() for n in (purchaser or "").split(",") if n.strip()]
+    emails: dict[str, str] = {}
+    try:
+        conn = azure_sql._connect()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT purchaser_name, purchaser_email FROM fps.purchaser_department_members")
+            emails = {(n or "").strip().lower(): (e or "") for n, e in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        log.exception("[reports_po_pnl] purchaser table query failed; using name-based codes")
+    codes = set()
+    for name in names:
+        email = emails.get(name.lower(), "")
+        if "@" in email:
+            codes.add(email.split("@", 1)[0].strip().lower())
+        else:
+            parts = name.split()
+            codes.add((parts[0] + (parts[-1][0] if len(parts) > 1 else "")).lower())
+    return codes
+
+
+def _off_board_pos_for(purchaser: str) -> set[int]:
+    """POs in the cash-cycle view that are NOT on the Inbound Shipments board at
+    all and whose SKUs mostly belong to one of `purchaser`'s SKU purchaser codes
+    (plurality of the PO's distinct SKUs, from the shared hourly Azure catalog
+    cache). Empty when the board can't be read, so a Monday outage never turns
+    every PO into a guess."""
+    on_board = monday_eta.all_board_pos()
+    codes = _purchaser_codes(purchaser)
+    if on_board is None or not codes or not azure_sql.is_configured():
+        return set()
+    sku_purchaser = {r["ProductID"].strip().upper(): r.get("_purchaser", "").strip().lower()
+                     for r in azure_sql.fetch_rows() if r.get("ProductID")}
+    conn = azure_sql._connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT DISTINCT po_number, product_id FROM {_VIEW} WHERE po_number IS NOT NULL")
+        po_skus: dict[int, set[str]] = {}
+        for po, sku in cur.fetchall():
+            po = int(po)
+            if po not in on_board:
+                po_skus.setdefault(po, set()).add((sku or "").strip().upper())
+    finally:
+        conn.close()
+    out = set()
+    for po, skus in po_skus.items():
+        counts = Counter(sku_purchaser.get(s, "") for s in skus)
+        counts.pop("", None)
+        if counts and counts.most_common(1)[0][0] in codes:
+            out.add(po)
+    return out
+
+
 def _build_unlocked(purchaser: str, key: str, wait_for_catalog: bool = True) -> list[dict]:
     """Caller must hold _build_lock(key). With wait_for_catalog=False and the
     shared Azure catalog not loaded yet (the first minutes after a restart),
@@ -214,11 +281,17 @@ def _build_unlocked(purchaser: str, key: str, wait_for_catalog: bool = True) -> 
     refreshes it in the background with brands filled in."""
     po_numbers = monday_eta.pos_for_purchaser(purchaser) if purchaser else None
     built_at = time.time()
+    catalog_ready = wait_for_catalog or azure_sql.is_warm()
+    if po_numbers is not None:
+        if catalog_ready:
+            po_numbers = po_numbers | _off_board_pos_for(purchaser)
+        else:
+            built_at = 0.0        # off-board POs need the catalog cache: rebuild once it's warm
     if po_numbers is not None and not po_numbers:
         lines: list[dict] = []
     else:
         lines = _line_items(po_numbers)
-        if wait_for_catalog or azure_sql.is_warm():
+        if catalog_ready:
             _enrich_brand_asin(lines)
         else:
             for it in lines:
