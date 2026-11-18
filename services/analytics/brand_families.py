@@ -27,6 +27,7 @@ AI_MAX_PAIRS = 40
 _TABLE_READY = False
 _CACHE: dict[str, Any] = {"at": None, "pairs": {}}          # at=None: not loaded / cleared
 _CACHE_LOCK = threading.Lock()
+_RUN_KEYS: dict[int, tuple[str, set, set]] = {}   # pairs_for_run: {run_id: (fingerprint, used, amazon_keys)}
 
 
 # --------------------------------------------------------------------------- #
@@ -418,12 +419,23 @@ def pairs_for_run(run_id: int) -> list[dict]:
     it still changes this run's brand agreement (that is how JOBST counts as Essity)."""
     conn = _db()
     try:
-        used = {str(r[0]) for r in conn.execute(
-            "SELECT DISTINCT json_extract(data_json,'$.scores.brand_family') FROM analytics_candidates "
-            "WHERE run_id=? AND json_extract(data_json,'$.scores.brand_family') IS NOT NULL", (run_id,)).fetchall()}
-        amazon_keys = {_key(r[0]) for r in conn.execute(
-            "SELECT DISTINCT json_extract(data_json,'$.amazon.brand') FROM analytics_candidates WHERE run_id=?",
-            (run_id,)).fetchall() if r[0]}
+        # The two scans over every candidate's data_json are cached per run until the run changes.
+        run = conn.execute("SELECT updated_at FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+        n, lo, hi = conn.execute("SELECT COUNT(*), MIN(rowid), MAX(rowid) FROM analytics_candidates "
+                                 "WHERE run_id=?", (run_id,)).fetchone()
+        fp = f"{run[0] if run else ''}|{n}:{lo}:{hi}"
+        cached = _RUN_KEYS.get(run_id)
+        if cached and cached[0] == fp:
+            used, amazon_keys = cached[1], cached[2]
+        else:
+            used = {str(r[0]) for r in conn.execute(
+                "SELECT DISTINCT json_extract(data_json,'$.scores.brand_family') FROM analytics_candidates "
+                "WHERE run_id=? AND json_extract(data_json,'$.scores.brand_family') IS NOT NULL",
+                (run_id,)).fetchall()}
+            amazon_keys = {_key(r[0]) for r in conn.execute(
+                "SELECT DISTINCT json_extract(data_json,'$.amazon.brand') FROM analytics_candidates WHERE run_id=?",
+                (run_id,)).fetchall() if r[0]}
+            _RUN_KEYS[run_id] = (fp, used, amazon_keys)
         vendor_keys = set()
         for r in conn.execute("SELECT data_json, extracted_json FROM analytics_catalog_rows WHERE run_id=?",
                               (run_id,)).fetchall():

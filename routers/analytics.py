@@ -270,32 +270,39 @@ def get_run_detail(
     offset = max(0, int(offset or 0))
     search = (search or "").strip()
 
+    # The two run-wide clean-ups below (verdict restore here, high-confidence promotion
+    # further down) scan every candidate's data_json under the write lock; skip them
+    # when the run has not changed since they last ran (see _FIXUPS_DONE).
+    with database._connect() as conn:
+        fixups_due = _FIXUPS_DONE.get(run_id) != _run_fingerprint(conn, run_id)
+
     # Earlier Analytics builds let legacy post-score rules rewrite selected
     # matcher verdicts. Restore the scorer's recorded result, except where an
     # explicit user decision or a flagged LLM audit is present.
-    with database._LOCK, database._connect() as conn:
-        restored = conn.execute(
-            "UPDATE analytics_candidates SET "
-            "verdict=json_extract(data_json,'$.scores.scorer_verdict'), "
-            "review_status=CASE WHEN review_status='ASIN Exclusivity' THEN '' "
-            "ELSE review_status END, "
-            "data_json=json_remove(json_set(data_json,'$.verdict',"
-            "json_extract(data_json,'$.scores.scorer_verdict')),"
-            "'$.scores.category_mismatch','$.scores.media_format_mismatch') "
-            "WHERE run_id=? "
-            "AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
-            "IN ('weighted','cascade','classifier') "
-            "AND COALESCE(json_extract(data_json,'$.scores.scorer_verdict'),'') "
-            "IN ('verified','review','not_approved') "
-            "AND (review_status IS NULL OR review_status='' "
-            "OR review_status='ASIN Exclusivity') "
-            "AND COALESCE(json_extract(data_json,'$.verification_audit.flagged'),0)=0 "
-            "AND (verdict != json_extract(data_json,'$.scores.scorer_verdict') "
-            "OR review_status='ASIN Exclusivity')",
-            (run_id,),
-        )
-        if restored.rowcount:
-            _recompute_run_counts(conn, run_id)
+    if fixups_due:
+        with database._LOCK, database._connect() as conn:
+            restored = conn.execute(
+                "UPDATE analytics_candidates SET "
+                "verdict=json_extract(data_json,'$.scores.scorer_verdict'), "
+                "review_status=CASE WHEN review_status='ASIN Exclusivity' THEN '' "
+                "ELSE review_status END, "
+                "data_json=json_remove(json_set(data_json,'$.verdict',"
+                "json_extract(data_json,'$.scores.scorer_verdict')),"
+                "'$.scores.category_mismatch','$.scores.media_format_mismatch') "
+                "WHERE run_id=? "
+                "AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
+                "IN ('weighted','cascade','classifier') "
+                "AND COALESCE(json_extract(data_json,'$.scores.scorer_verdict'),'') "
+                "IN ('verified','review','not_approved') "
+                "AND (review_status IS NULL OR review_status='' "
+                "OR review_status='ASIN Exclusivity') "
+                "AND COALESCE(json_extract(data_json,'$.verification_audit.flagged'),0)=0 "
+                "AND (verdict != json_extract(data_json,'$.scores.scorer_verdict') "
+                "OR review_status='ASIN Exclusivity')",
+                (run_id,),
+            )
+            if restored.rowcount:
+                _recompute_run_counts(conn, run_id)
 
     with database._connect() as conn:
         conn.row_factory = sqlite3.Row
@@ -528,22 +535,24 @@ def get_run_detail(
         f"AND COALESCE(json_extract(data_json,'$.scores.{_f}'),0)=0"
         for _f in _HARD_REJECT_FLAGS
     )
-    with database._LOCK, database._connect() as conn:
-        _verify_cur = conn.execute(
-            f"UPDATE analytics_candidates SET verdict='verified' "
-            f"WHERE run_id=? AND verdict='review' "
-            f"  AND (review_status IS NULL OR review_status='') "
-            f"  AND confidence >= ? "
-            f"  AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
-            f"      NOT IN ('weighted','cascade','classifier') "
-            f"  {_hard_reject_sql} "
-            f"  AND COALESCE(json_extract(data_json,'$.scores.pack_mismatch'),0)=0 "
-            f"  AND NOT (? > 0 AND sales_rank IS NOT NULL AND sales_rank > ?) "
-            f"  AND NOT (? > 0 AND sales_rank IS NOT NULL AND sales_rank < ?)",
-            (run_id, float(AUTO_APPROVE),
-             _run_max_r, _run_max_r, _run_min_r, _run_min_r),
-        )
-        _to_verify = bool(_verify_cur.rowcount and _verify_cur.rowcount > 0)
+    _to_verify = False
+    if fixups_due:
+        with database._LOCK, database._connect() as conn:
+            _verify_cur = conn.execute(
+                f"UPDATE analytics_candidates SET verdict='verified' "
+                f"WHERE run_id=? AND verdict='review' "
+                f"  AND (review_status IS NULL OR review_status='') "
+                f"  AND confidence >= ? "
+                f"  AND COALESCE(json_extract(data_json,'$.scores.scoring_method'),'') "
+                f"      NOT IN ('weighted','cascade','classifier') "
+                f"  {_hard_reject_sql} "
+                f"  AND COALESCE(json_extract(data_json,'$.scores.pack_mismatch'),0)=0 "
+                f"  AND NOT (? > 0 AND sales_rank IS NOT NULL AND sales_rank > ?) "
+                f"  AND NOT (? > 0 AND sales_rank IS NOT NULL AND sales_rank < ?)",
+                (run_id, float(AUTO_APPROVE),
+                 _run_max_r, _run_max_r, _run_min_r, _run_min_r),
+            )
+            _to_verify = bool(_verify_cur.rowcount and _verify_cur.rowcount > 0)
 
     if _to_verify:
         # Reflect the promotion in the current page's in-memory candidates so
@@ -569,6 +578,10 @@ def get_run_detail(
         with database._LOCK, database._connect() as conn:
             updated = _recompute_run_counts(conn, run_id)
         run_d.update(updated)
+
+    if fixups_due:
+        with database._connect() as conn:
+            _FIXUPS_DONE[run_id] = _run_fingerprint(conn, run_id)
 
     # If conflict-cap / auto-promotion / high-conf promotion wrote new verdict
     # changes, the ai_verdict_counts computed inside the initial DB block is
@@ -599,8 +612,11 @@ def get_run_detail(
             "WHERE run_id=? AND query_agent_json IS NOT NULL",
             (run_id,),
         ).fetchall()
+        # Only rows that carry an audit at all: a substring pre-filter in SQLite instead of
+        # parsing every candidate's data_json in Python (the loop below still checks each one).
         audit_rows = conn.execute(
-            "SELECT data_json FROM analytics_candidates WHERE run_id=?",
+            "SELECT data_json FROM analytics_candidates WHERE run_id=? "
+            "AND data_json LIKE '%\"verification_audit\"%'",
             (run_id,),
         ).fetchall()
 
@@ -730,6 +746,25 @@ def _parse_json_field(raw: str, default: Any) -> Any:
 # --------------------------------------------------------------------------- #
 
 _VERDICT_VALUES = {"verified", "review", "not_approved"}
+
+
+# Run-wide clean-ups in get_run_detail (legacy verdict restore + legacy high-confidence promotion)
+# scan every candidate's data_json, so they only run again when the run has changed since they last
+# ran in this process: {run_id: fingerprint after the clean-ups}.
+_FIXUPS_DONE: dict[int, str] = {}
+
+
+def _run_fingerprint(conn: sqlite3.Connection, run_id: int) -> str:
+    """Cheap signature of a run's candidates (run.updated_at + index-only counts, no data_json)."""
+    run = conn.execute("SELECT updated_at FROM analytics_runs WHERE id=?", (run_id,)).fetchone()
+    n, lo, hi = conn.execute(
+        "SELECT COUNT(*), MIN(rowid), MAX(rowid) FROM analytics_candidates WHERE run_id=?", (run_id,),
+    ).fetchone()
+    verdicts = conn.execute(
+        "SELECT verdict, COUNT(*) FROM analytics_candidates WHERE run_id=? GROUP BY verdict ORDER BY verdict",
+        (run_id,),
+    ).fetchall()
+    return f"{run[0] if run else ''}|{n}:{lo}:{hi}|" + ",".join(f"{v[0]}={v[1]}" for v in verdicts)
 
 
 def _recompute_run_counts(conn: sqlite3.Connection, run_id: int) -> dict[str, int]:
