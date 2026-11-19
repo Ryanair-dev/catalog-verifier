@@ -5,8 +5,8 @@ For each ASIN:
   - getCatalogItem returns 404          -> "DOG"          (delisted / dead ASIN)
   - else putListingsItem with
     mode=VALIDATION_PREVIEW (offer-only) validates WITHOUT persisting. Amazon returns
-    issue code 5885 (Generics Policy / "SB85") for a generic ASIN you may not
-    contribute to  -> "GENERIC"; otherwise                -> "NOT_GENERIC" (a real,
+    issue code 5885 (Generics Policy / "SB85") or 5886 ("restricted generic ASIN") for a
+    generic ASIN you may not contribute to -> "GENERIC"; otherwise -> "NOT_GENERIC" (a real,
     listable branded product — verified: even brand-gated ASINs come back clean).
 
 VALIDATION_PREVIEW is non-persisting, so nothing is ever added to the catalog.
@@ -30,7 +30,9 @@ from services.spapi.rate_limiter import LIMITERS
 log = logging.getLogger(__name__)
 
 ENDPOINT = "https://sellingpartnerapi-na.amazon.com"
-GENERIC_ISSUE_CODE = "5885"   # Amazon Generics Policy (a.k.a. SB85) contribution block
+# Amazon Generics Policy (SB85) contribution blocks: 5885 = generic ASIN, 5886 = "restricted
+# generic ASIN" (seen live 2026-11-19 on B0H5TBW1FN / B0GY1V9G3Z, which 5885-only missed).
+GENERIC_ISSUE_CODES = {"5885", "5886"}
 
 
 @lru_cache(maxsize=1)
@@ -118,11 +120,13 @@ def classify_generic(asin: str) -> dict:
                     "detail": "Not in Amazon catalog (delisted / dead ASIN)"}
         j = _validation_preview(asin, pt)
         codes = [str(i.get("code")) for i in (j.get("issues") or [])]
-        if GENERIC_ISSUE_CODE in codes:
+        hit = sorted(GENERIC_ISSUE_CODES.intersection(codes))
+        if hit:
             return {"asin": asin, "status": "GENERIC",
-                    "detail": "Generics Policy block (SB85 / issue 5885)"}
+                    "detail": f"Generics Policy block (SB85 / issue {', '.join(hit)})"}
         return {"asin": asin, "status": "NOT_GENERIC",
-                "detail": f"listable ({j.get('status')})"}
+                "detail": f"no generics issue ({j.get('status')}"
+                          + (f"; other issues: {', '.join(codes)})" if codes else ")")}
     except PermissionError as exc:
         return {"asin": asin, "status": "ERROR", "detail": str(exc)}
     except Exception as exc:  # noqa: BLE001

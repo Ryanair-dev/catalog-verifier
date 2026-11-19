@@ -20,6 +20,11 @@ A slide-in sidebar panel (`#tools-panel`) holding a set of smaller, ASIN/brand/M
 
 ## Changelog
 
+**2026-11-19** — Generic Check missed "restricted generic" ASINs.
+- User: B0H5TBW1FN and B0GY1V9G3Z came back NOT_GENERIC but are generic. Checked live with the app's own `VALIDATION_PREVIEW` call: Amazon answers both with issue **5886** ("restricted generic ASIN on which you have not contributed in the past"), not 5885 (control B004YNP10I still gets 5885). `classify_generic` only looked for 5885, so both fell through to NOT_GENERIC, labelled "listable (INVALID)" even though Amazon rejected the offer.
+- Fix (`services/generic_check.py`): `GENERIC_ISSUE_CODES = {"5885", "5886"}`; the GENERIC detail names the code that matched; the NOT_GENERIC detail no longer says "listable" and lists any other issue codes. Shared by the Toolbox Generic Check and the Vendor Offers export (both call `classify_generic`).
+- Verified live: both ASINs -> GENERIC (5886), B004YNP10I -> GENERIC (5885), six approved branded ASINs from runs 240/244 -> NOT_GENERIC (VALID). Needs a backend restart.
+
 **2026-11-04** — Check Brand: new **Notes** column (Keepa monthly-sales check on the open-to-sell ASINs).
 - User: "the brand CHI has 7 open to sell but the rest needs approval. Could you please have keepa go through all the one that is open to sell to see if there are monthly sales. Please add a separate notes column, we just need to know if it has estimated sales or not via keepa... if there is only mixed with needs approval or restricted then just take which one is most."
 - **Logic** (`routers/eligibility.py` `_brand_notes`, called at the end of `_run_brand_check`, result key `notes`): if ANY checked ASIN is CAN_SELL, only those open ASINs go to Keepa → `"Has estimated sales (Keepa: X of N open-to-sell ASINs, ~U units/mo)"` or `"No estimated sales (Keepa: 0 of N open-to-sell ASINs)"`. With no open ASINs → `"Needs approval"` / `"Restricted"` by majority (tie → `"Needs approval / Restricted (tie)"`; all-DOG → its own note; ERROR rows → blank). A Keepa failure writes `"Keepa unavailable - ..."` — never silently reported as "no sales". Verdict/summary logic unchanged.
