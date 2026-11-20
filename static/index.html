@@ -1325,6 +1325,10 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
             PO P&amp;L
           </button>
+          <button class="lib-type-tab" data-reports-tab="turba-fbm" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+            Turba FBM
+          </button>
         </div>
 
         <div id="reports-tab-po-pnl" style="padding:18px 24px 32px;display:flex;flex-direction:column;gap:16px;">
@@ -1449,6 +1453,39 @@
             </div>
           </div>
         </div><!-- /reports-tab-po-pnl -->
+
+        <div id="reports-tab-turba-fbm" class="hidden" style="padding:18px 24px 32px;display:flex;flex-direction:column;gap:16px;">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+            <div class="rpt-scope-chip">
+              Turba merchant-fulfilled SKUs (<b>…-FBMTRB#</b>) that made a profit in the last 30 days while the ASIN has <b>no FBA available qty</b> on Turba.
+              Profit = sale − cost − Amazon referral fee − shipping we paid.
+            </div>
+            <button id="rpt-turba-refresh" class="icon-btn rpt-refresh-btn" title="Refresh">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+            <span id="rpt-turba-status" style="font-size:12px;color:#6b7480;"></span>
+          </div>
+          <div class="rpt-table-card">
+            <div class="rpt-table-scroll">
+              <table class="rpt-table">
+                <thead>
+                  <tr>
+                    <th>SKU</th>
+                    <th>ASIN</th>
+                    <th style="text-align:right;">Units 7d</th>
+                    <th style="text-align:right;">Sales 7d</th>
+                    <th style="text-align:right;">Profit 7d</th>
+                    <th style="text-align:right;">Units 30d</th>
+                    <th style="text-align:right;">Sales 30d</th>
+                    <th style="text-align:right;">Profit 30d</th>
+                    <th style="text-align:right;">FBA avail.</th>
+                  </tr>
+                </thead>
+                <tbody id="rpt-turba-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div><!-- /reports-tab-turba-fbm -->
       </div><!-- /view-reports -->
 
     </main>
@@ -3259,7 +3296,7 @@
   <!-- Each script exactly once: a second app.js / create_po.js tag runs the whole app twice
        (two click handlers per button, e.g. two runs created per "Start run"). -->
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=75"></script>
+  <script src="/static/app.js?v=76"></script>
   <script src="/static/families.js?v=10"></script>
   <script src="/static/create_po.js?v=28"></script>
 </body>

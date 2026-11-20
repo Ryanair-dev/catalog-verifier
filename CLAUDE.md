@@ -121,6 +121,7 @@ catalog-verifier/
 │   ├── monday_eta.py                PO Analytics' Monday.com board mirror reader (also: Reports' purchaser lookup)
 │   ├── po_automation.py             PO Analytics' day-before-ETA automation orchestration
 │   ├── reports_po_pnl.py            Reports: PO P&L dashboard (queries the Azure PO→sale allocation view)
+│   ├── reports_turba_fbm.py         Reports: Turba FBMTRB SKUs sold at a profit while the ASIN has no FBA stock
 │   ├── graph_mail.py                PO Analytics' Microsoft Graph sendMail wrapper
 │   ├── teams_notify.py              Shared Teams webhook notifier — Offer/Brand Analytics + Vendor Offers export completion pings
 │   ├── eligibility_warmer.py        Idle-time scheduler filling eligibility_cache for every Price Desk ASIN

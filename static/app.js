@@ -8642,7 +8642,35 @@
   function _switchReportsTab(tab) {
     $$("#view-reports .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.reportsTab === tab));
     $("#reports-tab-po-pnl")?.classList.toggle("hidden", tab !== "po-pnl");
+    $("#reports-tab-turba-fbm")?.classList.toggle("hidden", tab !== "turba-fbm");
+    if (tab === "turba-fbm") _loadReportsTurbaFbm();
   }
+
+  async function _loadReportsTurbaFbm() {
+    const tbody = $("#rpt-turba-tbody"), status = $("#rpt-turba-status");
+    if (!tbody) return;
+    if (status) status.textContent = "Loading…";
+    try {
+      const j = await api("/api/reports/turba-fbm");
+      const rows = j.rows || [], s = j.summary || {};
+      const money = v => `<td style="text-align:right;${v < 0 ? "color:#dc2626;" : ""}">${_fmtUsd2(v)}</td>`;
+      tbody.innerHTML = rows.length ? rows.map(r => `
+        <tr>
+          <td style="font-weight:600;color:#1e293b;">${escapeHtml(r.sku)}</td>
+          <td><a href="https://www.amazon.com/dp/${encodeURIComponent(r.asin || "")}" target="_blank" rel="noopener">${escapeHtml(r.asin || "")}</a></td>
+          <td style="text-align:right;">${_fmtInt(r.units_7d)}</td>${money(r.revenue_7d)}${money(r.profit_7d)}
+          <td style="text-align:right;">${_fmtInt(r.units_30d)}</td>${money(r.revenue_30d)}${money(r.profit_30d)}
+          <td style="text-align:right;color:#b45309;">${_fmtInt(r.fba_available)}</td>
+        </tr>`).join("")
+        : `<tr><td colspan="9" style="text-align:center;color:#94a3b8;padding:18px;">No SKUs match right now.</td></tr>`;
+      if (status) status.textContent = `${_fmtInt(s.sku_count)} SKUs · 30d profit ${_fmtUsd2(s.profit_30d)} · 7d profit ${_fmtUsd2(s.profit_7d)}`
+        + (j.fba_snapshot ? ` · FBA stock as of ${j.fba_snapshot}` : "");
+    } catch (e) {
+      tbody.innerHTML = "";
+      if (status) status.textContent = `Could not load: ${e.message || e}`;
+    }
+  }
+  $("#rpt-turba-refresh")?.addEventListener("click", _loadReportsTurbaFbm);
   $$("#view-reports .lib-type-tab").forEach(tabBtn => {
     tabBtn.addEventListener("click", () => _switchReportsTab(tabBtn.dataset.reportsTab));
   });

@@ -24,6 +24,13 @@ A new top-level sidebar section — a **full page** (`#view-reports`, same `swit
 
 ## Changelog
 
+**2026-11-20b** — New report tab "Turba FBM": FBMTRB SKUs selling at a profit while FBA has no stock.
+- User: "for only items on Turba with skus ending in FBMTRB# merchant fulfilled skus, need to see what skus are sold profitably where the amazon fulfilled sku for this asin has no qty". Definitions from the user: profit = sale - cost - Amazon referral fee - shipping; windows 7 and 30 days; "no qty" = FBA available qty 0 (inbound not counted).
+- Data (researched live, read-only): `analytics.order_pl_transaction_items` (SellerCloud line-level P&L: `company_name='Turba'`, `channel='Amazon'` = merchant-fulfilled, `transaction_type='Debit'`; profit = `sales_amount - item_cost - commission - shipping_cost`, equals its own `profit` column; 97 lines = Amazon's 97 shipped Turba FBM orders in 30 days). FBA stock: `amazon.amazon_fulfilled_by_amazon_manage_inventory`, latest Turba snapshot, `marketplace_id='ATVPDKIKX0DER'` only (every SKU also has a zero Canada row), fulfillable qty summed per ASIN; an ASIN with no Turba FBA SKU counts as 0.
+- New `services/reports_turba_fbm.py` (one SQL query, ~1–6 s, no cache), `GET /api/reports/turba-fbm`, and a "Turba FBM" tab (`#reports-tab-turba-fbm`, `_loadReportsTurbaFbm`, loads when opened; `app.js?v=76`). Kept: 30-day profit > 0 and FBA available = 0; SKU pattern `%-FBMTRB[0-9]%`.
+- Known limits: 464 SKUs end in plain `-FBMTRB` (no digit) and are excluded per the user's "FBMTRB#" -- they carry more of the sales, ask before widening. Pending/unshipped orders aren't in the P&L table; refunds excluded; referral fee is SellerCloud's estimate until Amazon settles (~15% of lines).
+- Verified live: 12 SKUs, 30d profit $145.84, 7d $17.70; every row profit > 0, FBA 0, matches the pattern. Needs a backend restart + page reload.
+
 **2026-11-20** — PO P&L: ROI per PO + "Avg ROI" tile.
 - User: "To the PO report please add the average ROI." Checked live on PO 47708's slices: `allocated_profit` = `cash_in - cash_out` of that slice (one slice showed an extra deduction: -35.21 vs -2.81), so ROI uses the cost of the SOLD units.
 - `services/reports_po_pnl.py`: new `sold_cost` = `SUM(cash_out)` over sold slices (same "ship_date <= today" rule as sold_qty); per PO `roi = sold_profit / sold_cost` (`None` when nothing sold yet); summary `avg_roi` = total sold profit / total sold cost (cost-weighted, so bigger POs weigh more). UI: ROI column after Profit $ and an "Avg ROI" tile (`app.js` `_fmtRoi`, "—" when null; `app.js?v=75`).
