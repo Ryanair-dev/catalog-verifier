@@ -8650,6 +8650,7 @@
   const _fmtUsd0 = n => "$" + Math.round(n || 0).toLocaleString();
   const _fmtUsd2 = n => "$" + (n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const _fmtInt = n => Math.round(n || 0).toLocaleString();
+  const _fmtRoi = r => r == null ? "—" : (r * 100).toFixed(1) + "%";   // null = nothing sold yet
 
   async function _loadReportsPoPnlFilters() {
     const vendorSel = $("#rpt-po-pnl-vendor"), brandSel = $("#rpt-po-pnl-brand");
@@ -8692,10 +8693,11 @@
         <td style="text-align:right;">${_fmtUsd0(po.bought_cost)}</td>
         <td style="text-align:right;color:#16a34a;">${_fmtUsd0(po.sold_revenue)}</td>
         <td style="text-align:right;${po.sold_profit < 0 ? "color:#dc2626;" : ""}">${_fmtUsd0(po.sold_profit)}</td>
+        <td style="text-align:right;${po.roi < 0 ? "color:#dc2626;" : ""}">${_fmtRoi(po.roi)}</td>
         <td style="text-align:right;color:#b45309;">${_fmtUsd0(po.left_value)}</td>
       </tr>
       <tr class="rpt-po-detail hidden" data-idx="${idx}" data-po="${po.po_number}">
-        <td colspan="13" style="padding:0;"><div class="rpt-detail-wrap"></div></td>
+        <td colspan="14" style="padding:0;"><div class="rpt-detail-wrap"></div></td>
       </tr>`;
   }
 
@@ -8784,6 +8786,7 @@
       if ($("#rpt-po-pnl-sum-bought")) $("#rpt-po-pnl-sum-bought").textContent = _fmtUsd0(s.bought_cost);
       if ($("#rpt-po-pnl-sum-sold")) $("#rpt-po-pnl-sum-sold").textContent = _fmtUsd0(s.sold_revenue);
       if ($("#rpt-po-pnl-sum-profit")) $("#rpt-po-pnl-sum-profit").textContent = _fmtUsd0(s.sold_profit);
+      if ($("#rpt-po-pnl-sum-roi")) $("#rpt-po-pnl-sum-roi").textContent = _fmtRoi(s.avg_roi);
       if ($("#rpt-po-pnl-sum-left")) $("#rpt-po-pnl-sum-left").textContent = _fmtUsd0(s.left_value);
 
       if (!pos.length) {

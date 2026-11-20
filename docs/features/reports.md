@@ -24,6 +24,11 @@ A new top-level sidebar section — a **full page** (`#view-reports`, same `swit
 
 ## Changelog
 
+**2026-11-20** — PO P&L: ROI per PO + "Avg ROI" tile.
+- User: "To the PO report please add the average ROI." Checked live on PO 47708's slices: `allocated_profit` = `cash_in - cash_out` of that slice (one slice showed an extra deduction: -35.21 vs -2.81), so ROI uses the cost of the SOLD units.
+- `services/reports_po_pnl.py`: new `sold_cost` = `SUM(cash_out)` over sold slices (same "ship_date <= today" rule as sold_qty); per PO `roi = sold_profit / sold_cost` (`None` when nothing sold yet); summary `avg_roi` = total sold profit / total sold cost (cost-weighted, so bigger POs weigh more). UI: ROI column after Profit $ and an "Avg ROI" tile (`app.js` `_fmtRoi`, "—" when null; `app.js?v=75`).
+- Verified on live Azure: Active 843 POs avg ROI 27.6%, Archive 2,283 POs 24.3%; PO 47708 $32,630 profit / $136,733 sold cost = 23.9%. Needs a backend restart + page reload.
+
 **2026-11-18** — POs that were never put on Monday's Inbound Shipments board now show up (closes the "only POs on the board" gap).
 - User: "47708 whyt is this po not on the reports". Checked live: PO 47708 (Cencora, received 2026-06-29/30, 54,896 units, 35,493 sold) is in the cash-cycle view, but no Inbound Shipments item has that PO number in any state, so `pos_for_purchaser` never returned it. 8,421 of the view's 11,210 POs are not on the board at all. User picked "make the report not depend on Monday" over adding the PO to the board by hand.
 - **Owner source, checked before choosing**: SellerCloud `sellercloud.Purchase.CreatedBy` agreed with Monday's Avi/Victoria on only 622/998 POs and Avi isn't in `fps.purchaser_department_members` at all, so it was rejected. The SKU `Purchaser` code (catalog cache `_purchaser`, e.g. `VictoriaV`, `AviS`) by plurality of a PO's SKUs agreed on 564/657 (86%; misses mostly `MasonB`). PO 47708: all 30 SKUs `VictoriaV`.

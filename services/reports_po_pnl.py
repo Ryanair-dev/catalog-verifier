@@ -125,6 +125,8 @@ def _line_items(po_numbers: set[int] | None) -> list[dict]:
                        SUM(CASE WHEN ship_date IS NOT NULL AND ship_date <= CAST(GETDATE() AS DATE)
                                 THEN allocated_profit ELSE 0 END) AS sold_profit,
                        SUM(CASE WHEN ship_date IS NOT NULL AND ship_date <= CAST(GETDATE() AS DATE)
+                                THEN cash_out ELSE 0 END) AS sold_cost,
+                       SUM(CASE WHEN ship_date IS NOT NULL AND ship_date <= CAST(GETDATE() AS DATE)
                                  AND customer = 'FBA' THEN allocated_qty ELSE 0 END) AS sold_qty_amazon,
                        SUM(CASE WHEN ship_date IS NOT NULL AND ship_date <= CAST(GETDATE() AS DATE)
                                  AND customer = 'FBA' THEN cash_in ELSE 0 END) AS sold_revenue_amazon
@@ -150,6 +152,7 @@ def _line_items(po_numbers: set[int] | None) -> list[dict]:
                     "sold_qty": sold_qty,
                     "sold_revenue": round(_f(d["sold_revenue"]), 2),
                     "sold_profit": round(_f(d["sold_profit"]), 2),
+                    "sold_cost": round(_f(d["sold_cost"]), 2),
                     "sold_qty_amazon": int(d["sold_qty_amazon"] or 0),
                     "sold_revenue_amazon": round(_f(d["sold_revenue_amazon"]), 2),
                     "left_qty": left_qty,
@@ -408,7 +411,7 @@ def scheduler_status() -> dict:
 
 
 _PO_SUM_FIELDS = (
-    "qty_received", "bought_cost", "sold_qty", "sold_revenue", "sold_profit",
+    "qty_received", "bought_cost", "sold_qty", "sold_revenue", "sold_profit", "sold_cost",
     "sold_qty_amazon", "sold_revenue_amazon", "left_qty", "left_value",
 )
 
@@ -439,6 +442,8 @@ def _aggregate_to_pos(lines: list[dict]) -> list[dict]:
         po["bought_cost"] = round(po["bought_cost"], 2)
         po["sold_revenue"] = round(po["sold_revenue"], 2)
         po["sold_profit"] = round(po["sold_profit"], 2)
+        po["sold_cost"] = round(po["sold_cost"], 2)
+        po["roi"] = _roi(po["sold_profit"], po["sold_cost"])
         po["sold_revenue_amazon"] = round(po["sold_revenue_amazon"], 2)
         po["left_value"] = round(po["left_value"], 2)
         po["fully_sold"] = po["left_qty"] <= 0 and po["qty_received"] > 0
@@ -451,13 +456,21 @@ def _empty_summary() -> dict:
             "sold_profit": 0.0, "left_value": 0.0}
 
 
+def _roi(profit: float, cost: float) -> float | None:
+    """Profit on the units sold / what those units cost. None until something sold."""
+    return round(profit / cost, 4) if cost > 0 else None
+
+
 def _summarize(pos: list[dict]) -> dict:
+    sold_profit = sum(p["sold_profit"] for p in pos)
+    sold_cost = sum(p["sold_cost"] for p in pos)
     return {
         "po_count": len(pos),
         "bought_cost": round(sum(p["bought_cost"] for p in pos), 2),
         "sold_revenue": round(sum(p["sold_revenue"] for p in pos), 2),
-        "sold_profit": round(sum(p["sold_profit"] for p in pos), 2),
+        "sold_profit": round(sold_profit, 2),
         "left_value": round(sum(p["left_value"] for p in pos), 2),
+        "avg_roi": _roi(sold_profit, sold_cost),   # cost-weighted: total profit / total cost sold
     }
 
 

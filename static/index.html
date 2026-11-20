@@ -1404,6 +1404,11 @@
               <div class="stat-label">Profit</div>
               <div class="stat-value" id="rpt-po-pnl-sum-profit">—</div>
             </div>
+            <div class="stat-card" title="Profit on the units sold / what those units cost, across the POs shown (bigger POs weigh more)">
+              <div class="rpt-stat-icon rpt-i-profit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg></div>
+              <div class="stat-label">Avg ROI</div>
+              <div class="stat-value" id="rpt-po-pnl-sum-roi">—</div>
+            </div>
             <div class="stat-card">
               <div class="rpt-stat-icon rpt-i-left"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41L13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1"/></svg></div>
               <div class="stat-label">Left (at cost)</div>
@@ -1429,6 +1434,7 @@
                     <th style="text-align:right;">Bought $</th>
                     <th style="text-align:right;">Sold $</th>
                     <th style="text-align:right;">Profit $</th>
+                    <th style="text-align:right;" title="Profit on the units sold / what those units cost">ROI</th>
                     <th style="text-align:right;">Left $</th>
                   </tr>
                 </thead>
@@ -3253,7 +3259,7 @@
   <!-- Each script exactly once: a second app.js / create_po.js tag runs the whole app twice
        (two click handlers per button, e.g. two runs created per "Start run"). -->
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=74"></script>
+  <script src="/static/app.js?v=75"></script>
   <script src="/static/families.js?v=10"></script>
   <script src="/static/create_po.js?v=28"></script>
 </body>
