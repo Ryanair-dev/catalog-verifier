@@ -16,6 +16,10 @@ A manually-confirmed identifier→ASIN library (`pair_library`/`pair_library_ids
 
 ## Changelog
 
+**2026-11-19** — Unpaired UPC `383711005138` from `B0C4W1MHWS` (Suave, Unilever plc, pack 2).
+- User: "could you please unpair 383711005138 with B0C4W1MHWS". The library held that UPC as the ASIN's only identifier; the Price Desk had the same pair (`vo_asin_listings`, source `pair_library`); no other ASIN carried the UPC and it wasn't blacklisted.
+- Used the live server's `POST /api/vendor-offers/unassign {asin, upc}` (the 2026-10-29 targeted unpair): `{"removed_listing": 1, "deleted_ids": 1, "deleted_asin": 1, "verified_cleared": 2}`, plus a `blacklisted_pairs` row (`failed_signals='price_desk_unpair'`) so Keepa's barcode list can't re-pair them; unlockable here. Re-checked: library search for both values empty, no Price Desk row, 0 `verified_items` left for the ASIN.
+
 **2026-10-29** — The Price Desk's unpair (`vendor_offers.unassign_asin`) no longer wipes an ASIN's whole Pair Library entry: it now drops only the identifier(s) matching the unpaired UPC (via `delete_library_pair`'s single-identifier path) and adds the (upc, asin) pair to `blacklisted_pairs` with `failed_signals='price_desk_unpair'` -- visible/unlockable in the Pair Manager. Found unpairing 071662087036 / B0015IN0XK, whose library entry held a different, correct UPC (071662081461) the old call would have deleted. Full story: `docs/features/vendor_offers.md`'s 2026-10-29 entry.
 
 **2026-10-23** — Removed two stale UPC aliases causing wrong ASIN associations: `60308411` unpaired from `B01MG7V3UW`, and `84105811` unpaired from `B082CX4R2R`.
