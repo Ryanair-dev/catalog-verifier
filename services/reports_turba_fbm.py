@@ -1,5 +1,6 @@
 """
-Reports: Turba merchant-fulfilled (FBMTRB<n>) SKUs that sell at a profit while
+Reports: Turba merchant-fulfilled SKUs ending in -FBMTRB, with or without a trailing
+number (-FBMTRB, -FBMTRB2, ...), that sell at a profit while
 Amazon has none of that ASIN in Turba's FBA stock -- i.e. FBM is carrying the
 sales the FBA listing can't.
 
@@ -32,7 +33,7 @@ WITH sales AS (
            SUM(pl.sales_amount - pl.item_cost - pl.commission - pl.shipping_cost) AS profit_30d
     FROM analytics.order_pl_transaction_items AS pl
     WHERE pl.company_name = 'Turba' AND pl.channel = 'Amazon' AND pl.transaction_type = 'Debit'
-      AND pl.product_id LIKE '%-FBMTRB[0-9]%'
+      AND pl.product_id LIKE '%-FBMTRB%' AND pl.product_id NOT LIKE '%-FBMTRB%[^0-9]%'   -- only digits (or nothing) after FBMTRB
       AND pl.order_date >= DATEADD(DAY, -30, CAST(GETDATE() AS date))
     GROUP BY pl.product_id
 ),

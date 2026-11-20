@@ -24,6 +24,8 @@ A new top-level sidebar section — a **full page** (`#view-reports`, same `swit
 
 ## Changelog
 
+**2026-11-20c** — Turba FBM tab now also includes plain `-FBMTRB` SKUs. User clarified "FBMTRB#" meant "FBMTRB followed by a number or no number at the end". Filter is now `LIKE '%-FBMTRB%' AND NOT LIKE '%-FBMTRB%[^0-9]%'` (only digits or nothing after FBMTRB). Live: 21 SKUs (9 plain + the same 12 numbered), 30d profit $411.12, 7d $112.23. Needs a backend restart.
+
 **2026-11-20b** — New report tab "Turba FBM": FBMTRB SKUs selling at a profit while FBA has no stock.
 - User: "for only items on Turba with skus ending in FBMTRB# merchant fulfilled skus, need to see what skus are sold profitably where the amazon fulfilled sku for this asin has no qty". Definitions from the user: profit = sale - cost - Amazon referral fee - shipping; windows 7 and 30 days; "no qty" = FBA available qty 0 (inbound not counted).
 - Data (researched live, read-only): `analytics.order_pl_transaction_items` (SellerCloud line-level P&L: `company_name='Turba'`, `channel='Amazon'` = merchant-fulfilled, `transaction_type='Debit'`; profit = `sales_amount - item_cost - commission - shipping_cost`, equals its own `profit` column; 97 lines = Amazon's 97 shipped Turba FBM orders in 30 days). FBA stock: `amazon.amazon_fulfilled_by_amazon_manage_inventory`, latest Turba snapshot, `marketplace_id='ATVPDKIKX0DER'` only (every SKU also has a zero Canada row), fulfillable qty summed per ASIN; an ASIN with no Turba FBA SKU counts as 0.
