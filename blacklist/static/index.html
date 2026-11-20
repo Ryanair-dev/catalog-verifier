@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Marketplace Blacklist</title>
+  <link rel="icon" type="image/svg+xml" href="static/blacklist-icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="static/styles.css">
+  <script>
+    // Light/dark theme: the saved choice, else the system setting. Runs before paint so there is no flash.
+    (function () {
+      var KEY = "blacklist-theme", root = document.documentElement;
+      var media = window.matchMedia("(prefers-color-scheme: dark)");
+      function saved() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+      function apply(theme) { root.setAttribute("data-theme", theme); }
+      apply(saved() || (media.matches ? "dark" : "light"));
+      media.addEventListener("change", function (e) { if (!saved()) apply(e.matches ? "dark" : "light"); });
+      document.addEventListener("DOMContentLoaded", function () {
+        var btn = document.getElementById("theme-toggle");
+        function label() {
+          var dark = root.getAttribute("data-theme") === "dark";
+          btn.title = dark ? "Switch to light theme" : "Switch to dark theme";
+          btn.setAttribute("aria-label", btn.title);
+        }
+        label();
+        btn.addEventListener("click", function () {
+          var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+          apply(next);
+          try { localStorage.setItem(KEY, next); } catch (e) {}
+          label();
+        });
+      });
+    })();
+  </script>
+</head>
+<body>
+  <!-- Icon sprite -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6l7-3z"/><path d="M9 9l6 6M15 9l-6 6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r=".5"/><circle cx="3.5" cy="12" r=".5"/><circle cx="3.5" cy="18" r=".5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.7 5.7l12.6 12.6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3l9-16z"/><path d="M12 10v4M12 17.5v.01"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-store" viewBox="0 0 24 24"><path d="M4 9l1.5-5h13L20 9"/><path d="M4 9a2.7 2.7 0 005.3 0 2.7 2.7 0 005.4 0 2.7 2.7 0 005.3 0"/><path d="M5 11v9h14v-9"/><path d="M10 20v-5h4v5"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4a1 1 0 011-1h8l9 9-9 9-9-9z"/><circle cx="7.5" cy="7.5" r="1.3"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M5 9h15M4 15h15M10 3L8 21M16 3l-2 18"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol>
+    <symbol id="i-barcode" viewBox="0 0 24 24"><path d="M4 6v12M7 6v12M11 6v12M14 6v12M18 6v12M20 6v12"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 019.5 4 8 8 0 1020 14.5z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+    <symbol id="i-inbox"viewBox="0 0 24 24"><path d="M3 13l3-8h12l3 8v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/></symbol>
+  </svg>
+
+  <aside class="sidebar">
+    <div class="logo">
+      <img src="static/blacklist-icon.svg" alt="" width="34" height="34">
+      <span>BLACKLIST</span>
+    </div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <span class="tab-thumb" aria-hidden="true"></span>
+      <button role="tab" class="tab active" data-tab="browse" aria-selected="true" title="Search and check the blacklist"><svg class="icon"><use href="#i-list"/></svg><span>Browse</span></button>
+      <button role="tab" class="tab" data-tab="add" aria-selected="false" title="Add to the blacklist"><svg class="icon"><use href="#i-plus"/></svg><span>Add</span></button>
+    </nav>
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Switch theme">
+      <svg class="icon i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
+      <svg class="icon i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
+    </button>
+    <span class="avatar" id="me" title="Your initials (used for Added by)"><svg class="icon"><use href="#i-user"/></svg></span>
+  </aside>
+
+  <div class="shell">
+  <main>
+    <!-- TEMPORARY: shown only with ?mock=lookups (see MOCK_LOOKUPS in app.js). Remove with it. -->
+    <div class="mock-banner" id="mock-banner" role="status" hidden>
+      <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+      <p><strong>Mock lookups</strong> · test stores, types and reasons from <code>app.js</code>; saving is off. <a id="mock-off" href="./">Use real data</a></p>
+    </div>
+
+    <!-- Browse (also the old Quick check: the Check button applies the blacklist's matching rules) -->
+    <section id="tab-browse" class="panel" role="tabpanel">
+      <div class="section-head">
+        <div>
+          <h2>Blacklist</h2>
+          <p class="muted" id="browse-sub">Search, filter and manage every entry.</p>
+          <p class="muted" id="check-sub" hidden>Paste a list to see which entries are on the blacklist. Nothing is added.</p>
+        </div>
+        <div class="head-actions">
+          <a class="btn round" id="browse-export" href="api/blacklist/export.csv"><svg class="icon"><use href="#i-download"/></svg>Export CSV</a>
+          <button class="btn primary round" type="button" id="browse-mode" aria-pressed="false"><svg class="icon"><use href="#i-layers"/></svg><span>Check List</span></button>
+        </div>
+      </div>
+      <div id="browse-pane" class="card table-card">
+        <form id="browse-form" class="filters" autocomplete="off">
+          <div class="search-field sm grow">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="browse-q" type="search" maxlength="64" spellcheck="false" translate="no" placeholder="Search SKU, ASIN, notes or initials…"
+              aria-label="Search" aria-describedby="browse-check-hint">
+            <kbd title="Press / to focus">/</kbd>
+          </div>
+          <button class="btn primary round" type="submit" id="browse-check">Check</button>
+          <select id="browse-channel" data-lookup="channels" data-any="All stores" aria-label="Store"></select>
+          <select id="browse-reason" data-lookup="reason_codes" data-any="All reasons" aria-label="Reason"></select>
+          <select id="browse-type" data-lookup="identifier_types" data-any="All types" aria-label="Identifier type"></select>
+          <p class="check-hint" id="browse-check-hint">The table shows rows containing your text. Press <kbd>Enter</kbd> or Check to apply brand rules too.</p>
+        </form>
+        <div id="browse-verdict" aria-live="polite"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Identifier</th><th>Type</th><th>Store</th><th>Reason</th><th>Notes</th><th>Added</th></tr>
+            </thead>
+            <tbody id="browse-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <span id="browse-info" class="muted small"></span>
+          <div class="pager-btns">
+            <button class="btn small" id="browse-prev" type="button">‹ Prev</button>
+            <button class="btn small" id="browse-next" type="button">Next ›</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Check list: check a whole list against the blacklist (the Check list button above) -->
+      <div id="check-pane" class="check-pane" hidden>
+        <form id="bulk-form" class="card bulk-grid">
+          <div class="bulk-input">
+            <label for="bulk-input" class="field-label">Identifiers <span class="muted">· up to 5,000, nothing is added</span></label>
+            <textarea id="bulk-input" rows="9" spellcheck="false" translate="no" placeholder="One per line, or comma / tab separated&#10;&#10;MAJ904699760-FBA&#10;PDI10254-FBA&#10;B00K1JFAVE…"></textarea>
+            <div class="input-foot">
+              <span id="bulk-count" class="muted small">0 identifiers</span>
+              <button class="btn ghost small" type="button" id="bulk-clear">Clear</button>
+            </div>
+          </div>
+          <div class="bulk-side">
+            <label class="dropzone" id="dropzone">
+              <input id="bulk-file" type="file" accept=".csv,.txt,text/csv,text/plain">
+              <span class="dz-icon"><svg class="icon"><use href="#i-upload"/></svg></span>
+              <strong>Drop a CSV or TXT here</strong>
+              <span class="muted small">or click to browse. We read the first column.</span>
+            </label>
+            <div class="field">
+              <label for="bulk-channel" class="field-label">Store</label>
+              <select id="bulk-channel" data-lookup="channels" data-any="All stores"></select>
+            </div>
+            <div class="field">
+              <label for="bulk-type" class="field-label">Identifier type</label>
+              <select id="bulk-type" data-lookup="identifier_types" data-any="Any type"></select>
+            </div>
+            <button class="btn primary round lg block" type="submit">Check all</button>
+          </div>
+        </form>
+
+        <div id="bulk-results" hidden>
+          <div class="stats">
+            <div class="stat info"><div class="stat-top"><span class="stat-icon"><svg class="icon"><use href="#i-layers"/></svg></span><small>Checked</small><span class="stat-num" id="stat-checked">0</span></div><div class="stat-bar"><i data-bar="checked"></i></div><p class="stat-foot" data-foot="checked"></p></div>
+            <div class="stat bad"><div class="stat-top"><span class="stat-icon"><svg class="icon"><use href="#i-ban"/></svg></span><small>Blacklisted</small><span class="stat-num" id="stat-bad">0</span></div><div class="stat-bar"><i data-bar="bad"></i></div><p class="stat-foot" data-foot="bad"></p></div>
+            <div class="stat warn" title="The ASIN belongs to a blacklisted SKU; another SKU may still sell it"><div class="stat-top"><span class="stat-icon"><svg class="icon"><use href="#i-alert"/></svg></span><small>Review</small><span class="stat-num" id="stat-review">0</span></div><div class="stat-bar"><i data-bar="review"></i></div><p class="stat-foot" data-foot="review"></p></div>
+            <div class="stat good"><div class="stat-top"><span class="stat-icon"><svg class="icon"><use href="#i-check"/></svg></span><small>Clear</small><span class="stat-num" id="stat-good">0</span></div><div class="stat-bar"><i data-bar="good"></i></div><p class="stat-foot" data-foot="good"></p></div>
+          </div>
+          <div class="card table-card">
+            <div class="table-toolbar">
+              <label class="switch"><input type="checkbox" id="bulk-only-bad"><span class="track"><span class="knob"></span></span>Hide clear items</label>
+              <button class="btn small round" id="bulk-export" type="button"><svg class="icon"><use href="#i-download"/></svg>Download CSV</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Identifier</th><th>Status</th><th>Stores</th><th>Matched on</th><th>Reasons</th><th>Notes</th></tr></thead>
+                <tbody id="bulk-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Add: add one identifier, or many in a grid -->
+    <section id="tab-add" class="panel" role="tabpanel" hidden>
+      <div class="section-head">
+        <div>
+          <h2>Add to blacklist</h2>
+          <p class="muted">Add one identifier, or many at once in the grid, each with its own store and reason.</p>
+        </div>
+      </div>
+
+      <div class="mode-switch" role="radiogroup" aria-label="Mode">
+        <label class="mode"><input type="radio" name="add-mode" value="one" checked><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add one</span></label>
+        <label class="mode"><input type="radio" name="add-mode" value="many"><svg class="icon" aria-hidden="true"><use href="#i-layers"/></svg><span>Add many</span></label>
+      </div>
+
+      <!-- Add one / Add many: one form, the identifier field changes with the mode -->
+      <div id="add-pane" class="add-pane">
+        <form id="add-form" class="card add-card" novalidate autocomplete="off">
+          <div class="field" data-field="identifiers" data-mode-only="one">
+            <div class="field" data-mode-only="one">
+              <label for="add-one" class="field-label">Identifier</label>
+              <input id="add-one" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" translate="no"
+                aria-describedby="add-ids-error" placeholder="e.g. MAJ904386575-FBA">
+            </div>
+            <p class="field-error" id="add-ids-error" hidden></p>
+          </div>
+
+          <!-- Add many: a spreadsheet-like grid, each row with its own type, store, reason and notes -->
+          <div class="grid-field" data-mode-only="many" hidden>
+            <div class="grid-head">
+              <p class="field-label" id="grid-label">Entries <span class="muted">· type in the cells, or copy rows in Excel and paste them here (Ctrl+V)</span></p>
+              <div class="input-actions">
+                <button type="button" class="btn ghost small" id="grid-add-rows">+ 10 rows</button>
+                <button type="button" class="btn ghost small" id="grid-clear" hidden>Clear</button>
+              </div>
+            </div>
+            <div class="grid-wrap">
+              <table class="grid" id="add-grid" aria-labelledby="grid-label">
+                <thead>
+                  <tr>
+                    <th class="g-num" scope="col">#</th>
+                    <th scope="col" class="g-id">SKU / ID</th>
+                    <th scope="col">Type <button type="button" class="g-fill" data-fill="type" title="Fill empty Type cells with the value above">Fill ↓</button></th>
+                    <th scope="col">Store <button type="button" class="g-fill" data-fill="store" title="Fill empty Store cells with the value above">Fill ↓</button></th>
+                    <th scope="col">Reason <button type="button" class="g-fill" data-fill="reason" title="Fill empty Reason cells with the value above">Fill ↓</button></th>
+                    <th scope="col">Notes</th>
+                    <th scope="col" class="g-check">Check</th>
+                    <th class="g-del-col"><span class="sr-only">Remove</span></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <datalist id="dl-type"></datalist>
+            <datalist id="dl-store"></datalist>
+            <datalist id="dl-reason"></datalist>
+            <p class="id-stats" id="grid-stats" aria-live="polite"></p>
+          </div>
+
+          <div class="field-row" data-mode-only="one">
+            <div class="field" data-field="type">
+              <label for="add-type" class="field-label">Identifier type</label>
+              <div class="combo">
+                <svg class="icon combo-icon" aria-hidden="true"><use href="#i-hash"/></svg>
+                <input id="add-type" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+                  aria-controls="add-type-list" aria-describedby="add-type-hint add-type-error" autocomplete="off" spellcheck="false" placeholder="Choose a type…">
+                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Show all identifier types"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+                <div class="combo-list" id="add-type-list" role="listbox" aria-label="Identifier types" hidden></div>
+              </div>
+              <p class="hint" id="add-type-hint"></p>
+              <p class="field-error" id="add-type-error" hidden></p>
+            </div>
+            <div class="field" data-field="store">
+              <label for="add-store" class="field-label">Store</label>
+              <div class="combo">
+                <svg class="icon combo-icon" aria-hidden="true"><use href="#i-store"/></svg>
+                <input id="add-store" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+                  aria-controls="add-store-list" aria-describedby="add-store-error" autocomplete="off" spellcheck="false" placeholder="Search stores…">
+                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Show all stores"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+                <div class="combo-list" id="add-store-list" role="listbox" aria-label="Stores" hidden></div>
+              </div>
+              <p class="field-error" id="add-store-error" hidden></p>
+            </div>
+          </div>
+
+          <div class="field-row details-row">
+            <div class="field" data-field="reason" data-mode-only="one">
+              <label for="add-reason" class="field-label">Reason</label>
+              <div class="combo">
+                <svg class="icon combo-icon" aria-hidden="true"><use href="#i-tag"/></svg>
+                <input id="add-reason" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false"
+                  aria-controls="add-reason-list" aria-describedby="add-reason-error" autocomplete="off" spellcheck="false" placeholder="Search reasons…">
+                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Show all reasons"><svg class="icon" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+                <div class="combo-list" id="add-reason-list" role="listbox" aria-label="Reasons" hidden></div>
+              </div>
+              <p class="field-error" id="add-reason-error" hidden></p>
+            </div>
+            <div class="field" data-field="initials">
+              <label for="add-initials" class="field-label">Added by</label>
+              <input id="add-initials" name="created_by" maxlength="4" required autocomplete="off" autocapitalize="characters" spellcheck="false"
+                data-remember="created_by" placeholder="e.g. LF" aria-describedby="add-initials-hint add-initials-error">
+              <p class="hint" id="add-initials-hint">Initials, max 4</p>
+              <p class="field-error" id="add-initials-error" hidden></p>
+            </div>
+          </div>
+
+          <div class="field" data-mode-only="one">
+            <label for="notes-add"class="field-label">Notes <span class="muted">(optional)</span></label>
+            <textarea id="notes-add" rows="3" maxlength="1000" aria-describedby="notes-add-count" placeholder="What happened? Case number, who asked for it…"></textarea>
+            <div class="input-foot"><span></span><span class="counter" id="notes-add-count" data-for="notes-add">0 / 1000</span></div>
+          </div>
+
+          <div class="form-alert" id="add-alert" role="alert" hidden></div>
+          <div class="form-actions">
+            <p class="kbd-hint"><kbd id="add-kbd-mod">Ctrl</kbd>&nbsp;<kbd>Enter</kbd> to add</p>
+            <button class="btn primary round lg" type="submit" id="add-submit">
+              <span class="btn-spinner" aria-hidden="true"></span><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span class="btn-label">Add to Blacklist</span>
+            </button>
+          </div>
+        </form>
+
+        <section id="add-result" class="card add-result" aria-labelledby="add-result-title" hidden></section>
+      </div>
+
+    </section>
+  </main>
+  </div>
+
+  <!-- Edit dialog -->
+  <dialog id="edit-dialog">
+    <form id="edit-form" class="card form-card">
+      <div class="dialog-head">
+        <h3>Edit entry</h3>
+        <button type="button" class="icon-btn" id="edit-close" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+      <input type="hidden" name="blacklist_id">
+      <div class="field-row">
+        <div class="field"><label class="field-label">Identifier type</label><select name="identifier_type_code" data-lookup="identifier_types" data-type-select required></select></div>
+        <div class="field"><label class="field-label">Store</label><select name="channel_id" data-lookup="channels" required></select></div>
+      </div>
+      <div class="field">
+        <label class="field-label">Identifier</label>
+        <input name="identifier" maxlength="64" required>
+        <p class="hint" data-type-hint></p>
+      </div>
+      <div class="field-row">
+        <div class="field" data-asin-field><label class="field-label">ASIN</label><input name="asin" maxlength="10"></div>
+        <div class="field"><label class="field-label">Added by</label><input name="created_by" maxlength="4" placeholder="Initials" required autocapitalize="characters"></div>
+      </div>
+      <div class="field"><label class="field-label">Reason</label><select name="blacklist_reason_code_id" data-lookup="reason_codes" required></select></div>
+      <div class="field">
+        <label class="field-label">Notes <span class="counter" data-for="notes-edit">0 / 1000</span></label>
+        <textarea name="blacklist_notes" id="notes-edit" rows="4" maxlength="1000"></textarea>
+      </div>
+      <p class="muted small" id="edit-meta"></p>
+      <div class="dialog-actions">
+        <button class="btn danger round" type="button" id="edit-delete">Delete</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" type="button" id="edit-cancel">Cancel</button>
+        <button class="btn primary round" type="submit">Save changes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <script src="static/app.js"></script>
+</body>
+</html>
