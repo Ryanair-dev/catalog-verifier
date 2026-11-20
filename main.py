@@ -205,6 +205,16 @@ async def _lifespan(app: FastAPI):
         _delayed_start(630, eligibility_warmer.start_scheduler)
     except Exception:
         pass
+    # Match Reports -> Monday board (2026-11-19, services/monday_reports.py):
+    # every 5 min, sends reports still waiting locally (Monday was down, key
+    # wrong, ...). Each new report is also sent right away on its own, so this
+    # loop is only the retry path and its first run is cheap. Starts at +720s.
+    try:
+        from services import monday_reports
+        if monday_reports.is_configured():
+            _delayed_start(720, monday_reports.start_scheduler)
+    except Exception:
+        pass
     # Reports > PO P&L: keep the default dashboard (Avi + Victoria) pre-built,
     # rebuilt every 30 min. First build at +240s -- after azure_sql's ~165s
     # cold catalog pull, so brands/ASINs come out filled in.
@@ -247,6 +257,11 @@ async def _lifespan(app: FastAPI):
     try:
         from services import reports_po_pnl
         reports_po_pnl.stop_scheduler()
+    except Exception:
+        pass
+    try:
+        from services import monday_reports
+        monday_reports.stop_scheduler()
     except Exception:
         pass
 

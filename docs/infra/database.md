@@ -42,6 +42,7 @@ All SQLite I/O for the whole app lives in `services/database.py` — a single fi
 | `eligibility_cache` | 7-day TTL cache of SP-API eligibility status per ASIN — opt-in, used only by `enrich_asins` (Vendor Offers/PO Analytics/Seller Analytics). See `docs/infra/sp_api.md`. |
 | `health_check_runs` / `health_check_results` | Weekly catalog health-check job (Eligibility + DOG over the Pair Library). See `docs/features/pair_manager.md`. |
 | `brand_mappings` | Legacy Excel-import brand→manufacturer/purchaser/sourcer fallback for Create SKUs. See `docs/features/create_skus.md`. |
+| `match_feedback` | Report-button snapshots (local copy of every match report) + `monday_*` send state for the Match Reports Monday board. Created/migrated by `services/match_feedback.py ensure_table()`. See `docs/features/offer_analytics.md`. |
 
 ### Pair manager integration
 
@@ -94,6 +95,8 @@ Run on every startup; safe to re-run. Current migrations:
 A fresh `sqlite3.connect()` + these 5 PRAGMA statements happen on every `_connect()` call — cheap for one-off calls, but a real cost multiplier if called in a tight per-row loop (see `docs/features/pair_manager.md`'s changelog for a real case where this caused an HTTP 524 on a large import, fixed by batching many rows under one connection).
 
 ## Changelog
+
+**2026-11-19** — Listed `match_feedback` in the table list (it was missing) and added its additive Monday-send columns (`report_uid`, `pair_key`, `monday_*`), migrated in `services/match_feedback.py ensure_table()`, not in `init_db()`. See `docs/features/offer_analytics.md`.
 
 **2026-11-09** — Added the additive `analytics_runs.clean_amazon_titles` migration for the Offer Analysis Amazon-title cleanup option. See `docs/features/offer_analytics.md`.
 

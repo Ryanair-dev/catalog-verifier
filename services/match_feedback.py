@@ -69,7 +69,22 @@ _REC_COLS = [
     "amazon_title", "amazon_brand", "amazon_upc", "amazon_mpn", "amazon_pack", "amazon_json",
     "scoring_method", "confidence", "verdict", "scorer_verdict", "scorer_reasons",
     "rule", "audit_json", "code_version", "flags_json", "model_hash", "scores_json",
+    "report_uid", "pair_key", "monday_state",
 ]
+
+# Monday sending (services/monday_reports.py). Added 2026-11-19; NULL monday_state = a report
+# saved before Monday sending existed (queue those with scripts/monday_reports_check.py --backfill).
+_MONDAY_COLS = {
+    "report_uid": "TEXT",        # short id, unique across PCs; listed in the board's "Report IDs"
+    "pair_key": "TEXT",          # "ASIN|vendor item": same pair = same Monday item
+    "monday_state": "TEXT",      # 'pending' until it is on the board, then 'sent'
+    "monday_item_id": "TEXT",
+    "monday_board_id": "TEXT",   # which board it went to (test copy vs real board)
+    "monday_attempts": "INTEGER DEFAULT 0",
+    "monday_error": "TEXT",
+    "monday_next_try": "TEXT",   # UTC, same format as CURRENT_TIMESTAMP
+    "monday_sent_at": "TEXT",
+}
 
 
 def ensure_table() -> None:
@@ -78,6 +93,11 @@ def ensure_table() -> None:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(match_feedback)")}
         if "scores_json" not in cols:        # table was created by an earlier version
             conn.execute("ALTER TABLE match_feedback ADD COLUMN scores_json TEXT")
+        for name, decl in _MONDAY_COLS.items():
+            if name not in cols:
+                conn.execute(f"ALTER TABLE match_feedback ADD COLUMN {name} {decl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mf_monday ON match_feedback(monday_state)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mf_pair   ON match_feedback(pair_key)")
 
 
 ensure_table()
@@ -250,9 +270,18 @@ def record_report(*, run_id: int, row_idx: int, asin: str, label: int | None,
     rec = _build_record(run, rows[0])
     rec.update(kind="report", strength="report", label=label, reasons=json.dumps(reasons),
                note=note, correct_asin=correct_asin, reported_by=reported_by)
+    from services import monday_reports
+    rec.update(report_uid=monday_reports.new_report_uid(), pair_key=monday_reports.pair_key(rec),
+               monday_state="pending")
+    # Local copy first: once this commit returns, the report is safe even if Monday never answers.
     with database._LOCK, closing(database._connect()) as conn:
         with conn:
-            return int(_insert(conn, rec).lastrowid)
+            fid = int(_insert(conn, rec).lastrowid)
+    try:
+        monday_reports.kick()            # background send; the user does not wait for Monday
+    except Exception:  # noqa: BLE001  (the 5-minute loop picks it up instead)
+        log.exception("[match_feedback] could not start the Monday send")
+    return fid
 
 
 # --------------------------------------------------------------------------- #
@@ -266,6 +295,7 @@ _CSV_COLS = [
     "amazon_title", "amazon_brand", "amazon_upc", "amazon_mpn", "amazon_pack",
     "scoring_method", "confidence", "verdict", "scorer_verdict", "rule", "scorer_reasons",
     "matcher_explanation", "vetting_mode", "code_version", "model_hash", "flags_json",
+    "report_uid", "monday_state", "monday_item_id", "monday_board_id", "monday_error",
 ]
 
 
