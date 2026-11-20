@@ -8,17 +8,6 @@ Compare two versions of the code on the eval set: per vendor, per how the pair w
 --before / --after take any git commit, branch or tag.  "--after WORKTREE" (the default) means the files as
 they are on disk now, committed or not.  The other version is checked out into a temporary folder; your
 files are never touched.
-
-A version without services/analytics/matching_core (the old code on main) is scored with its old matcher,
-services/analytics/matcher.py score_amazon_item().  It has one scorer, so its answers are compared with each
-scorer of the other version.
-
-Both versions read the SAME copy of your database (catalog_verifier.db), so learned sub-brands and
-other saved data are equal on both sides: only the code differs.
-
-Better / worse, per pair:
-  a CORRECT pair is better when it moves up   (rejected -> review -> approved)
-  a WRONG pair   is better when it moves down (approved -> review -> rejected)
 """
 from __future__ import annotations
 
@@ -77,7 +66,7 @@ def _row_info(rows: list[dict]) -> list[dict]:
 def dump_old_matcher(rows: list[dict], matchers: list[str]) -> dict:
     """The old code (before matching_core): services/analytics/matcher.py score_amazon_item(source, amazon).
     One scorer, so the same answers are filed under every scorer name the other version is compared with."""
-    from services.analytics.matcher import score_amazon_item
+    from services.analytics.old_matcher import score_amazon_item
     verdicts = []
     for r in rows:
         o, c = r["offer"], r["candidate"]
