@@ -775,7 +775,7 @@
   // filters and unsaved Add-many grid survive switching sections). Bump ?v= when its files change.
   function initMarketplaceBlacklist() {
     const f = document.getElementById("marketplace-blacklist-frame");
-    if (f && !f.getAttribute("src")) f.setAttribute("src", "/static/marketplace_blacklist/index.html?v=1");
+    if (f && !f.getAttribute("src")) f.setAttribute("src", "/static/marketplace_blacklist/index.html?v=2");
   }
 
   // ========================================================================

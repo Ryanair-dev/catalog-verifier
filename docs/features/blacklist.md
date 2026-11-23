@@ -50,6 +50,11 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
 
 ## Changelog
 
+**2026-11-23 (later still) — Decision: no brand restriction (brand-prefix rules):**
+- User: "we can not go forward with the brand restriction". So there will be no "Brand prefix" identifier type in `analytics.pl_identifier_types`, and only exact SKU / Listing ID matches block a listing.
+- Code left as is: `matching.py` only applies brand rules when a type named "Brand prefix" exists, and the live table has none (3 types), so the brand path never runs. **Do not add that type** without revisiting this decision. (The tests still cover the brand rules because their fixture adds the type.)
+- UI: the Browse hint said "Press Enter or Check to apply brand rules too". It now says "...for an exact Blacklisted / Clear check across stores" (`static/marketplace_blacklist/index.html`). Bumped the iframe `index.html?v=2` in `app.js` and `app.js?v=78` in the shell. No restart needed; a normal page reload picks it up.
+
 **2026-11-23 (later) — Live Azure verification of the tab (read-only):**
 - User switched on the VPN, which got past the Azure firewall block noted in the entry below (no code change needed).
 - Through the live server (`/api/marketplace-blacklist/...`): lookups 8 stores / 14 reasons / 3 types (no "Brand prefix" type in the live table, so brand-rule matching is off, as designed); browse total 2,373 (~1.2 s); search `q=TORMS` 28; `check` on two real SKUs (one lower-cased) → both blacklisted on Amazon - Preferred Pharmacy Plus, a made-up SKU → clear (1.6 s); get-by-id OK; `export.csv` 2,373 rows (2.1 s).
