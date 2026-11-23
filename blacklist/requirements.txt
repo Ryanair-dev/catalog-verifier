@@ -1,0 +1,9 @@
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+python-dotenv==1.2.3
+# Azure SQL backend (pure-Python TDS + Entra ID service principal)
+python-tds==1.17.1
+pyOpenSSL==26.4.0
+azure-identity==1.25.3
+certifi==2026.7.22

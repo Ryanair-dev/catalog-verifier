@@ -31,6 +31,7 @@ This file is read automatically by Claude Code at the start of every session. It
 | [`library.md`](docs/features/library.md) | Library (Abbreviations / Brands / Manufacturers) — vocabulary/entity knowledge, distinct from the Pair Library |
 | [`toolbox.md`](docs/features/toolbox.md) | Toolbox — Eligibility/Storage/Generic ASIN Check, Check Brand, MPN Check, Quick Search |
 | [`walmart_catalog.md`](docs/features/walmart_catalog.md) | Walmart Catalog — Walmart marketplace Offer Analysis |
+| [`blacklist.md`](docs/features/blacklist.md) | Marketplace Blacklist — SKUs/Listing IDs blocked per store, stored in Azure SQL (writes!); standalone app in `blacklist/`, not wired in yet. NOT the Pair-Manager `blacklisted_pairs` |
 | [`verify_scan.md`](docs/features/verify_scan.md) | Verify / Scan — the original (legacy) verify-flow scoring engine + Match-from-Keepa mode |
 
 **Infra** (`docs/infra/`):
