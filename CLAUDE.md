@@ -95,6 +95,7 @@ catalog-verifier/
 │   ├── vendor_offers.py             Vendor Offers / Price Desk CRUD + exports + DB sync
 │   ├── create_po.py                 Create SKUs: upload sheet -> SKUs -> import files
 │   ├── pairs.py                     Pair Library + blacklist search/unlock
+│   ├── feedback.py                  Report button: save a match report; dev CSV + Monday send status
 │   ├── library.py                   Abbreviation library CRUD
 │   ├── eligibility.py               Toolbox: ASIN eligibility + Check Brand
 │   ├── storage_fees.py              Toolbox: FBA storage fee check
@@ -125,6 +126,8 @@ catalog-verifier/
 │   ├── reports_po_pnl.py            Reports: PO P&L dashboard (queries the Azure PO→sale allocation view)
 │   ├── reports_turba_fbm.py         Reports: Turba FBMTRB SKUs sold at a profit while the ASIN has no FBA stock
 │   ├── graph_mail.py                PO Analytics' Microsoft Graph sendMail wrapper
+│   ├── match_feedback.py            Local snapshot of every match report (match_feedback table)
+│   ├── monday_reports.py            Sends match reports to the "Match Reports" Monday board (retry, duplicate count)
 │   ├── teams_notify.py              Shared Teams webhook notifier — Offer/Brand Analytics + Vendor Offers export completion pings
 │   ├── eligibility_warmer.py        Idle-time scheduler filling eligibility_cache for every Price Desk ASIN
 │   ├── job_results.py               Finished export files on disk (data/job_results, 14 days) — Seller/PO/Vendor Offers exports

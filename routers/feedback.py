@@ -7,6 +7,11 @@ For everyone (no key):
 
 For the developer (needs ?key=<FEEDBACK_ADMIN_KEY from .env>):
   GET  /api/feedback/export.csv
+  GET  /api/feedback/monday/status   how many reports are on the Monday board / still waiting
+  POST /api/feedback/monday/retry    send every waiting report now (e.g. after fixing the key)
+
+A report is saved locally and answered "ok" right away; services/monday_reports.py
+sends it to the Monday board in the background, so Monday problems never reach the user.
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import Response
 
 from services import match_feedback as mf
+from services import monday_reports
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/feedback")
@@ -64,13 +70,29 @@ def report(body: dict = Body(...)) -> dict[str, Any]:
     return {"ok": True, "id": fid}
 
 
-@router.get("/export.csv")
-def export_csv(key: str = Query("")) -> Response:
+def _check_admin_key(key: str) -> None:
     expected = os.getenv("FEEDBACK_ADMIN_KEY", "")
     if not expected:
-        raise HTTPException(403, "Set FEEDBACK_ADMIN_KEY in .env and restart to download the feedback.")
+        raise HTTPException(403, "Set FEEDBACK_ADMIN_KEY in .env and restart to use this.")
     if not secrets.compare_digest(key or "", expected):
         raise HTTPException(403, "Wrong key.")
+
+
+@router.get("/monday/status")
+def monday_status(key: str = Query("")) -> dict[str, Any]:
+    _check_admin_key(key)
+    return monday_reports.status()
+
+
+@router.post("/monday/retry")
+def monday_retry(key: str = Query("")) -> dict[str, Any]:
+    _check_admin_key(key)
+    return {"ok": True, "queued": monday_reports.retry_now()}
+
+
+@router.get("/export.csv")
+def export_csv(key: str = Query("")) -> Response:
+    _check_admin_key(key)
     return Response(
         content="\ufeff" + mf.export_csv(),
         media_type="text/csv; charset=utf-8",

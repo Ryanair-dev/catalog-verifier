@@ -36,6 +36,11 @@ Open `http://127.0.0.1:8000`.
 | `MARKETPLACE_ID` / `SP_API_MARKETPLACE_ID` | Optional | Defaults to `ATVPDKIKX0DER` (US) |
 | `CATALOG_VERIFIER_API_TOKEN` | Optional | Requires `X-CV-Token` on API calls when set |
 | `CATALOG_VERIFIER_MAX_UPLOAD_MB` | Optional | Upload size cap; defaults to `25` |
+| `MONDAY_API_TOKEN` | Optional | Sends Report-button reports to the "Match Reports" Monday board. Server side only |
+| `MONDAY_REPORTS_BOARD_ID` | Optional | That board's id (from its URL); the test copy while testing |
+| `MONDAY_API_VERSION` | Optional | Monday API version; defaults to `2026-10` |
+| `MONDAY_REPORTERS` | Optional | Only if "Reported by" is a People column: `Avi=123, Victoria=456` |
+| `FEEDBACK_ADMIN_KEY` | Optional | Dev key for the feedback CSV and `/api/feedback/monday/status` |
 
 All are optional. Features that need a missing key are disabled with a clear UI message.
 
