@@ -50,6 +50,11 @@ python -m venv .venv && .venv/Scripts/pip install -r requirements-dev.txt
 
 ## Changelog
 
+**2026-11-23 (later) — Live Azure verification of the tab (read-only):**
+- User switched on the VPN, which got past the Azure firewall block noted in the entry below (no code change needed).
+- Through the live server (`/api/marketplace-blacklist/...`): lookups 8 stores / 14 reasons / 3 types (no "Brand prefix" type in the live table, so brand-rule matching is off, as designed); browse total 2,373 (~1.2 s); search `q=TORMS` 28; `check` on two real SKUs (one lower-cased) → both blacklisted on Amazon - Preferred Pharmacy Plus, a made-up SKU → clear (1.6 s); get-by-id OK; `export.csv` 2,373 rows (2.1 s).
+- Write permission, read-only check: `HAS_PERMS_BY_NAME` on `analytics.blacklist_listings` → SELECT/INSERT/UPDATE/DELETE all 1 for this app's `.env` service principal. Row count unchanged at 2,373; **still no writes made from this app**.
+
 **2026-11-23 — Wired in as the "Blacklist" sidebar tab (Marketplaces group):**
 - User: after merging PR #12, "analyze our catalog-verifier app to then take the next step and add the blacklist app tab".
 - Approach: port the backend into this app's structure, and embed the existing UI unchanged in an iframe (the Vendor Offers / Price Desk pattern) rather than rewriting 1,775 lines of JS and scoping 787 lines of CSS under `.mbl`. The iframe settles the CSS-clash porting note, and the page stays one self-contained folder.
