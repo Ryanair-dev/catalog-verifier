@@ -618,6 +618,7 @@
       "create-po":      $("#view-create-po"),
       "vendor-offers":  $("#view-vendor-offers"),
       "walmart-catalog": $("#view-walmart-catalog"),
+      "marketplace-blacklist": $("#view-marketplace-blacklist"),
       "reports":        $("#view-reports"),
     };
 
@@ -648,6 +649,7 @@
     if (view === "brand-analytics") loadBrandAnalyticsRuns();
     if (view === "create-po") initCreatePo();
     if (view === "vendor-offers") initVendorOffers();
+    if (view === "marketplace-blacklist") initMarketplaceBlacklist();
     if (view === "walmart-catalog" && typeof _refreshWalmartStatus === "function") _refreshWalmartStatus();
     if (view === "reports") {
       if (typeof _loadReportsPoPnlFilters === "function") _loadReportsPoPnlFilters();
@@ -766,6 +768,14 @@
   function initVendorOffers() {
     const f = document.getElementById("vendor-offers-frame");
     if (f && !f.getAttribute("src")) f.setAttribute("src", "/api/vendor-offers/page");
+  }
+
+  // Marketplace Blacklist: the ported standalone page (static/marketplace_blacklist/), iframed so
+  // its own CSS/JS can't touch the rest of the app. Loaded on first open, then kept (its tab,
+  // filters and unsaved Add-many grid survive switching sections). Bump ?v= when its files change.
+  function initMarketplaceBlacklist() {
+    const f = document.getElementById("marketplace-blacklist-frame");
+    if (f && !f.getAttribute("src")) f.setAttribute("src", "/static/marketplace_blacklist/index.html?v=1");
   }
 
   // ========================================================================

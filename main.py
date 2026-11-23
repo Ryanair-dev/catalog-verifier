@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from routers import run_families  # NEW: vendor families (Group by family panel + families download)
-from routers import analytics, barcode, brand_analytics, competitor_analysis, create_po, eligibility, export, feedback, generic_check, health_check, library, mpn_check, pairs, po_analytics, reports, scans, seller_analytics, settings, storage_fees, vendor_offers, verify, walmart
+from routers import analytics, barcode, brand_analytics, competitor_analysis, create_po, eligibility, export, feedback, generic_check, health_check, library, marketplace_blacklist, mpn_check, pairs, po_analytics, reports, scans, seller_analytics, settings, storage_fees, vendor_offers, verify, walmart
 from services import database  # side-effect: ensures DB tables exist
 
 # Load environment variables early so routers/services can read OPENAI_API_KEY.
@@ -318,6 +318,7 @@ app.include_router(po_analytics.router,   prefix="/api", tags=["po-analytics"])
 app.include_router(seller_analytics.router, prefix="/api", tags=["seller-analytics"])
 app.include_router(competitor_analysis.router, prefix="/api", tags=["competitor-analysis"])
 app.include_router(reports.router,          prefix="/api", tags=["reports"])
+app.include_router(marketplace_blacklist.router, prefix="/api", tags=["marketplace-blacklist"])  # writes Azure SQL
 
 
 @app.get("/api/health")

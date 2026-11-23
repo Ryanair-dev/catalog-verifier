@@ -31,7 +31,7 @@ This file is read automatically by Claude Code at the start of every session. It
 | [`library.md`](docs/features/library.md) | Library (Abbreviations / Brands / Manufacturers) — vocabulary/entity knowledge, distinct from the Pair Library |
 | [`toolbox.md`](docs/features/toolbox.md) | Toolbox — Eligibility/Storage/Generic ASIN Check, Check Brand, MPN Check, Quick Search |
 | [`walmart_catalog.md`](docs/features/walmart_catalog.md) | Walmart Catalog — Walmart marketplace Offer Analysis |
-| [`blacklist.md`](docs/features/blacklist.md) | Marketplace Blacklist — SKUs/Listing IDs blocked per store, stored in Azure SQL (writes!); standalone app in `blacklist/`, not wired in yet. NOT the Pair-Manager `blacklisted_pairs` |
+| [`blacklist.md`](docs/features/blacklist.md) | Marketplace Blacklist — SKUs/Listing IDs blocked per store, stored in Azure SQL (writes!); sidebar "Blacklist" tab (iframed page). NOT the Pair-Manager `blacklisted_pairs` |
 | [`verify_scan.md`](docs/features/verify_scan.md) | Verify / Scan — the original (legacy) verify-flow scoring engine + Match-from-Keepa mode |
 
 **Infra** (`docs/infra/`):
@@ -102,6 +102,7 @@ catalog-verifier/
 │   ├── mpn_check.py                 Toolbox: MPN → qty/case lookup
 │   ├── health_check.py              Pair Library weekly catalog health-check job
 │   ├── walmart.py                   Walmart Catalog Offer Analysis
+│   ├── marketplace_blacklist.py     Marketplace Blacklist API (/api/marketplace-blacklist) — WRITES Azure SQL
 │   ├── export.py                    Excel export for verify flow (20-column layout)
 │   ├── barcode.py                   5-source barcode lookup chain
 │   └── settings.py                  Threshold read/write
@@ -137,6 +138,7 @@ catalog-verifier/
 │   ├── restrictions.py              SP-API eligibility/restrictions classification
 │   ├── mpn_check.py / mpn_check_gudid.py / mpn_check_sync.py  Toolbox MPN qty/case lookup (AccessGUDID + local mirror)
 │   ├── walmart/                     Walmart Marketplace API client + offer analysis
+│   ├── marketplace_blacklist/       Marketplace Blacklist models/matching/repositories (Azure SQL analytics.blacklist_listings)
 │   ├── analytics/
 │   │   ├── runner.py                SP-API search orchestration (background thread); normalize_amazon_item() reused by brand_runner
 │   │   ├── matcher.py               Candidate confidence scoring for Offer Analysis runs
@@ -169,7 +171,9 @@ catalog-verifier/
 │   ├── create_po.js                 Create SKUs wizard (self-contained module)
 │   ├── create_po.css                Create SKUs wizard styling (scoped .cpo)
 │   ├── price_desk.html              Vendor Offers / Price Desk page (served standalone or iframed)
+│   ├── marketplace_blacklist/       Marketplace Blacklist page (own index.html/app.js/styles.css), iframed by the sidebar tab
 │   └── styles.css
+├── blacklist/                       Original standalone Blacklist app (reference only; nothing loads it — edit the ported files)
 ├── abbreviations.json               Seed data for the Library (loaded once on first run)
 ├── requirements.txt
 ├── .env                             API keys/credentials — never commit

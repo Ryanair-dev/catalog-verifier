@@ -12,6 +12,8 @@ Read-only mirror of the live SellerCloud catalog (and, separately, a Monday.com 
 - `start_scheduler()` / `stop_scheduler()` / `scheduler_status()` — hourly daemon thread (mirrors `services/vendor_offers_db_sync.py`'s pattern) that force-refreshes `fetch_rows()` every hour regardless of demand, then refreshes `sc_reference`'s brand-prefix/manufacturer tables from the same pull. Wired into `main.py`'s lifespan (replaced an earlier one-shot startup-only warm thread). A failed pull is logged and retried next cycle, never crashes the thread.
 - `is_configured()` — used by callers (e.g. PO Analytics' `gather()`) to raise a clear error instead of silently degrading to a stale fallback when Azure isn't reachable (see 2026-10-07e in `docs/features/create_skus.md` — the local-snapshot fallback was removed project-wide per explicit user instruction).
 
+**Not the only Azure SQL user:** the Marketplace Blacklist (`services/marketplace_blacklist/sql_repository.py`) uses the same `AZURE_*` service principal with its own pooled connections and **writes** `analytics.blacklist_listings`; see `docs/features/blacklist.md`. A firewall or credential failure here hits it too.
+
 **Honest ceiling**: an hourly refresh closes the gap between "Azure's own mirror updated" and "we noticed" — it does NOT speed up how fast Ford Medical's own Azure ETL reflects a change made directly in SellerCloud's UI, which is outside this codebase and unverified from here.
 
 ## Changelog
