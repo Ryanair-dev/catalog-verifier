@@ -775,7 +775,7 @@
   // filters and unsaved Add-many grid survive switching sections). Bump ?v= when its files change.
   function initMarketplaceBlacklist() {
     const f = document.getElementById("marketplace-blacklist-frame");
-    if (f && !f.getAttribute("src")) f.setAttribute("src", "/static/marketplace_blacklist/index.html?v=2");
+    if (f && !f.getAttribute("src")) f.setAttribute("src", "/static/marketplace_blacklist/index.html?v=3");
   }
 
   // ========================================================================
@@ -3353,6 +3353,7 @@
     $$("#settings-panel .lib-type-tab").forEach(t => t.classList.toggle("active", t.dataset.settingsTab === tab));
     $("#settings-tab-thresholds")?.classList.toggle("hidden", tab !== "thresholds");
     $("#settings-tab-tasks")?.classList.toggle("hidden", tab !== "tasks");
+    $("#settings-tab-appearance")?.classList.toggle("hidden", tab !== "appearance");
     if (tab === "tasks") {
       _loadTasksRunning();
       _stopTasksPoll();
@@ -3364,6 +3365,36 @@
   $$("#settings-panel .lib-type-tab").forEach(tab => {
     tab.addEventListener("click", () => _switchSettingsTab(tab.dataset.settingsTab));
   });
+
+  // ========================================================================
+  //  App-wide dark mode (Settings > Appearance). The look itself is
+  //  static/dark.css; the choice is localStorage "cv-theme", applied before
+  //  paint by the inline script in index.html's <head>. The Blacklist iframe
+  //  keeps its own dark palette and is told directly here (other open tabs of
+  //  it pick the change up from the storage event).
+  // ========================================================================
+  function applyTheme(theme) {
+    const dark = theme === "dark";
+    const root = document.documentElement;
+    root.classList.add("theme-switching");
+    if (dark) root.setAttribute("data-theme", "dark"); else root.removeAttribute("data-theme");
+    try { localStorage.setItem("cv-theme", dark ? "dark" : "light"); } catch {}
+    try {
+      const bl = document.getElementById("marketplace-blacklist-frame")?.contentDocument?.documentElement;
+      if (bl) bl.setAttribute("data-theme", dark ? "dark" : "light");
+    } catch { /* not loaded yet: it reads cv-theme itself when it loads */ }
+    const sw = document.getElementById("theme-dark-switch");
+    if (sw) sw.setAttribute("aria-checked", String(dark));
+    requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove("theme-switching")));
+  }
+  (function initThemeSwitch() {
+    const sw = document.getElementById("theme-dark-switch");
+    if (!sw) return;
+    sw.setAttribute("aria-checked", String(document.documentElement.getAttribute("data-theme") === "dark"));
+    sw.addEventListener("click", () => applyTheme(sw.getAttribute("aria-checked") === "true" ? "light" : "dark"));
+    // Another tab flipped it: follow along.
+    window.addEventListener("storage", (e) => { if (e.key === "cv-theme") applyTheme(e.newValue); });
+  })();
 
   function _stopTasksPoll() {
     if (_tasksPollTimer) { clearInterval(_tasksPollTimer); _tasksPollTimer = null; }

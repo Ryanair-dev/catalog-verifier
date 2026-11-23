@@ -11,9 +11,14 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
-  <link rel="stylesheet" href="/static/styles.css?v=20" />
+  <link rel="stylesheet" href="/static/styles.css?v=21" />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/create_po.css?v=10" />
+  <link rel="stylesheet" href="/static/dark.css?v=1" />
+  <script>
+    // App-wide theme (Settings > Appearance), applied before first paint so there is no light flash.
+    try { if (localStorage.getItem("cv-theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (e) {}
+  </script>
 </head>
 <body class="min-h-screen">
 
@@ -2472,6 +2477,19 @@
     <div class="lib-type-tabs tools-tab-bar" role="tablist">
       <button class="lib-type-tab active" data-settings-tab="thresholds" type="button">Thresholds</button>
       <button class="lib-type-tab" data-settings-tab="tasks" type="button">Tasks Running</button>
+      <button class="lib-type-tab" data-settings-tab="appearance" type="button">Appearance</button>
+    </div>
+
+    <div id="settings-tab-appearance" class="hidden p-5 space-y-4">
+      <div class="cv-setting-row">
+        <div>
+          <div class="text-sm font-semibold" style="color: var(--navy-800);">Dark mode</div>
+          <div class="text-xs mt-0.5" style="color: #6b7480;">Applies to the whole app, including the Blacklist and Vendor Offers pages. Saved on this browser.</div>
+        </div>
+        <button id="theme-dark-switch" class="cv-switch" type="button" role="switch" aria-checked="false" aria-label="Dark mode">
+          <span class="cv-switch-knob"></span>
+        </button>
+      </div>
     </div>
 
     <div id="settings-tab-thresholds" class="p-5 space-y-4">
@@ -3306,7 +3324,7 @@
   <!-- Each script exactly once: a second app.js / create_po.js tag runs the whole app twice
        (two click handlers per button, e.g. two runs created per "Start run"). -->
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=78"></script>
+  <script src="/static/app.js?v=79"></script>
   <script src="/static/families.js?v=10"></script>
   <script src="/static/create_po.js?v=28"></script>
 </body>

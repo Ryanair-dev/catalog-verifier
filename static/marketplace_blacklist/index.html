@@ -8,33 +8,17 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=1">
+  <link rel="stylesheet" href="styles.css?v=2">
   <script>
-    // Light/dark theme: the saved choice, else the system setting. Runs before paint so there is no flash.
+    // Light/dark theme follows Catalog Verifier's app-wide setting (Settings > Appearance), stored in
+    // localStorage "cv-theme" ("light" | "dark"), shared because this page is same-origin. The app also
+    // pushes changes straight in; the storage event covers other open tabs. Runs before paint (no flash).
     (function () {
-      var KEY = "blacklist-theme", root = document.documentElement;
-      var media = window.matchMedia("(prefers-color-scheme: dark)");
+      var KEY = "cv-theme", root = document.documentElement;
       function saved() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
-      function apply(theme) { root.setAttribute("data-theme", theme); }
-      // Embedded in Catalog Verifier (an iframe in its light-only shell): start light, not the system setting.
-      var embedded = window.top !== window;
-      apply(saved() || (!embedded && media.matches ? "dark" : "light"));
-      media.addEventListener("change", function (e) { if (!saved() && !embedded) apply(e.matches ? "dark" : "light"); });
-      document.addEventListener("DOMContentLoaded", function () {
-        var btn = document.getElementById("theme-toggle");
-        function label() {
-          var dark = root.getAttribute("data-theme") === "dark";
-          btn.title = dark ? "Switch to light theme" : "Switch to dark theme";
-          btn.setAttribute("aria-label", btn.title);
-        }
-        label();
-        btn.addEventListener("click", function () {
-          var next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-          apply(next);
-          try { localStorage.setItem(KEY, next); } catch (e) {}
-          label();
-        });
-      });
+      function apply() { root.setAttribute("data-theme", saved() === "dark" ? "dark" : "light"); }
+      apply();
+      window.addEventListener("storage", function (e) { if (e.key === KEY) apply(); });
     })();
   </script>
 </head>
@@ -64,22 +48,14 @@
     <symbol id="i-inbox"viewBox="0 0 24 24"><path d="M3 13l3-8h12l3 8v6a1 1 0 01-1 1H4a1 1 0 01-1-1v-6z"/><path d="M3 13h5l1.5 2.5h5L16 13h5"/></symbol>
   </svg>
 
-  <aside class="sidebar">
-    <div class="logo">
-      <img src="blacklist-icon.svg" alt="" width="34" height="34">
-      <span>BLACKLIST</span>
-    </div>
-    <nav class="tabs" role="tablist" aria-label="Sections">
+  <!-- Floating bottom tab bar: the active pill (.tab-thumb) slides between the tabs. -->
+  <nav class="tabbar" aria-label="Sections">
+    <div class="tabs" role="tablist">
       <span class="tab-thumb" aria-hidden="true"></span>
       <button role="tab" class="tab active" data-tab="browse" aria-selected="true" title="Search and check the blacklist"><svg class="icon"><use href="#i-list"/></svg><span>Browse</span></button>
       <button role="tab" class="tab" data-tab="add" aria-selected="false" title="Add to the blacklist"><svg class="icon"><use href="#i-plus"/></svg><span>Add</span></button>
-    </nav>
-    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Switch theme">
-      <svg class="icon i-moon" aria-hidden="true"><use href="#i-moon"/></svg>
-      <svg class="icon i-sun" aria-hidden="true"><use href="#i-sun"/></svg>
-    </button>
-    <span class="avatar" id="me" title="Your initials (used for Added by)"><svg class="icon"><use href="#i-user"/></svg></span>
-  </aside>
+    </div>
+  </nav>
 
   <div class="shell">
   <main>
@@ -352,6 +328,6 @@
 
   <div id="toasts" aria-live="polite"></div>
 
-  <script src="app.js?v=1"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

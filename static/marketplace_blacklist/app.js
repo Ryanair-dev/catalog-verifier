@@ -1738,6 +1738,7 @@ async function init() {
 
   // Remember "Added by" initials on this browser until sign-in provides the user.
   const showMe = () => {
+    if (!$("#me")) return; // the initials badge went with the old sidebar; the Add form keeps the field
     const initials = store.get("blacklist.created_by").toUpperCase();
     $("#me").innerHTML = initials ? esc(initials) : icon("user");
     $("#me").title = initials ? `Adding entries as ${initials}` : "Enter your initials on the Add tab";

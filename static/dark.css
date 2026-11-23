@@ -1,0 +1,57 @@
+/* =========================================================================
+   App-wide dark mode (Settings > Appearance). On when <html data-theme="dark">;
+   the choice is localStorage "cv-theme", applied before paint by the inline
+   script in index.html's <head>.
+
+   How: one colour-inversion filter on the root element instead of a hand-written
+   dark palette. The app has ~1,500 hard-coded colours (inline style="" in app.js
+   and index.html, Tailwind classes, create_po.css, price_desk.html), so a token-only
+   theme would leave light patches everywhere; inverting the whole page covers every
+   view, panel and the Vendor Offers iframe at once. hue-rotate(180deg) puts hues back
+   (red stays red, green stays green); only lightness flips.
+
+   Things that must keep their real colours are inverted a second time, which cancels
+   out: images/video/animations, solid brand-purple elements (so they stay #6b50d4
+   with white text, like the Blacklist page's own dark theme), and the Blacklist
+   iframe, which has a real dark palette of its own and follows the same setting.
+   A filter on the ROOT element does not change position:fixed (spec exception), so
+   side panels and modals still work.
+   ========================================================================= */
+html[data-theme="dark"] {
+  filter: invert(0.9) hue-rotate(180deg);
+  background: #fff; /* becomes the dark page colour behind everything */
+}
+
+/* Keep real colours: invert again (filters on a child stack on top of the root's). */
+html[data-theme="dark"] img,
+html[data-theme="dark"] video,
+html[data-theme="dark"] picture,
+html[data-theme="dark"] lottie-player,
+html[data-theme="dark"] #marketplace-blacklist-frame,
+html[data-theme="dark"] .brand-mark,
+html[data-theme="dark"] .sidebar .nav-item.active,
+html[data-theme="dark"] .btn-primary:not(:disabled),
+html[data-theme="dark"] .tools-tab-bar .lib-type-tab.active,
+html[data-theme="dark"] .reports-tab-bar .lib-type-tab.active {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Backdrops behind side panels and modals: a dark dim, inverted, would become a light
+   wash. A light tint is inverted into the dark dim we want. (Re-inverting them is not an
+   option: .modal-backdrop wraps the modal itself, which would turn light again.) */
+html[data-theme="dark"] #panel-overlay { background: rgba(255, 255, 255, 0.45); }
+html[data-theme="dark"] .modal-backdrop { background: rgba(255, 255, 255, 0.6); }
+/* An image inside a re-inverted element is already back to normal; don't flip it again. */
+html[data-theme="dark"] .btn-primary img,
+html[data-theme="dark"] .sidebar .nav-item.active img { filter: none; }
+
+/* Shadows would invert into light glows; flat reads better on dark. */
+html[data-theme="dark"] *,
+html[data-theme="dark"] *::before,
+html[data-theme="dark"] *::after { box-shadow: none !important; }
+/* ...except focus rings, which are drawn with box-shadow in a few places. */
+html[data-theme="dark"] :focus-visible { outline: 2px solid #9c8ae6; outline-offset: 2px; }
+
+/* While the setting is being flipped, stop per-element colour transitions from
+   animating the swap piecemeal (app.js applyTheme() adds this class for one frame). */
+html.theme-switching, html.theme-switching * { transition: none !important; }

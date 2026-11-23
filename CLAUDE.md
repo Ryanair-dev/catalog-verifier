@@ -172,7 +172,8 @@ catalog-verifier/
 │   ├── create_po.css                Create SKUs wizard styling (scoped .cpo)
 │   ├── price_desk.html              Vendor Offers / Price Desk page (served standalone or iframed)
 │   ├── marketplace_blacklist/       Marketplace Blacklist page (own index.html/app.js/styles.css), iframed by the sidebar tab
-│   └── styles.css
+│   ├── styles.css
+│   └── dark.css                     App-wide dark mode (Settings > Appearance): root invert filter + exceptions (see docs/infra/ui_theme.md)
 ├── blacklist/                       Original standalone Blacklist app (reference only; nothing loads it — edit the ported files)
 ├── abbreviations.json               Seed data for the Library (loaded once on first run)
 ├── requirements.txt
