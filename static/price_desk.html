@@ -1,4 +1,12 @@
 <title>Price Desk</title>
+<script>
+/* Dark mode follows Catalog Verifier's app-wide setting (Settings > Appearance), stored in
+   localStorage "cv-theme". Applied before paint; the app also pushes changes into this frame. */
+try { if (localStorage.getItem("cv-theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (e) {}
+window.addEventListener("storage", function (e) {
+  if (e.key === "cv-theme") document.documentElement.setAttribute("data-theme", e.newValue === "dark" ? "dark" : "light");
+});
+</script>
 <style>
 /* This file is deliberately pure ASCII. Punctuation is written as an HTML
    entity (&middot; &mdash; &hellip;) because we don't control the wrapping
@@ -47,7 +55,33 @@
   --mono:    ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
   --row-h: 66px;
 }
-#themeBtn { display: none; }   /* app is light-only */
+/* App-wide dark mode (cv-theme). Values come from the same colour rules as the app's
+   static/dark.css (scripts/build_dark_css.py map_value), so the two match. */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #14161a;
+  --band: #1f2129;
+  --card: #1b1e25;
+  --rule: #31373f;
+  --rule-soft: #2c3038;
+  --ink: #c6ccd2;
+  --ink-soft: #acb1b9;
+  --ink-faint: #9aa1ab;
+  --accent: #8f80c8;
+  --accent-soft: #241b41;
+  --stamp: #5fdadd;
+  --stamp-soft: #1a3e3e;
+  --stale: #e2af7b;
+  --stale-soft: #402f1b;
+  --v0: #e689b7;
+  --v1: #88a6e7;
+  --v2: #ecc583;
+  --v3: #6ad297;
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3), 0 2px 8px rgba(0,0,0,.25);
+  --shadow-lg:   0 4px 16px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.25);
+  --shadow-xl:   0 12px 32px rgba(0,0,0,.45), 0 4px 12px rgba(0,0,0,.3);
+}
+#themeBtn { display: none; }   /* theme comes from the app's Settings > Appearance */
 
 * { box-sizing: border-box; }
 body {

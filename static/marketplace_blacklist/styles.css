@@ -55,14 +55,15 @@
 /* Dark theme. data-theme is set before first paint by the script in index.html's <head>
    (saved choice, else the system setting); the sidebar button switches it. */
 :root[data-theme="dark"] {
-  --bg: #12131c;
-  --surface: #1b1c29;
-  --surface-2: #23243a;
-  --text: #ecedf7;
-  --text-2: #c3c5dc;
-  --muted: #8a8da8;
-  --border: #2a2c3e;
-  --border-strong: #383b54;
+  /* Neutrals match Catalog Verifier's dark mode (static/dark.css) so the embedded page blends in. */
+  --bg: #14161a;
+  --surface: #1b1e25;
+  --surface-2: #23262e;
+  --text: #e6e9ee;
+  --text-2: #c6ccd2;
+  --muted: #8f96a1;
+  --border: #2c3038;
+  --border-strong: #3c424c;
 
   --brand: #7c62e0;
   --brand-hover: #8f78ea;
@@ -83,8 +84,8 @@
   --warn-strong: #ffc870;
   --warn-soft: #3a2f17;
 
-  --hint: #a3a6c2;
-  --row-hover: #212238;
+  --hint: #a0a7b1;
+  --row-hover: #1f2229;
   --drop-hover: #15292c;
   --danger-border: #5a2a32;
   --backdrop: rgba(5, 6, 15, .6);
