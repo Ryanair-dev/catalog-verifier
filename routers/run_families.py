@@ -24,6 +24,7 @@ from fastapi.responses import Response
 
 from services import database
 from services.analytics.vendor_families import (
+    EXPORT_MAX_CANDIDATES,
     FILE_VERSION,
     RELATIONS,
     build_families,
@@ -176,6 +177,29 @@ def _static(run_id: int, refresh: bool) -> tuple[dict, str]:
             finally:
                 conn.close()
         return static, built_at
+
+
+def export_columns(run_id: int) -> dict[tuple, list]:
+    """Family columns for the main run export (same shape as vendor_families.export_family_columns),
+    read from this cache so repeat exports don't rebuild -- the rebuild took long enough that downloads
+    through the Cloudflare tunnel (100 s limit) failed.  Blank columns on any problem or a very big run."""
+    try:
+        with database._connect() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM analytics_candidates WHERE run_id = ?", (run_id,)).fetchone()[0]
+        if n > EXPORT_MAX_CANDIDATES:
+            return {}
+        static, _ = _static(run_id, False)
+        row_info = {r["row_idx"]: (f["id"], f["name"], r["variant"])
+                    for f in static["families"] for r in f["rows"]}
+        out: dict[tuple, list] = {}
+        for key, p in static["pairs"].items():
+            idx_s, asin = key.split("|", 1)
+            idx = int(idx_s)
+            fam, name, variant = row_info.get(idx, ("", "", ""))
+            out[(idx, asin)] = [fam, name, variant, p["listing_variant"], p["relation"], p["why"]]
+        return out
+    except Exception:  # noqa: BLE001 - the export itself must never fail because of this
+        return {}
 
 
 @router.get("/run-families/{run_id}")

@@ -66,7 +66,8 @@ from services.analytics.eligibility_check import (
 )
 from services.spapi import sp_api_configured, get_catalog_api, get_multi_store_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
-from services.analytics.vendor_families import FAMILY_EXPORT_BLANK, FAMILY_EXPORT_COLUMNS, export_family_columns
+from services.analytics.vendor_families import FAMILY_EXPORT_BLANK, FAMILY_EXPORT_COLUMNS
+from routers import run_families
 
 import logging
  
@@ -1797,7 +1798,7 @@ def export_analytics_run(
         "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
-    family_cols = export_family_columns(run_id)   # CHANGED: {(row_idx, asin): [family ... relation detail]}
+    family_cols = run_families.export_columns(run_id)   # cached build; CHANGED: {(row_idx, asin): [family ... relation detail]}
  
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
     for c in cand_rows:
