@@ -10,7 +10,7 @@ from typing import Any
 
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
 from services.analytics.matching_core.matching.cascade import score as score_cascade
-from services.analytics.matching_core.matching.attribute_compare import compare_attributes
+from services.analytics.matching_core.matching.attribute_compare import amazon_pack, compare_attributes
 from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
     score as score_classifier,
@@ -363,6 +363,7 @@ def result_to_scores(
     signals = dict(result.signals)
     reasons = list(result.reasons)
     confidence = float(result.confidence)
+    pack_n, pack_source = amazon_pack(offer, candidate)
     manufacturer_match = brands_match(offer.brand, candidate.manufacturer)
     brand_match = candidate_brand_matches(
         offer.brand, candidate.brand, candidate.manufacturer,
@@ -486,7 +487,10 @@ def result_to_scores(
         ),
         "brand_confirmed": brand_match,
         "manufacturer_confirmed": manufacturer_match,
-        "effective_pack": None,
+        # AMZ Pack column: vendor units per Amazon listing, read from the titles (2026-11-19; was always None,
+        # so the column only ever showed Amazon's item_package_quantity / number_of_items fields)
+        "effective_pack": pack_n,
+        "effective_pack_source": pack_source,
     }
     for key in (
         "size_mismatch", "apparel_size_mismatch", "linear_size_mismatch",

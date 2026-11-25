@@ -383,6 +383,11 @@ def _counts(text: str) -> dict[str, list[int]]:
     return out
 
 
+# Public name for other modules (attribute_compare.cmp_count / amazon_pack): the same reader everywhere,
+# so the scorers' count check and the shared variant gate split count vs pack the same way.
+read_counts = _counts
+
+
 # --------------------------------------------------------------------------- #
 # Collecting values from several sources, then resolving them
 # --------------------------------------------------------------------------- #

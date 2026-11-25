@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
+from services.analytics.matching_core.matching.attr_extract import read_counts
 from services.analytics.matching_core.matching.flags import EXTENDED_COUNTS
 from services.analytics.matching_core.matching.patterns import (
     COLOR_WORDS,
@@ -158,7 +159,13 @@ def _amazon_pack_numbers(cand: Candidate) -> set[int]:
 
 
 def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
-    """Vendor case-quantity ("100cs", "20cs") and Amazon bundle-size
+    """Labeling rule (2026-11-19): a different PACK SIZE of the same item is a match; a different
+    count PER PACKAGE is not ("36 Count" vs "50 Count").  So a pack multiplier ("Pack of 2" vs
+    "Pack of 6", "2-Pack" vs "6-Pack") never gives MISMATCH here: the same pack supports the pair,
+    a different pack is UNKNOWN.  The per-unit count is also checked by the shared variant gate
+    (variation.compare_boxes 'units'), which follows the same rule.
+
+    Vendor case-quantity ("100cs", "20cs") and Amazon bundle-size
     ("3-Pack") are different concepts - the vendor number is how many units
     ship per carton, the Amazon number is how many are in the listing. They
     are not comparable, and treating them as one attribute produced a false
@@ -176,19 +183,85 @@ def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
     """
     s, a = _texts(offer, cand)
     if not EXTENDED_COUNTS:
+        # Default mode reads pack notation only ("Pack of 3", "2-Pack"): a pack size, never a reason to reject.
         sp = _bundle_count(s)   # excludes the "Ncs" case-quantity form
         ap = _bundle_count(a)
         if sp is None or ap is None:
             return Cmp.UNKNOWN
-        return Cmp.MATCH if sp == ap else Cmp.MISMATCH
+        return Cmp.MATCH if sp == ap else Cmp.UNKNOWN
 
-    sp = bundle_counts(s)
-    ap = bundle_counts(a) or _amazon_pack_numbers(cand)
-    if not sp or not ap:
-        return Cmp.UNKNOWN
-    if sp & ap:
+    # Extended mode: per-unit counts ("4 Count", "12 ct", "4PCS", the K in "3 Packs of K") kept apart from
+    # pack multipliers ("Pack of 6", "6-Pack").  Only per-unit counts can disagree.
+    sc, ac = read_counts(s), read_counts(a)
+    su, au = set(sc["count"]), set(ac["count"]) or _amazon_unit_numbers(cand)
+    if not su or not au:
+        sp, ap = set(sc["pack"]) | set(sc["bundle"]), set(ac["pack"]) | set(ac["bundle"])
+        return Cmp.MATCH if (not su and not au and sp & ap) else Cmp.UNKNOWN
+    if su & au:
         return Cmp.MATCH
-    return Cmp.MISMATCH if (len(sp) == 1 and len(ap) == 1) else Cmp.UNKNOWN
+    return Cmp.MISMATCH if (len(su) == 1 and len(au) == 1) else Cmp.UNKNOWN
+
+
+def _amazon_unit_numbers(cand: Candidate) -> set[int]:
+    """Amazon's number_of_items when it is above 1 (item_package_quantity is a pack size, not a count)."""
+    out: set[int] = set()
+    values = (cand.attributes or {}).get("number_of_items") or []
+    for v in values if isinstance(values, (list, tuple)) else [values]:
+        try:
+            n = int(float(str(v).strip()))
+        except (TypeError, ValueError):
+            continue
+        if n > 1:
+            out.add(n)
+    return out
+
+
+_CASE_OF = re.compile(r"\bcase\s+of\s+(\d+)\b", re.IGNORECASE)
+
+
+def _multiplier(text: str, *, amazon: bool) -> int | None:
+    """How many packages a title says it holds: "Pack of 6", "3 Packs of 24" (3), "6-Pack".  On the
+    Amazon side "Case of 12" also counts (on the vendor side it is the shipping carton, not the item)."""
+    c = read_counts(text)
+    if c["pack"]:
+        return c["pack"][0]
+    if amazon:
+        m = _CASE_OF.search(text or "")
+        if m and 1 < int(m.group(1)) <= 1000:
+            return int(m.group(1))
+    if c["bundle"]:
+        return c["bundle"][0]
+    return None
+
+
+def amazon_pack(offer: Offer, cand: Candidate) -> tuple[int, str]:
+    """How many vendor units ONE Amazon listing holds (the "AMZ Pack" column).  Returns (n, source).
+
+    Amazon's pack (title first, then its item_package_quantity field) divided by the vendor's own pack
+    when it divides evenly: vendor "Pack of 2" + Amazon "Pack of 6" -> 3; vendor "12 Count" + Amazon
+    "12 Count (Pack of 2)" -> 2.  number_of_items is NOT used: Amazon often fills it with the unit count
+    (24 for one 24-count box), which showed as a wrong pack.  Nothing found -> 1."""
+    s, a = _texts(offer, cand)
+    am, source = _multiplier(a, amazon=True), "amazon_title"
+    if not am:
+        values = (cand.attributes or {}).get("item_package_quantity") or []
+        for v in values if isinstance(values, (list, tuple)) else [values]:
+            try:
+                n = int(float(str(v).strip()))
+            except (TypeError, ValueError):
+                continue
+            if 1 < n <= 1000:
+                am, source = n, "amazon_field"
+                break
+    if not am or am <= 1:
+        return 1, "none"
+    vm = _multiplier(s, amazon=False)
+    if vm and vm > 1:
+        if am == vm:
+            return 1, source + "/vendor_same_pack"
+        if am % vm == 0:
+            return am // vm, source + "/vendor_pack"
+    return am, source
 
 
 ATTRIBUTE_COMPARERS = {

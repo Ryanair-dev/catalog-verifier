@@ -1,8 +1,18 @@
-"""Feature extraction and scoring for the trained product-match classifier."""
+"""Feature extraction and scoring for the trained product-match classifier.
+
+Features: the 15 basic ones, plus 3 title features when the model file carries a "text_vectorizer"
+(models trained by scripts/train_classifier.py since 2026-11-24; picked by scripts/feature_search.py):
+  letter_similarity     how alike the two titles are letter by letter (character 3-4-grams, TF-IDF cosine)
+  partial_ratio         how well the shorter title fits inside the longer one (rapidfuzz partial_ratio)
+  numbers_vendor_only   how many numbers in the vendor title do not appear in the Amazon title ("4 cup" vs "2 cup")
+They read the RAW titles (vendor: raw_text before the AI keyword title; Amazon: the listing title before
+cleaning), the same text the training used. Older model files (15 features, no vectorizer) work unchanged.
+"""
 from __future__ import annotations
 
 import os
 import pickle
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -29,9 +39,38 @@ DEFAULT_MODEL_PATH = (
     Path(__file__).resolve().parents[1] / "classifier.pkl"
 )
 
+TITLE_FEATURES = ("letter_similarity", "partial_ratio", "numbers_vendor_only")
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
-def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
-    """Build classifier features from one serialized offer/candidate pair."""
+
+def raw_titles(row: dict[str, Any]) -> tuple[str, str]:
+    """The vendor and Amazon titles the title features read (same choice in training and in the app)."""
+    offer, cand = row.get("offer") or {}, row.get("candidate") or {}
+    return (str(offer.get("raw_text") or offer.get("title") or ""),
+            str(cand.get("title") or cand.get("matching_title") or ""))
+
+
+def title_features(vendor_title: str, amazon_title: str, vectorizer: Any) -> dict[str, float]:
+    from rapidfuzz import fuzz
+    v, a = vendor_title.lower(), amazon_title.lower()
+    rows = vectorizer.transform([v, a])               # TF-IDF rows are L2-normalised: dot product = cosine
+    letter = float(rows[0].multiply(rows[1]).sum())
+    return {
+        "letter_similarity": letter,
+        "partial_ratio": float(fuzz.partial_ratio(v, a)),
+        "numbers_vendor_only": float(len(set(_NUMBER.findall(v)) - set(_NUMBER.findall(a)))),
+    }
+
+
+def new_text_vectorizer(titles: list[str]) -> Any:
+    """The letter-pattern table for letter_similarity, learned from the training titles (no labels used)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    return TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 4)).fit([t.lower() for t in titles])
+
+
+def extract_features(row: dict[str, Any], vectorizer: Any = None) -> dict[str, float | int]:
+    """Build classifier features from one serialized offer/candidate pair.
+    With a vectorizer (from the model file) the 3 title features are added."""
     offer = Offer(**row["offer"])
     candidate = Candidate(**row["candidate"])
 
@@ -68,7 +107,7 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
     apparel_mm = bool(apparel_size_mismatch(offer, candidate))
     linear_mm = bool(linear_size_mismatch(offer, candidate))
 
-    return {
+    features = {
         "upc_hit": int(upc_hit),
         "mpn_hit": int(mpn_hit),
         "upc_present": int(bool(offer.upc and candidate.upc)),
@@ -85,6 +124,9 @@ def extract_features(row: dict[str, Any]) -> dict[str, float | int]:
         "mpn_hit_x_title": mpn_hit * title_ratio,
         "brand_x_title": brand_agrees * title_ratio,
     }
+    if vectorizer is not None:
+        features.update(title_features(*raw_titles(row), vectorizer))
+    return features
 
 
 @lru_cache(maxsize=4)
@@ -104,7 +146,7 @@ def score(offer: Offer, candidate: Candidate) -> MatchResult:
     features = extract_features({
         "offer": offer.model_dump(),
         "candidate": candidate.model_dump(),
-    })
+    }, model.get("text_vectorizer"))
     classifier = model["clf"]
     feature_names = model["feature_names"]
     probability = float(classifier.predict_proba(
@@ -134,7 +176,7 @@ def explain(offer: Offer, candidate: Candidate) -> dict[str, Any]:
     features = extract_features({
         "offer": offer.model_dump(),
         "candidate": candidate.model_dump(),
-    })
+    }, model.get("text_vectorizer"))
     classifier = model["clf"]
     feature_names = model["feature_names"]
 
@@ -148,6 +190,12 @@ def explain(offer: Offer, candidate: Candidate) -> dict[str, Any]:
         "Apparel-size mismatch: " + ("yes" if features["apparel_mismatch"] else "no"),
         "Linear-dimension mismatch: " + ("yes" if features["linear_mismatch"] else "no"),
     ]
+    if "letter_similarity" in features:
+        input_factors += [
+            f"Title letters alike: {float(features['letter_similarity']) * 100:.0f}%",
+            f"Shorter title found in the longer one: {float(features['partial_ratio']):.0f}%",
+            f"Vendor numbers missing on Amazon: {int(features['numbers_vendor_only'])}",
+        ]
     if candidate.manufacturer:
         input_factors.append(
             "Amazon manufacturer matches input brand: "
@@ -173,6 +221,9 @@ def explain(offer: Offer, candidate: Candidate) -> dict[str, Any]:
             "apparel_mismatch": "Apparel-size mismatch",
             "linear_mismatch": "Linear-dimension mismatch",
             "any_mismatch": "Any detected mismatch",
+            "letter_similarity": "Title letters alike",
+            "partial_ratio": "Shorter title inside the longer one",
+            "numbers_vendor_only": "Vendor numbers missing on Amazon",
         }
         ranked = sorted(
             zip(feature_names, importances),

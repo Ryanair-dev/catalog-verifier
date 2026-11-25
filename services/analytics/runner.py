@@ -34,6 +34,7 @@ from typing import Any, Iterable
 
 from services import database
 from services.analytics.matching_core.adapter import build_pair, score_pair
+from services.analytics import pack_multiplier
 from services.analytics.matching_core.models import MatchResult, Verdict
 from services.analytics.parser import SourceRow
 from services.analytics.data_cleaning.normalize import normalize_text
@@ -310,6 +311,7 @@ def normalize_amazon_item(raw: dict) -> dict:
         "bullet_points": bullets,
         "item_package_quantity": _attr_str("item_package_quantity"),
         "number_of_items": _attr_str("number_of_items"),
+        "pack_count": _attr_str("pack_count"),          # 2026-11-24: read by pack_multiplier
         "attributes": {
             "color": _attr_str("color"),
             "size": _attr_str("size"),
@@ -453,6 +455,19 @@ def _notify_teams_complete(run_id: int) -> None:
         log.exception("[runner] Teams notification failed for run %s", run_id)
 
 
+def _pack_for(source: dict, amazon: dict, vendor_raw: dict | None = None,
+              extracted: dict | None = None) -> tuple[int | None, dict]:
+    """(amz_pack column value, pack info for scores["pack"]). Never breaks a run.
+    extracted = the row's AI fields, so the vendor count the AI read ("AA-4" -> 4) is used."""
+    try:
+        info = pack_multiplier.compute(source, amazon, vendor_raw, extracted)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[runner] pack multiplier failed for %s: %s", amazon.get("asin"), exc)
+        return None, {"multiplier": None, "status": "not_sure", "why": "Could not work out the pack."}
+    m = info.get("multiplier")
+    return (m if m and m > 1 else None), info
+
+
 def _upsert_candidate(
     run_id: int,
     row_idx: int,
@@ -464,6 +479,7 @@ def _upsert_candidate(
     extracted: dict | None = None,
     mode: str = "cpg",
     scoring_method: str = "weighted",
+    vendor_raw: dict | None = None,
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
@@ -491,19 +507,11 @@ def _upsert_candidate(
     scores["scorer_verdict"] = verdict
     conf = scores["confidence_score"]
 
-    # amz_pack: use the scorer's effective_pack when available (accounts for
-    # vendor titles that already embed a count, e.g. "36 count crayons").
-    # Fall back to the raw SP-API attribute for non-UPC-matched candidates.
-    effective_pack = scores.get("effective_pack")
-    if effective_pack is not None:
-        amz_pack = effective_pack if effective_pack > 1 else None
-    else:
-        amz_pack_raw = normalized.get("item_package_quantity") or normalized.get("number_of_items")
-        try:
-            raw_int = int(float(amz_pack_raw)) if amz_pack_raw else None
-            amz_pack = raw_int if raw_int and raw_int > 1 else None
-        except (TypeError, ValueError):
-            amz_pack = None
+    # amz_pack = vendor units per Amazon sale (services/analytics/pack_multiplier.py, 2026-11-24):
+    # eaches on both sides, titles + vendor unit columns + Amazon fields + barcodes, and a person's
+    # confirmed number always wins. scores["pack"] keeps the status (sure / probably / not_sure /
+    # confirmed) and both numbers for the run page. None in the column = 1.
+    amz_pack, scores["pack"] = _pack_for(source, normalized, vendor_raw, extracted)
 
     sales_rank = normalized.get("sales_rank")  # int or None
 
@@ -1556,19 +1564,9 @@ def _rescore_pipeline(
             cand_data["verdict"] = verdict
             cand_data.pop("family_pass", None)       # CHANGED: fresh score; the family pass below decides again
  
-            # Refresh amz_pack from the recomputed effective_pack (so the "Case of
-            # 12" fix reaches existing runs on rescore), else the SP-API attribute.
-            _eff = scores.get("effective_pack")
-            if _eff and _eff > 1:
-                new_amz_pack = _eff
-            else:
-                _amz = cand_data.get("amazon") or {}
-                _raw = _amz.get("item_package_quantity") or _amz.get("number_of_items")
-                try:
-                    _ri = int(float(_raw)) if _raw else None
-                    new_amz_pack = _ri if _ri and _ri > 1 else None
-                except (TypeError, ValueError):
-                    new_amz_pack = None
+            # Refresh amz_pack on rescore with the same pack step as a new run (confirmed numbers kept).
+            new_amz_pack, scores["pack"] = _pack_for(source, cand_data.get("amazon") or amazon_data,
+                                                     extracted=ext or None)
  
             cand_batch.append((
                 float(conf), verdict, new_amz_pack, json.dumps(cand_data, default=str),
@@ -1829,6 +1827,7 @@ def _vet_and_store(
                 run_id, r.row_idx, item, source_dict, srcs,
                 max_rank, min_rank, extracted=ext,
                 mode=mode, scoring_method=scoring_method,
+                vendor_raw=r.raw,
             )
         done += 1
         if done % 25 == 0 or done == total:
