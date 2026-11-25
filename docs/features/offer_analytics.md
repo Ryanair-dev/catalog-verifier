@@ -274,6 +274,12 @@ The **Report** button on a run's candidate row (`static/app.js` `_fbOpenReportMo
 
 ## Changelog
 
+**2026-11-25b** — Run Excel export: columns removed + Approved rows highlighted.
+- User: "remove the following columns from the export - Scorer, Scoring explanation, Family, Family name, Vendor variant, Listing variant, Relation, Relation detail and could you please always highlight light green that were in the approved section".
+- `routers/analytics.py export_analytics_run`: dropped those 8 columns ("Scorer verdict" kept) and the explanation-text building; every cell of every row on the **Approved** sheet gets a light green fill (`C6EFCE`, `_green_cell`). "Approved section" read as the Approved sheet — the Approval Status column never says "Approved" (only blank / NEEDS_APPROVAL).
+- With the family columns gone the export no longer calls the family build at all, so 2026-11-25's `run_families.export_columns` helper was deleted (the `vendor_families.py` speedups stay — they still speed up the run page's Families list / "Export families"). Run 260 export: 1.0 s.
+- Verified on live data (read-only): headers, Approved 2,184/2,184 rows green, Not Approved 0 green; 56 tests pass. Needs a backend restart.
+
 **2026-11-25** — Run Excel export failed through the Cloudflare tunnel (browser saved a .txt / error instead of the xlsx).
 - User: "when i click on export for offers it just gives in txt and gives an error doesnt download".
 - Evidence: `cloudflared_stderr.log` had 8 "Incoming request ended abruptly: context canceled" on `/api/analytics/runs/259/export` (2) and `/260/export` (6). Small runs (258/261/263) exported fine. Run 260's export took >10 min locally on the live server; Cloudflare quick tunnels cut requests at 100 s. (The `No response returned` tracebacks in `server_stderr.log` at the same time were the Marketplace Blacklist's Azure connection resets — unrelated.)

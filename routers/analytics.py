@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, Body, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.cell import WriteOnlyCell
 
 from services import database
@@ -66,8 +66,6 @@ from services.analytics.eligibility_check import (
 )
 from services.spapi import sp_api_configured, get_catalog_api, get_multi_store_catalog_api
 from services.storage_fees import extract_dimensions, calc_storage_fee
-from services.analytics.vendor_families import FAMILY_EXPORT_BLANK, FAMILY_EXPORT_COLUMNS
-from routers import run_families
 
 import logging
  
@@ -1668,6 +1666,15 @@ def filter_run_brands(run_id: int, body: FilterBrandsBody) -> dict[str, Any]:
 _HDR_FONT = Font(bold=True)
 
 
+_APPROVED_FILL = PatternFill("solid", start_color="C6EFCE", end_color="C6EFCE")
+
+
+def _green_cell(ws, value) -> WriteOnlyCell:
+    c = WriteOnlyCell(ws, value=value)
+    c.fill = _APPROVED_FILL
+    return c
+
+
 def _hdr_row(ws, titles: list[str]) -> list[WriteOnlyCell]:
     cells = []
     for t in titles:
@@ -1794,11 +1801,9 @@ def export_analytics_run(
     ] + keyword_cols + [
         "ASIN", "Amazon Title",
     ] + (["Amazon Item Name"] if run_d.get("clean_amazon_titles") else []) + [
-        "Amazon Brand", "AMZ Pack", "BSR", "Confidence",
-        "Scorer", "Scorer verdict", "Scoring explanation",
+        "Amazon Brand", "AMZ Pack", "BSR", "Confidence", "Scorer verdict",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
-    ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
-    family_cols = run_families.export_columns(run_id)   # cached build; CHANGED: {(row_idx, asin): [family ... relation detail]}
+    ] + pt_cols  # Scorer / Scoring explanation / family columns removed at the user's request (2026-11-25)
  
     buckets: dict[str, list] = {"verified": [], "review": [], "not_approved": []}
     for c in cand_rows:
@@ -1811,19 +1816,6 @@ def export_analytics_run(
             score_data = json.loads(c["scores_json"] or "{}")
         except (ValueError, TypeError):
             score_data = {}
-        explanation = score_data.get("explanation") or {}
-        explanation_text = explanation.get("summary") or ""
-        factors = explanation.get("factors") or []
-        if factors:
-            explanation_text += " Factors: " + "; ".join(str(factor) for factor in factors)
-        importance = explanation.get("global_importance") or []
-        if importance:
-            explanation_text += " Model-wide feature importance (not per-row attribution): " + "; ".join(
-                f"{item.get('name')}: {item.get('importance_pct')}%"
-                for item in importance
-            )
-        if not explanation_text:
-            explanation_text = "Scoring explanation unavailable (scored before explanation details were stored)."
         row = safe_spreadsheet_row([
             (c["row_idx"] or 0) + 1,
             src.get("upc") or "",
@@ -1841,13 +1833,11 @@ def export_analytics_run(
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
-            score_data.get("scoring_method") or "",
             score_data.get("scoring_verdict") or "",
-            explanation_text,
             c["eligibility_status"] or "",           # blank until the eligibility check is run
             c["storage_fee"] if c["storage_fee"] is not None else "",
             c["storage_fee_peak"] if c["storage_fee_peak"] is not None else "",
-        ] + family_cols.get((c["row_idx"], c["asin"]), FAMILY_EXPORT_BLANK) + pt_values)  # CHANGED
+        ] + pt_values)
         buckets.get((c["verdict"] or "").lower(), buckets["not_approved"]).append(row)
  
     wb = Workbook(write_only=True)
@@ -1860,7 +1850,10 @@ def export_analytics_run(
         ws = wb.create_sheet(sheet_name)
         ws.append(_hdr_row(ws, cand_hdr))
         for row in buckets[verdict_key]:
-            ws.append(safe_spreadsheet_row(row))
+            row = safe_spreadsheet_row(row)
+            if verdict_key == "verified":                # Approved rows always light green (user request)
+                row = [_green_cell(ws, v) for v in row]
+            ws.append(row)
  
     # Not Found sheet — unaffected by rank filter
     ws_nf = wb.create_sheet("Not Found")
