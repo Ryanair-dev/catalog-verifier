@@ -5754,7 +5754,8 @@
           </td>
           <td class="text-xs">${escapeHtml(amzBrand)}</td>
           <td class="text-xs">${escapeHtml(sources)}</td>
-          <td class="text-xs text-center">${c.amz_pack != null ? escapeHtml(String(c.amz_pack)) : "1"}</td>
+          ${_unitsCellHtml(c)}
+          ${_packCellHtml(c)}
           <td class="text-xs text-right" style="color:#64748b;">${c.sales_rank != null ? Number(c.sales_rank).toLocaleString() : "—"}</td>
           <td class="text-center">${_eligBadge(c.eligibility_status)}</td>
           <td class="text-xs text-right" style="color:#64748b;white-space:nowrap;">${c.storage_fee != null ? "$" + Number(c.storage_fee).toFixed(2) : "—"}</td>
@@ -5780,6 +5781,41 @@
     _renderPagination(page, totalPages, totalRows);
   }
  
+  // ---- AMZ Pack cell: vendor units per Amazon sale + how sure (pack_multiplier.py, 2026-11-24) ----
+  const _PACK_TAGS = {
+    confirmed: { tag: "\u2713", fg: "#166534", bg: "#dcfce7", label: "Set by a person" },
+    sure:      { tag: "",       fg: "#334155", bg: "transparent", label: "Sure" },
+    probably:  { tag: "~",      fg: "#475569", bg: "#f1f5f9", label: "Probably" },
+    not_sure:  { tag: "?",      fg: "#9a3412", bg: "#ffedd5", label: "Not sure \u2014 please check" },
+  };
+  function _unitsCellHtml(c) {        // pieces in the Amazon listing ("5 ct" -> 5); filled by new runs and rescore
+    const p = (c.data && c.data.scores && c.data.scores.pack) || {};
+    const n = p.amazon_units;
+    return `<td class="text-xs text-center font-mono" title="How many pieces this Amazon listing sells">${n != null ? escapeHtml(String(n)) : "—"}</td>`;
+  }
+  function _packCellHtml(c) {
+    const p = (c.data && c.data.scores && c.data.scores.pack) || null;
+    const key = `${c.row_idx}|${c.asin}`;
+    const n = p ? p.multiplier : (c.amz_pack != null ? c.amz_pack : 1);
+    const t = (p && _PACK_TAGS[p.status]) || null;
+    const both = p && (p.title != null || p.fields != null)
+      ? ` Title says ${p.title ?? "nothing"}, Amazon fields say ${p.fields ?? "nothing"}.` : "";
+    const tip = `${t ? t.label + ". " : ""}${p && p.why ? p.why : ""}${both} Click to set the number.`;
+    const shown = n == null ? "?" : escapeHtml(String(n));
+    const badge = t && t.tag
+      ? ` <span style="display:inline-block;min-width:14px;padding:0 4px;border-radius:8px;font-weight:700;color:${t.fg};background:${t.bg};">${t.tag}</span>`
+      : "";
+    return `<td class="text-xs text-center"><button type="button" data-pack-key="${escapeHtml(key)}" title="${escapeHtml(tip)}" style="background:none;border:1px dashed transparent;border-radius:6px;padding:2px 6px;cursor:pointer;font:inherit;color:inherit;" onmouseover="this.style.borderColor='#cbd5e1'" onmouseout="this.style.borderColor='transparent'">${shown}${badge}</button></td>`;
+  }
+  function _packCandidates(row_idx, asin) {
+    const run = state.analyticsRun || {};
+    const lists = [((run.data || {}).candidates) || []];
+    Object.values(run.tabPageData || {}).forEach(e => { if (e && Array.isArray(e.candidates)) lists.push(e.candidates); });
+    const out = [];
+    lists.forEach(l => l.forEach(x => { if (x.row_idx === row_idx && x.asin === asin && !out.includes(x)) out.push(x); }));
+    return out;
+  }
+
   // ---- verdict-transition POST + local state update ------------------
   async function applyAnalyticsVerdict(row_idx, asin, verdict, review_status) {
     const id = state.analyticsRun.id;
@@ -10921,6 +10957,45 @@
       }
     });
   }
+
+  // AMZ Pack: a person sets the number (saved per vendor item + ASIN; later runs and rescores use it).
+  $("#analytics-run-candidates-body")?.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-pack-key]");
+    if (!btn) return;
+    const [rawIdx, asin] = (btn.dataset.packKey || "").split("|");
+    const row_idx = parseInt(rawIdx, 10);
+    const runId = state.analyticsRun && state.analyticsRun.id;
+    if (Number.isNaN(row_idx) || !asin || !runId) return;
+    const rows = _packCandidates(row_idx, asin);
+    const p = (rows[0] && rows[0].data && rows[0].data.scores && rows[0].data.scores.pack) || {};
+    const current = p.multiplier != null ? p.multiplier : (rows[0] && rows[0].amz_pack) || 1;
+    const hint = p.why ? `\n\n${p.why}` : "";
+    const answer = window.prompt(`How many vendor units does ONE sale on this Amazon listing use? (1, 2, 3 ...)${hint}`, String(current));
+    if (answer == null) return;
+    const multiplier = Number(answer.trim());
+    if (!Number.isInteger(multiplier) || multiplier < 1 || multiplier > 10000) {
+      showToast("Please type a whole number: 1, 2, 3 ...", "error");
+      return;
+    }
+    btn.disabled = true;
+    try {
+      const j = await api(`/api/analytics/runs/${runId}/candidates/pack`, {
+        method: "POST", body: { row_idx, asin, multiplier, confirmed_by: _fbStoredName() },
+      });
+      rows.forEach(c => {
+        c.amz_pack = j.amz_pack;
+        if (!c.data) c.data = {};
+        if (!c.data.scores) c.data.scores = {};
+        c.data.scores.pack = j.pack;
+      });
+      const td = btn.closest("td");
+      if (td && rows[0]) td.outerHTML = _packCellHtml(rows[0]);
+      showToast(`Saved: ${multiplier} vendor unit${multiplier === 1 ? "" : "s"} per sale. Next runs use it too.`, "success");
+    } catch (err) {
+      btn.disabled = false;
+      showToast("Couldn't save the pack: " + (err.message || err), "error");
+    }
+  });
 
   // One listener on the table body: the rows are re-drawn often, the body is not.
   $("#analytics-run-candidates-body")?.addEventListener("click", (e) => {

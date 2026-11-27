@@ -4,6 +4,12 @@ Train the gradient-boosted classifier, test it the way the app scores, and save 
     python scripts/train_classifier.py                  # test (grouped by vendor item) + save the candidate
     python scripts/train_classifier.py --by-vendor      # also the hardest test: each vendor left out once
     python scripts/train_classifier.py --promote        # put the saved candidate live (old model kept as backup)
+    python scripts/train_classifier.py --basic          # only the 15 basic features (compare / roll back)
+
+Features: the 15 basic ones + 3 title features (letter similarity, shorter title inside the longer one, vendor
+numbers missing on Amazon), picked by scripts/feature_search.py on 2026-11-24 (vendors left out: avg precision
+0.60 -> 0.74, matches found 104 -> 118, wrong approvals 43 -> 44). The letter-pattern table they need is learned
+from all titles of the eval set (no labels) and saved inside the model file; the app reads it from there.
 
 What it prints for the NEW classifier, the LIVE classifier and the two rule scorers (weighted, cascade),
 all on the same pairs: approved / review / rejected, wrong approvals, correct pairs rejected.
@@ -33,7 +39,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import eval_matchers as em  # noqa: E402  (load_eval_set, run_matcher, compute_metrics)
 from services.analytics.matching_core.matching.classifier import (  # noqa: E402
-    DEFAULT_MODEL_PATH, extract_features,
+    DEFAULT_MODEL_PATH, extract_features, new_text_vectorizer, raw_titles,
 )
 from services.analytics.matching_core.models import MatchResult, Verdict  # noqa: E402
 
@@ -94,6 +100,7 @@ def main() -> None:
     ap.add_argument("--by-vendor", action="store_true", help="also leave each vendor (_source) out once")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="where the candidate model is saved")
     ap.add_argument("--promote", action="store_true", help="copy the saved candidate over the live model")
+    ap.add_argument("--basic", action="store_true", help="only the 15 basic features, no title features")
     args = ap.parse_args()
 
     if args.promote:
@@ -110,11 +117,15 @@ def main() -> None:
     raw = args.eval_set.read_bytes()
     rows = json.loads(raw)
     pairs_all = em.load_eval_set(args.eval_set, None)
+    vectorizer = None
+    if not args.basic:
+        titles = [t for row in rows for t in raw_titles(row)]
+        vectorizer = new_text_vectorizer(titles)
     X, y, groups, sources, pairs = [], [], [], [], []
     skipped = 0
     for row, pair in zip(rows, pairs_all):
         try:
-            feats = extract_features(row)
+            feats = extract_features(row, vectorizer)
         except Exception:  # noqa: BLE001
             skipped += 1
             continue
@@ -166,11 +177,12 @@ def main() -> None:
         "eval_set": str(args.eval_set), "eval_set_sha256": hashlib.sha256(raw).hexdigest(),
         "pairs": len(y), "correct_pairs": sum(y), "vendors": sorted(set(sources)),
         "thresholds": {"approve": APPROVE_AT, "review": REVIEW_AT},
+        "features": names,
         "test": summary,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("wb") as f:
-        pickle.dump({"clf": clf, "feature_names": names, "meta": meta}, f)
+        pickle.dump({"clf": clf, "feature_names": names, "text_vectorizer": vectorizer, "meta": meta}, f)
     print(f"\ncandidate saved: {args.out}")
     print("Not live yet. Compare the table above; if it is better, run with --promote.")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from enum import Enum
 
+from services.analytics.matching_core.matching.attr_extract import read_counts
 from services.analytics.matching_core.matching.flags import EXTENDED_COUNTS
 from services.analytics.matching_core.matching.patterns import (
     COLOR_WORDS,
@@ -15,14 +16,12 @@ from services.analytics.matching_core.matching.patterns import (
     TRANSPARENCY_WORDS,
     VOLUME_TO_ML,
     BUNDLE_COUNT_RE,
-    BUNDLE_COUNT_EXT_RE,
 )
 from services.analytics.matching_core.models import Candidate, Offer
 
 TOLERANCE = 0.10
 
 # Amazon's own pack fields. adapter.build_pair copies them into Candidate.attributes.
-_AMAZON_PACK_KEYS = ("item_package_quantity", "number_of_items")
 
 
 class Cmp(str, Enum):
@@ -128,37 +127,14 @@ def _bundle_count(text: str) -> int | None:
     return None
 
 
-def bundle_counts(text: str) -> set[int]:
-    """EVERY bundle count written in a text, e.g. '3-Pack, 80 Count' -> {3, 80}.
-    Wider notation than _bundle_count: also 4PCS, 4 pc, 2 pieces, 12 ct, 4 Count.
-    Vendor case quantity ('40cs') is still not read."""
-    out: set[int] = set()
-    for m in BUNDLE_COUNT_EXT_RE.finditer(text or ""):
-        n = next((g for g in m.groups() if g is not None), None)
-        if n and int(n) > 0:
-            out.add(int(n))
-    return out
-
-
-def _amazon_pack_numbers(cand: Candidate) -> set[int]:
-    """Amazon's item_package_quantity / number_of_items, when present."""
-    out: set[int] = set()
-    for key in _AMAZON_PACK_KEYS:
-        values = (cand.attributes or {}).get(key) or []
-        if not isinstance(values, (list, tuple)):
-            values = [values]
-        for v in values:
-            try:
-                n = int(float(str(v).strip()))
-            except (TypeError, ValueError):
-                continue
-            if n > 0:
-                out.add(n)
-    return out
-
-
 def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
-    """Vendor case-quantity ("100cs", "20cs") and Amazon bundle-size
+    """Labeling rule (2026-11-19): a different PACK SIZE of the same item is a match; a different
+    count PER PACKAGE is not ("36 Count" vs "50 Count").  So a pack multiplier ("Pack of 2" vs
+    "Pack of 6", "2-Pack" vs "6-Pack") never gives MISMATCH here: the same pack supports the pair,
+    a different pack is UNKNOWN.  The per-unit count is also checked by the shared variant gate
+    (variation.compare_boxes 'units'), which follows the same rule.
+
+    Vendor case-quantity ("100cs", "20cs") and Amazon bundle-size
     ("3-Pack") are different concepts - the vendor number is how many units
     ship per carton, the Amazon number is how many are in the listing. They
     are not comparable, and treating them as one attribute produced a false
@@ -176,19 +152,37 @@ def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
     """
     s, a = _texts(offer, cand)
     if not EXTENDED_COUNTS:
+        # Default mode reads pack notation only ("Pack of 3", "2-Pack"): a pack size, never a reason to reject.
         sp = _bundle_count(s)   # excludes the "Ncs" case-quantity form
         ap = _bundle_count(a)
         if sp is None or ap is None:
             return Cmp.UNKNOWN
-        return Cmp.MATCH if sp == ap else Cmp.MISMATCH
+        return Cmp.MATCH if sp == ap else Cmp.UNKNOWN
 
-    sp = bundle_counts(s)
-    ap = bundle_counts(a) or _amazon_pack_numbers(cand)
-    if not sp or not ap:
-        return Cmp.UNKNOWN
-    if sp & ap:
+    # Extended mode: per-unit counts ("4 Count", "12 ct", "4PCS", the K in "3 Packs of K") kept apart from
+    # pack multipliers ("Pack of 6", "6-Pack").  Only per-unit counts can disagree.
+    sc, ac = read_counts(s), read_counts(a)
+    su, au = set(sc["count"]), set(ac["count"]) or _amazon_unit_numbers(cand)
+    if not su or not au:
+        sp, ap = set(sc["pack"]) | set(sc["bundle"]), set(ac["pack"]) | set(ac["bundle"])
+        return Cmp.MATCH if (not su and not au and sp & ap) else Cmp.UNKNOWN
+    if su & au:
         return Cmp.MATCH
-    return Cmp.MISMATCH if (len(sp) == 1 and len(ap) == 1) else Cmp.UNKNOWN
+    return Cmp.MISMATCH if (len(su) == 1 and len(au) == 1) else Cmp.UNKNOWN
+
+
+def _amazon_unit_numbers(cand: Candidate) -> set[int]:
+    """Amazon's number_of_items when it is above 1 (item_package_quantity is a pack size, not a count)."""
+    out: set[int] = set()
+    values = (cand.attributes or {}).get("number_of_items") or []
+    for v in values if isinstance(values, (list, tuple)) else [values]:
+        try:
+            n = int(float(str(v).strip()))
+        except (TypeError, ValueError):
+            continue
+        if n > 1:
+            out.add(n)
+    return out
 
 
 ATTRIBUTE_COMPARERS = {

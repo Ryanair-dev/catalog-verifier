@@ -69,6 +69,7 @@ class SourceRow:
             "title": self.title,
             "brand": self.brand,
             "manufacturer": self.brand,
+            "raw": self.raw,          # the vendor file's own columns (SIZE, COUNT ...), as rescore already passes
         }
 
 

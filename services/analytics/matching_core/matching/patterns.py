@@ -126,6 +126,19 @@ UNICODE_FRACS = {
 }
 MIXED_FRAC_RE = re.compile(r"(\d+)[\s-](\d{1,2})/(2|3|4|5|6|7|8|10|12|16|32|64)(?!\d)")
 SIMPLE_FRAC_RE = re.compile(r"(?<!\d)(\d{1,2})/(2|3|4|5|6|7|8|10|12|16|32|64)(?!\d)")
+# Before a size UNIT ("3/4 oz", "1/2 gal") only these denominators are fractions; "16/32 oz." is a case of 16
+# bottles of 32 oz (SIMPLE_FRAC_RE also allows /32 and /64, which only occur in lengths: "5/32 in").
+SIZE_FRACTION_DENOMINATORS = frozenset({2, 3, 4, 8, 16})
+
+# --- shipping-case shorthand in vendor titles (services/analytics/vendor_units.py) ---
+# "24 (8x3)/5 ct.", "24(8x3)/3 oz.", "24 (8x3 Inner)/3 oz.", "288(24x12)/1 ct.": the case, its layout, then the unit
+CASE_LAYOUT_RE = re.compile(r"(?<![\w.])(\d{1,5})\s*\(\s*\d+\s*[x\u00d7]\s*\d+(?:\s*[a-z]+)?\s*\)\s*/\s*(?=\d)", re.I)
+# "16/32 oz.", "24/15 ct.": a case number, a slash, then (checked by the caller) a size or count with its unit
+CASE_SLASH_RE = re.compile(r"(?<![\w./])(\d{1,5})\s*/\s*(?=\d)")
+# "1000/1" at the end of a title: a case of single units
+CASE_OF_ONES_RE = re.compile(r"(?<![\w./])(\d{2,5})\s*/\s*1\s*\.?\s*$")
+# "12/cs", "40/Case", "4/ctn": units per shipping case
+PER_CASE_RE = re.compile(r"(?<![\w./])(\d{1,5})\s*/\s*(?:cs|case|ca|ctn|carton)\b", re.I)
 
 # --- linear dimensions (run AFTER fraction normalization) ---
 INCH_RE = re.compile(
@@ -169,14 +182,5 @@ BUNDLE_COUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Wider bundle notation, used when MATCH_EXTENDED_COUNTS is on: the same forms as
-# above plus "4PCS", "4 pc", "2 pieces", "12 ct", "4 Count". "cs" (vendor cases per
-# carton) is still deliberately left out - see cmp_count.
-BUNDLE_COUNT_EXT_RE = re.compile(
-    r'\bpack\s+of\s+(\d+)\b|\bbox\s+of\s+(\d+)\b'
-    r'|\b(\d+)\s*[-\s]?pack\b|\b(\d+)\s*[-\s]?pk\b'
-    r'|\b(\d+)\s*[-\s]?(?:pcs?|pieces?|ct|count)\b',
-    re.IGNORECASE,
-)
 
 TRANSPARENCY_WORDS: frozenset[str] = frozenset({"clear", "transparent", "translucent"})

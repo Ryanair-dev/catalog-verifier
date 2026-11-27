@@ -899,6 +899,83 @@ def update_candidate_verdict(
     }
 
 
+_PACK_STATUS_LABEL = {"confirmed": "Set by a person", "sure": "Sure", "probably": "Probably",
+                      "not_sure": "Not sure - check"}
+
+
+def _pack_export_cells(pack: dict | None) -> list[str]:
+    """Export columns "Pack status" and "Pack why" (scores["pack"] from services/analytics/pack_multiplier.py).
+    Blank for runs scored before 2026-11-24 until they are rescored."""
+    if not isinstance(pack, dict) or not pack.get("status"):
+        return ["", ""]
+    why = str(pack.get("why") or "")
+    if pack.get("status") != "confirmed" and (pack.get("title") is not None or pack.get("fields") is not None):
+        why += f" (title: {pack.get('title') if pack.get('title') is not None else '-'}, " \
+               f"Amazon fields: {pack.get('fields') if pack.get('fields') is not None else '-'})"
+    return [_PACK_STATUS_LABEL.get(pack["status"], pack["status"]), why.strip()]
+
+
+@router.post("/runs/{run_id}/candidates/pack")
+def set_candidate_pack(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
+    """A person sets the pack multiplier (vendor units per Amazon sale) on one row.
+
+    Body: {"row_idx": int, "asin": str, "multiplier": int >= 1, "confirmed_by": str (optional)}
+    Saved per pair in pack_confirmations, so later runs and rescores of the same vendor item + ASIN
+    use it too (services/analytics/pack_multiplier.py). Returns the row's new pack info.
+    """
+    from services.analytics import pack_multiplier
+
+    row_idx, asin = body.get("row_idx"), str(body.get("asin") or "").strip()
+    mult = body.get("multiplier")
+    if row_idx is None or not asin:
+        raise HTTPException(status_code=400, detail="row_idx and asin are required")
+    if isinstance(mult, bool) or not isinstance(mult, int) or not 1 <= mult <= 10000:
+        raise HTTPException(status_code=400, detail="multiplier must be a whole number from 1 to 10000")
+
+    with database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        cand = conn.execute(
+            "SELECT data_json FROM analytics_candidates WHERE run_id=? AND row_idx=? AND asin=?",
+            (int(run_id), int(row_idx), asin),
+        ).fetchone()
+        cat = conn.execute(
+            "SELECT data_json FROM analytics_catalog_rows WHERE run_id=? AND row_idx=?",
+            (int(run_id), int(row_idx)),
+        ).fetchone()
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    try:
+        source = json.loads(cat["data_json"] or "{}") if cat else {}
+    except (ValueError, TypeError):
+        source = {}
+
+    pack_multiplier.confirm(source, asin, mult, confirmed_by=str(body.get("confirmed_by") or ""),
+                            run_id=int(run_id))
+    info = pack_multiplier.compute(source, {"asin": asin})
+
+    with database._LOCK, database._connect() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT data_json FROM analytics_candidates WHERE run_id=? AND row_idx=? AND asin=?",
+            (int(run_id), int(row_idx), asin),
+        ).fetchone()
+        try:
+            data = json.loads(row["data_json"] or "{}") if row else {}
+        except (ValueError, TypeError):
+            data = {}
+        before = (data.get("scores") or {}).get("pack") or {}
+        info = {**info, "title": before.get("title"), "fields": before.get("fields"),
+                "before": before.get("multiplier"),
+                "amazon_units": before.get("amazon_units")}
+        data.setdefault("scores", {})["pack"] = info
+        conn.execute(
+            "UPDATE analytics_candidates SET amz_pack=?, data_json=? WHERE run_id=? AND row_idx=? AND asin=?",
+            (mult if mult > 1 else None, json.dumps(data, default=str), int(run_id), int(row_idx), asin),
+        )
+    return {"ok": True, "row_idx": int(row_idx), "asin": asin, "amz_pack": mult if mult > 1 else None,
+            "pack": info}
+
+
 @router.post("/runs/{run_id}/candidates/bulk_verdict")
 def bulk_update_candidate_verdict(
     run_id: int,
@@ -1801,7 +1878,8 @@ def export_analytics_run(
     ] + keyword_cols + [
         "ASIN", "Amazon Title",
     ] + (["Amazon Item Name"] if run_d.get("clean_amazon_titles") else []) + [
-        "Amazon Brand", "AMZ Pack", "BSR", "Confidence", "Scorer verdict",
+        "Amazon Brand", "Units in listing", "Vendor units per sale (AMZ Pack)", "Pack status", "Pack why",
+        "BSR", "Confidence", "Scorer verdict",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + pt_cols  # Scorer / Scoring explanation / family columns removed at the user's request (2026-11-25)
  
@@ -1830,7 +1908,9 @@ def export_analytics_run(
             c["amz_title"] or "",
         ] + ([c["cleaned_amz_title"] or ""] if run_d.get("clean_amazon_titles") else []) + [
             c["amz_brand"] or "",
+            (score_data.get("pack") or {}).get("amazon_units") or "",   # pieces in the Amazon listing ("5 ct" -> 5)
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
+            *_pack_export_cells(score_data.get("pack")),
             c["sales_rank"] if c["sales_rank"] is not None else "",
             round(float(c["confidence"] or 0), 1),
             score_data.get("scoring_verdict") or "",

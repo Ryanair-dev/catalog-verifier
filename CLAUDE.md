@@ -144,6 +144,7 @@ catalog-verifier/
 │   ├── marketplace_blacklist/       Marketplace Blacklist models/matching/repositories (Azure SQL analytics.blacklist_listings)
 │   ├── analytics/
 │   │   ├── runner.py                SP-API search orchestration (background thread); normalize_amazon_item() reused by brand_runner
+│   │   ├── pack_multiplier.py       AMZ Pack: vendor units per Amazon sale, sure / not sure, confirmations
 │   │   ├── matcher.py               Candidate confidence scoring for Offer Analysis runs
 │   │   ├── parser.py                Catalog file parsing for Offer Analysis
 │   │   ├── ai_check.py              Batch AI verification of Offer Analysis candidates

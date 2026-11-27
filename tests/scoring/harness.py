@@ -53,6 +53,7 @@ def use_scoring_db(folder: Path) -> Path:
         # older code without sub-brand learning: score it the way that code works, without learned brands
         print("note: this code has no sub-brand learning; scoring without learned brands")
         return database.DB_PATH
+    bf._TABLE_READY = False         # a test that ran earlier may have created the tables in ANOTHER database
     bf._db().close()                                    # creates the brand tables
     brands = json.loads(BRANDS.read_text(encoding="utf-8")) if BRANDS.is_file() else []
     with database._connect() as conn:

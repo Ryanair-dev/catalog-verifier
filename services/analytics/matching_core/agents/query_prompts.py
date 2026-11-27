@@ -7,7 +7,7 @@ from services.analytics.matching_core.agents.keyword_prompts import KEYWORD_FORM
 
 # Bump on every prompt change. Recorded in each run so a metric from last
 # week stays interpretable after the prompt moves on.
-PROMPT_VERSION = "v4-keyword-formula-v2"
+PROMPT_VERSION = "v4-keyword-formula-v2+units1"   # 2026-11-25: case-first shorthand example, vendor_file hint
 
 BUILD_QUERY_SYSTEM = """\
 You turn abbreviated vendor product titles into Amazon search strings.
