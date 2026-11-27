@@ -135,18 +135,26 @@ def family_display_name(title: Any, words: list[str]) -> str:
     return " ".join(p for p in out if p)
 
 
+@lru_cache(maxsize=65536)
+def _initial_spans(words: tuple[str, ...]) -> tuple[tuple[int, int, str], ...]:
+    """(i, j, initials of words[i:j]) for every 2-4 word run -- cached: the same word lists are
+    compared against every family, which made big exports time out."""
+    return tuple((i, j, "".join(w[0] for w in words[i:j]))
+                 for i in range(len(words)) for j in range(i + 2, min(i + 4, len(words)) + 1))
+
+
 def _missing_words(need: list[str], have: list[str]) -> list[str]:
     """Product words of `need` that `have` does not contain.  An abbreviation counts in both directions:
     listing 'GG' covers vendor 'Good Grips', listing 'Good Grips' covers vendor 'GG'."""
     have_set = set(have)
     covered = [w in have_set for w in need]
-    for i in range(len(need)):
-        for j in range(i + 2, min(i + 4, len(need)) + 1):
-            if "".join(w[0] for w in need[i:j]) in have_set:
-                for k in range(i, j):
-                    covered[k] = True
-    initials = {"".join(w[0] for w in have[i:j])
-                for i in range(len(have)) for j in range(i + 2, min(i + 4, len(have)) + 1)}
+    if all(covered):
+        return []
+    for i, j, ini in _initial_spans(tuple(need)):
+        if ini in have_set:
+            for k in range(i, j):
+                covered[k] = True
+    initials = {ini for _, _, ini in _initial_spans(tuple(have))}
     for k, w in enumerate(need):
         if not covered[k] and len(w) >= 2 and w in initials:
             covered[k] = True
@@ -161,6 +169,7 @@ def _brand_key(brand: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", norm(brand))
 
 
+@lru_cache(maxsize=65536)
 def _same_brand(vendor_key: str, listing_key: str, listing_title: Any) -> bool:
     if not vendor_key:
         return True                                     # the vendor row names no brand: no evidence either way
@@ -354,17 +363,25 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
         key = (l["brand_key"], frozenset(l["words"])) if l["words"] else ("#asin", asin)
         lgroups.setdefault(key, []).append(asin)
 
+    # word -> how many of the brand's families use it; a word `fam` lacks but this counts is a sibling's word.
+    brand_word_count: dict[str, Counter] = defaultdict(Counter)
+    # barcode form -> (family id, row) pairs, so a listing group looks up only its own barcodes
+    fam_rows_by_code: dict[str, list[tuple]] = defaultdict(list)
+    fam_pos = {f["id"]: n for n, f in enumerate(families)}
+    for f in families:
+        brand_word_count[f["brand_key"]].update(set(f["words"]))
+        for i in f["rows"]:
+            for form in rows[i]["upc_forms"]:
+                fam_rows_by_code[form].append((f["id"], i))
+
     def word_fit(fam: dict, words: list[str], l: dict) -> tuple[bool, str]:
         if not fam["words"] or not _same_brand(fam["brand_key"], l["brand_key"], l["title"]):
             return False, ""
         missing = _missing_words(fam["words"], words)
         if missing:
             return False, f"listing lacks the product words: {', '.join(missing)}"
-        sibling_words: set[str] = set()
-        for other in families:
-            if other is not fam and other["brand_key"] == fam["brand_key"]:
-                sibling_words |= set(other["words"])
-        extra = (set(words) & sibling_words) - set(fam["words"])
+        fam_words, counts = set(fam["words"]), brand_word_count[fam["brand_key"]]
+        extra = {w for w in words if w not in fam_words and counts[w]}
         if extra:
             return False, f"listing has words of another product: {', '.join(sorted(extra))}"
         return True, ""
@@ -383,11 +400,15 @@ def build_families(vendor_rows: list[dict], candidates: list[dict]) -> dict[str,
         first = listings[asins[0]]
         group_codes = set().union(*(listings[a]["barcodes"] for a in asins))
         group_models = [m for a in asins for m in listings[a]["models"]]
-        code_hits, style_hits = Counter(), Counter()
-        for f in families:
-            code_hits[f["id"]] = sum(1 for i in f["rows"] if rows[i]["upc_forms"] & group_codes)
-            style_hits[f["id"]] = sum(1 for i in f["rows"]
-                                      if rows[i]["style"] and _style_matches(rows[i]["style"], group_models))
+        hit_rows = {fi for code in group_codes for fi in fam_rows_by_code.get(code, ())}
+        hit_count = Counter(fid for fid, _ in hit_rows)
+        # family order, as before: ties and "ambiguous: F1, F2" messages depend on it
+        code_hits = Counter({fid: hit_count[fid] for fid in sorted(hit_count, key=fam_pos.__getitem__)})
+        style_hits = Counter()
+        if group_models:
+            for f in families:
+                style_hits[f["id"]] = sum(1 for i in f["rows"]
+                                          if rows[i]["style"] and _style_matches(rows[i]["style"], group_models))
         by_words = [f["id"] for f in families if word_fit(f, first["words"], first)[0]]
         chosen = pick(code_hits, "barcode", by_words) or pick(style_hits, "style number", by_words)
         if chosen is None:
