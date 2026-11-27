@@ -709,7 +709,8 @@ def get_run_detail(
             if isinstance(trace, dict) and trace.get("used_agent"):
                 agent = "error" if trace.get("error") else "tried"
             nf_list.append({
-                "row_idx": r["row_idx"], "upc": d.get("upc") or "", "itemid": d.get("itemid") or "",
+                "row_idx": r["row_idx"], "upc": d.get("upc") or d.get("upc_original") or "",
+                "itemid": d.get("itemid") or "",
                 "title": d.get("title") or "", "brand": d.get("brand") or "",
                 "search_keyword": ext.get("search_keyword") or "",
                 "agent": agent, "agent_error": (trace or {}).get("error") if agent == "error" else "",
@@ -1790,7 +1791,8 @@ def export_analytics_run(
         cat_rows = conn.execute(
             """
             SELECT row_idx,
-                   json_extract(data_json, '$.upc')    AS upc,
+                   COALESCE(NULLIF(json_extract(data_json, '$.upc'), ''),
+                            json_extract(data_json, '$.upc_original')) AS upc,  -- rejected UPCs still shown
                    json_extract(data_json, '$.itemid') AS itemid,
                    json_extract(data_json, '$.title')  AS title,
                    json_extract(data_json, '$.brand')  AS brand,

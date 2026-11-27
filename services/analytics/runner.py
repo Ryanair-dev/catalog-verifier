@@ -1724,6 +1724,7 @@ def resume_run(run_id: int) -> bool:
         sr = SourceRow(
             row_idx=r["row_idx"],
             upc=d.get("upc") or "",
+            upc_original=d.get("upc_original") or "",
             itemid=d.get("itemid") or "",
             title=d.get("title") or "",
             search_title=d.get("search_title") or "",
@@ -2582,7 +2583,8 @@ def _load_source_rows(run_id: int) -> list[SourceRow]:
         except (ValueError, TypeError):
             d = {}
         out.append(SourceRow(
-            row_idx=r["row_idx"], upc=d.get("upc") or "", itemid=d.get("itemid") or "",
+            row_idx=r["row_idx"], upc=d.get("upc") or "", upc_original=d.get("upc_original") or "",
+            itemid=d.get("itemid") or "",
             title=d.get("title") or "", search_title=d.get("search_title") or "",
             brand=d.get("brand") or "", raw=d.get("raw") or {},
         ))

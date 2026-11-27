@@ -307,6 +307,13 @@ Vendor titles often put the SHIPPING CASE before the product's own size or count
 
 ## Changelog
 
+**2026-11-27** — Mapped UPCs no longer vanish: 10-digit UPCs rebuilt, rejected UPCs kept for display.
+- User, on run 268 "CHURCH_AND_DWIGHT_OFFER_10_09_2026": "why are there no upcs even though I mapped it" / "why is the value empty?" / "can we always have the id and the upc stay in place and not be thrown out".
+- Found: the vendor's `full_case_upc` holds 10 digits (`3320000341`) = UPC-A minus leading 0 and check digit. `file_validation.inspect_barcode` returned `("bad_length", "")` and `validate_catalog` wrote the "" back over the row's UPC, so all 133 rows (and run 264) were blank everywhere and searched by title only. Rebuilt UPCs (0 + digits + check digit) verified: 87 of the run's title-found Amazon candidates carry exactly the rebuilt UPC (e.g. 033200011408 = A&H Baking Soda 8oz). Item ID is never dropped by validation; this file just has no item-number column.
+- `file_validation.py`: 10 digits -> kind `rebuilt`, cleaned = full 12-digit UPC (`_upc_check_digit`), counted as usable, info issue `upc_rebuilt` in the upload report. `parser.py`: `SourceRow.upc_original` = the mapped cell as uploaded, stored in `data_json` (runner's two SourceRow rebuilds carry it). `routers/analytics.py`: run export (both sheets) and the run page's Not Found list fall back to `upc_original` when the cleaned UPC is blank, so scientific/letters/odd-length UPCs are still shown (not searched).
+- Data: backfilled runs 264 + 268 (`upc_original` = `full_case_upc`, `upc` = rebuilt) — backup `vetter/backups/catalog_rows_runs_264_268_before_upc_backfill_2026-11-27.json`. Their candidates were still found by title only; a re-run would also search the UPCs.
+- Verified: new `tests/test_upc_rebuild.py`; 58 tests pass; run 268 export has Source UPC on all 4,564 candidate rows. Needs a backend restart.
+
 **2026-11-25b** — Run Excel export: columns removed + Approved rows highlighted.
 - User: "remove the following columns from the export - Scorer, Scoring explanation, Family, Family name, Vendor variant, Listing variant, Relation, Relation detail and could you please always highlight light green that were in the approved section".
 - `routers/analytics.py export_analytics_run`: dropped those 8 columns ("Scorer verdict" kept) and the explanation-text building; every cell of every row on the **Approved** sheet gets a light green fill (`C6EFCE`, `_green_cell`). "Approved section" read as the Approved sheet — the Approval Status column never says "Approved" (only blank / NEEDS_APPROVAL).

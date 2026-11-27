@@ -119,7 +119,9 @@ def inspect_barcode(raw: Any) -> tuple[str, str]:
          empty       blank, 'N/A', '#N/A' ...; `cleaned` is ''
          scientific  Excel turned it into 1.23E+11: the digits are gone for good
          non_numeric contains letters or symbols
-         bad_length  digits, but not 8 / 12 / 13 / 14 long
+         rebuilt     10 digits = a UPC-A without its leading 0 and check digit;
+                     `cleaned` is the full 12-digit UPC (0 + digits + check digit)
+         bad_length  digits, but not 8 / 10 / 12 / 13 / 14 long
     Check digits are deliberately NOT validated: vendors often drop the final digit
     of an EAN-13, and the runner already recovers those."""
     s = "" if raw is None else str(raw).strip()
@@ -137,7 +139,15 @@ def inspect_barcode(raw: Any) -> tuple[str, str]:
         s = "0" + s                       # same padding the runner applies
     if len(s) in (8, 12, 13, 14):
         return "ok", s
+    if len(s) == 10:                      # e.g. Church & Dwight '3320000341' -> '033200003410'
+        return "rebuilt", "0" + s + _upc_check_digit("0" + s)
     return "bad_length", ""
+
+
+def _upc_check_digit(d11: str) -> str:
+    """UPC-A check digit for 11 digits (odd positions x3)."""
+    total = sum(int(c) * (3 if i % 2 == 0 else 1) for i, c in enumerate(d11))
+    return str((10 - total % 10) % 10)
 
 
 # --------------------------------------------------------------------------- #
@@ -177,6 +187,7 @@ def validate_catalog(rows: list) -> tuple[list, CatalogReport]:
     check_row_limit(len(rows))
 
     bad_upc: dict[str, list[int]] = {"scientific": [], "non_numeric": [], "bad_length": []}
+    rebuilt_upc: list[int] = []
     no_ident: list[int] = []
     long_title: list[int] = []
     n_upc_ok = n_titles = n_numeric_titles = n_with_id = 0
@@ -187,8 +198,10 @@ def validate_catalog(rows: list) -> tuple[list, CatalogReport]:
         kind, upc = inspect_barcode(getattr(r, "upc", ""))
         if kind in bad_upc:
             bad_upc[kind].append(r.row_idx)
-        elif kind == "ok":
+        elif kind in ("ok", "rebuilt"):
             n_upc_ok += 1
+            if kind == "rebuilt":
+                rebuilt_upc.append(r.row_idx)
         if (getattr(r, "upc", "") or "") != upc:
             r = replace(r, upc=upc)
         cleaned.append(r)
@@ -222,11 +235,17 @@ def validate_catalog(rows: list) -> tuple[list, CatalogReport]:
     report.add(
         "upc_not_numeric", "warning", "UPCs with letters or symbols (ignored)",
         "The UPC column holds text that is not a barcode. Those values were ignored; the rows "
-        "are searched by Item ID / title only.", bad_upc["non_numeric"])
+        "are searched by Item ID / title only. The original value stays in the export.",
+        bad_upc["non_numeric"])
     report.add(
         "upc_bad_length", "warning", "UPCs with an unusual length (ignored)",
         "Barcodes should be 8, 12, 13 or 14 digits (11 is padded). These were ignored; the "
-        "rows are searched by Item ID / title only.", bad_upc["bad_length"])
+        "rows are searched by Item ID / title only. The original value stays in the export.",
+        bad_upc["bad_length"])
+    report.add(
+        "upc_rebuilt", "info", "10-digit UPCs completed",
+        "These UPCs were missing the leading 0 and the check digit; both were added and the "
+        "full 12-digit UPC is searched.", rebuilt_upc)
     report.add(
         "no_identifier", "warning", "rows with no UPC, Item ID or title (will not be searched)",
         "Nothing to search on. They will appear under Not Found.", no_ident)

@@ -35,7 +35,8 @@ class SourceRow:
     """One catalog line after the wizard's column mapping has been applied."""
 
     row_idx: int                     # 0-based index within the data rows
-    upc: str = ""                    # raw UPC/EAN/GTIN value
+    upc: str = ""                    # raw UPC/EAN/GTIN value (validate_catalog may clean or blank it)
+    upc_original: str = ""           # the mapped UPC cell exactly as uploaded -- never cleaned or dropped
     itemid: str = ""                 # raw Item ID / MPN / SKU
     title: str = ""                  # full vendor title — used for scoring
     search_title: str = ""           # simplified title for SP-API keyword search
@@ -53,6 +54,7 @@ class SourceRow:
         return {
             "row_idx": self.row_idx,
             "upc": self.upc,
+            "upc_original": self.upc_original,
             "itemid": self.itemid,
             "title": self.title,
             "search_title": self.search_title,
@@ -191,6 +193,7 @@ def parse_source_rows(
         parsed.append(SourceRow(
             row_idx=i,
             upc=upc,
+            upc_original=upc_raw,
             itemid=itemid,
             title=title,
             search_title=search_title,
