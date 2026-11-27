@@ -117,19 +117,19 @@ def insert_template_cols(ws) -> None:
     ws.insert_cols(COL["BB Fluctuation"], 1)  # BB Fluctuation (after Buy Box Price current)
 
 
-BB_FLUCT_THRESHOLD = 0.10   # current Buy Box >= 10% above OR below the 30d or 90d one
+BB_FLUCT_THRESHOLD = 0.10   # current Buy Box >= 10% ABOVE both the 30d and 90d one (v2, 2026-11-27)
 
 
 def bb_fluctuation_formula(cur: str, d30: str, d90: str, threshold: float = BB_FLUCT_THRESHOLD) -> str:
-    """Excel formula for the "BB Fluctuation" column (2026-11-17, user's
-    buy-box-fluctuation rule): "Fluctuates" when the current Buy Box is >= the
-    threshold away (either direction) from the 30d OR the 90d Buy Box, blank
-    when there's no current price. IFERROR per ratio because Excel's OR doesn't
-    short-circuit, so a 0/blank 30d or 90d would otherwise give #DIV/0!.
-    `cur`/`d30`/`d90` are cell refs for the row (e.g. "Y2")."""
+    """Excel formula for the "BB Fluctuation" column (user's buy-box-fluctuation-v2
+    rule, 2026-11-27): "Fluctuates" only when the current Buy Box is >= the threshold
+    ABOVE both the 30d AND the 90d Buy Box -- drops below the averages are fine.
+    A missing/0/#N/A 30d or 90d makes that comparison FALSE (IFERROR per ratio:
+    Excel's AND doesn't short-circuit). Blank when there's no current price,
+    including #N/A. `cur`/`d30`/`d90` are cell refs for the row (e.g. "Y2")."""
     t = threshold
-    return (f'=IF(N({cur})=0,"",IF(OR(IFERROR(ABS({cur}/{d30}-1)>={t},FALSE),'
-            f"IFERROR(ABS({cur}/{d90}-1)>={t},FALSE)),\"Fluctuates\",\"Doesn't fluctuate\"))")
+    return (f'=IF(IFERROR(N({cur}),0)=0,"",IF(AND(IFERROR({cur}/{d30}-1>={t},FALSE),'
+            f"IFERROR({cur}/{d90}-1>={t},FALSE)),\"Fluctuates\",\"Doesn't fluctuate\"))")
 
 
 def bb_fluctuation_rule(dxf):

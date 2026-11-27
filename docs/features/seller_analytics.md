@@ -13,6 +13,8 @@ Analyzes a competitor's (or your own) FULL Amazon seller ASIN catalog, producing
 
 ## Changelog
 
+**2026-11-27** — "BB Fluctuation" column now uses the v2 rule (≥10% ABOVE both 30d and 90d; drops are fine) through the shared `bb_fluctuation_formula` — see `docs/features/vendor_offers.md` 2026-11-27.
+
 **2026-11-17b** — Gets the new "BB Fluctuation" column (shared layout + formula + red CF); see `docs/features/vendor_offers.md` 2026-11-17d.
 
 **2026-11-17** — Shares the vendor-offer export's new SKU behaviour: SKU / FBA SKU list every SKU (comma-separated, FBM tagged), a main derived from a shadow/kit is yellow, and "Inbound value" was removed. With no UPC per ASIN, the mains come from the ASIN's own SKUs. See `docs/features/vendor_offers.md` 2026-11-17b.

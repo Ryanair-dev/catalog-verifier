@@ -19,6 +19,12 @@ A buy-side cross-vendor price comparison tool ("Price Desk") — ingests multipl
 
 ## Changelog
 
+**2026-11-27** — "BB Fluctuation" switched to the user's buy-box-fluctuation-v2 rule (supersedes 2026-11-17d's rule).
+- User pasted the v2 skill: "here is the updated bb fluctuation thing".
+- New rule: "Fluctuates" only when the current Buy Box is >= 10% ABOVE **both** the 30d **and** the 90d Buy Box; a price below the averages is fine. A missing/0/#N/A 30d or 90d makes that comparison FALSE; blank when there's no current price (now also when it's #N/A).
+- `bb_fluctuation_formula` (shared — also used by PO Analytics and Seller Analytics): `=IF(IFERROR(N(cur),0)=0,"",IF(AND(IFERROR(cur/30d-1>=0.1,FALSE),IFERROR(cur/90d-1>=0.1,FALSE)),"Fluctuates","Doesn't fluctuate"))`. Column placement, red CF and the fixed 10% (no threshold input cell, same reasoning as 2026-11-17d) unchanged.
+- Verified in real Excel (COM): the skill's 3 examples + missing/0 90d, blank and #N/A current, exactly +10% and +9% — 9/9 as expected. 56 tests pass. Needs a backend restart.
+
 **2026-11-17d** — New "BB Fluctuation" column (user's buy-box-fluctuation rule) in the Vendor Offers export (daily alerts + manual Price Desk export) and, through the shared layout, Seller Analytics.
 - User: "could you please add the column buybox fluctuation, on all the PO analytics, Vendor price desk offer analytics, brand analytics, and the offer analytics", with their skill text.
 - Rule: current Buy Box ≥10% above OR below the 30d or the 90d Buy Box → "Fluctuates", else "Doesn't fluctuate"; blank when there's no current price.

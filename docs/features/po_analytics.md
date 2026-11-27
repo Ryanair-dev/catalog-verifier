@@ -16,6 +16,8 @@ Analyzes a received (or about-to-be-received) SellerCloud Purchase Order's FBA/F
 
 ## Changelog
 
+**2026-11-27** — "BB Fluctuation" column now uses the v2 rule (≥10% ABOVE both 30d and 90d; drops are fine) through the shared `bb_fluctuation_formula` — see `docs/features/vendor_offers.md` 2026-11-27.
+
 **2026-11-17** — New "BB Fluctuation" column right after "Buy Box Price current" (same shared formula/CF as the Vendor Offers export, see `docs/features/vendor_offers.md` 2026-11-17d).
 - The bundled template predates it, so `_insert_bb_fluctuation_col` inserts the column at load, copies the "Buy Box Price current" header style, and shifts the template's fixed-letter CF ranges past it. openpyxl `insert_cols` does not move CF.
 - Verified: all 42 headers line up with `ANALYTICS_COLS`; CF still covers SKU..ASIN (A:D), Net Margin, ROI and Rank (W→X, X→Y, AC→AD).
