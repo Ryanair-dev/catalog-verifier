@@ -9,6 +9,7 @@ from typing import Any
 
 from services import database
 from services.analytics.matching_core.matching.attr_extract import read_counts
+from services.analytics.vendor_units import unit_hints
 
 SURE, PROBABLY, NOT_SURE, CONFIRMED = "sure", "probably", "not_sure", "confirmed"
 
@@ -107,38 +108,6 @@ def _ratio(amazon_eaches: int | None, vendor_eaches: int | None) -> tuple[int | 
     return amazon_eaches // vendor_eaches, None
 
 
-def _vendor_columns(raw: dict | None) -> tuple[str | None, int | None]:
-    """(UoM code, case pack) from the vendor file's own columns, when it has them."""
-    uom = case_pack = None
-    for header, value in (raw or {}).items():
-        h = re.sub(r"[^a-z]", " ", str(header).lower()).split()
-        joined = " ".join(h)
-        if uom is None and ("uom" in h or h == ["um"] or "unit of measure" in joined or joined.endswith("selling unit")):
-            code = re.sub(r"[^A-Z]", "", str(value or "").upper())
-            uom = code or None
-        elif case_pack is None and ("cspk" in h or "case pack" in joined or "casepack" in h
-                                    or "qty per case" in joined or "units per case" in joined):
-            case_pack = _int(value)
-    return uom, case_pack
-
-
-def _digits(v: Any) -> str:
-    return re.sub(r"\D", "", str(v or "")).lstrip("0")
-
-
-def _same_barcode(source: dict, amazon: dict) -> bool:
-    mine = _digits(source.get("upc"))
-    if len(mine) < 6:
-        return False
-    theirs = [amazon.get("upc"), amazon.get("ean"), amazon.get("gtin"),
-              *(amazon.get("upcs") or []), *(amazon.get("eans") or []), *(amazon.get("gtins") or [])]
-    return any(_digits(t) == mine for t in theirs if t)
-
-
-# --------------------------------------------------------------------------- #
-# Confirmed numbers (set by a person on the run page)
-# --------------------------------------------------------------------------- #
-
 def pair_key(source: dict, asin: str) -> str:
     """Same rule as the Monday reports' Pair key: ASIN + the vendor's item id (else UPC, else title)."""
     item = str(source.get("itemid") or source.get("mpn") or source.get("upc") or "").strip().lower()
@@ -193,21 +162,33 @@ def confirm(source: dict, asin: str, multiplier: int, confirmed_by: str = "", ru
 # The multiplier
 # --------------------------------------------------------------------------- #
 
-def compute(source: dict, amazon: dict, vendor_raw: dict | None = None,
-            extracted: dict | None = None) -> dict:
-    """source = the vendor row (title, upc, itemid, raw); amazon = the normalized SP-API record;
-    extracted = the row's saved AI fields (what the AI read from the vendor title)."""
+def listing_units(amazon: dict) -> int | None:
+    """How many pieces ONE Amazon listing sells ("Units in listing" on the run page and in the export):
+    "5 ct" -> 5, "4 ea (Pack of 2)" -> 8, "Total: 24 Batteries" -> 24, "Pack of 6" -> 6; else Amazon's unit_count
+    (when it is a count); None when nothing says (a "3 oz" tube)."""
+    eaches, mult, _ = _text_units(str(amazon.get("title") or ""), amazon=True)
+    if eaches:
+        return eaches
+    uc_type = str(amazon.get("unit_count_type") or "").lower()
+    uc = _int(amazon.get("unit_count")) if any(w in uc_type for w in ("count", "each", "piece")) else None
+    return uc or mult or None
+
+
+def compute(source: dict, amazon: dict, extracted: dict | None = None) -> dict:
+    """source = the vendor row (title, upc, itemid, raw = the file's own columns); amazon = the normalized SP-API
+    record; extracted = the row's saved AI fields (what the AI read from the vendor title)."""
     asin = str(amazon.get("asin") or "")
     key = pair_key(source, asin)
     done = _confirmed(key)
     if done:
         return {"multiplier": int(done["multiplier"]), "status": CONFIRMED, "source": "person",
+                "amazon_units": listing_units(amazon),
                 "why": f"Set by {done.get('confirmed_by') or 'a person'} on {str(done.get('confirmed_at'))[:10]}.",
-                "title": None, "fields": None, "same_barcode": None, "pair_key": key}
+                "title": None, "fields": None, "pair_key": key}
 
     notes: list[str] = []
     vendor_title = str(source.get("title") or "")
-    raw = source.get("raw") or vendor_raw or {}
+    raw = source.get("raw") or {}
 
     # ---- vendor unit, in eaches ----
     v_eaches, v_mult, _ = _text_units(vendor_title, amazon=False)
@@ -218,7 +199,8 @@ def compute(source: dict, amazon: dict, vendor_raw: dict | None = None,
             notes.append(f"vendor count {n} comes from {where}")
     vendor_said_nothing = v_eaches is None and v_mult is None
     vendor_unclear = False
-    uom, case_pack = _vendor_columns(raw)
+    columns = unit_hints(raw)
+    uom, case_pack = columns.get("uom"), columns.get("case_pack")
     if uom in _UOM_MULTI:
         if case_pack and case_pack > 1:
             v_eaches = v_eaches * case_pack if v_eaches else None
@@ -261,9 +243,8 @@ def compute(source: dict, amazon: dict, vendor_raw: dict | None = None,
     fields_conflict = bool(from_count and from_pack and from_count != from_pack)
     field_est = from_pack if fields_conflict else (from_count or from_pack)
 
-    same = _same_barcode(source, amazon)
-    out = {"title": title_est, "fields": field_est, "same_barcode": same, "pair_key": key,
-           "vendor_eaches": v_eaches, "amazon_eaches": a_eaches}
+    out = {"title": title_est, "fields": field_est, "pair_key": key,
+           "vendor_eaches": v_eaches, "amazon_eaches": a_eaches, "amazon_units": listing_units(amazon)}
 
     def done_(mult: int | None, status: str, src: str, why: str) -> dict:
         return {**out, "multiplier": mult, "status": status, "source": src,

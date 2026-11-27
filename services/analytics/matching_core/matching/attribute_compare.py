@@ -16,14 +16,12 @@ from services.analytics.matching_core.matching.patterns import (
     TRANSPARENCY_WORDS,
     VOLUME_TO_ML,
     BUNDLE_COUNT_RE,
-    BUNDLE_COUNT_EXT_RE,
 )
 from services.analytics.matching_core.models import Candidate, Offer
 
 TOLERANCE = 0.10
 
 # Amazon's own pack fields. adapter.build_pair copies them into Candidate.attributes.
-_AMAZON_PACK_KEYS = ("item_package_quantity", "number_of_items")
 
 
 class Cmp(str, Enum):
@@ -129,35 +127,6 @@ def _bundle_count(text: str) -> int | None:
     return None
 
 
-def bundle_counts(text: str) -> set[int]:
-    """EVERY bundle count written in a text, e.g. '3-Pack, 80 Count' -> {3, 80}.
-    Wider notation than _bundle_count: also 4PCS, 4 pc, 2 pieces, 12 ct, 4 Count.
-    Vendor case quantity ('40cs') is still not read."""
-    out: set[int] = set()
-    for m in BUNDLE_COUNT_EXT_RE.finditer(text or ""):
-        n = next((g for g in m.groups() if g is not None), None)
-        if n and int(n) > 0:
-            out.add(int(n))
-    return out
-
-
-def _amazon_pack_numbers(cand: Candidate) -> set[int]:
-    """Amazon's item_package_quantity / number_of_items, when present."""
-    out: set[int] = set()
-    for key in _AMAZON_PACK_KEYS:
-        values = (cand.attributes or {}).get(key) or []
-        if not isinstance(values, (list, tuple)):
-            values = [values]
-        for v in values:
-            try:
-                n = int(float(str(v).strip()))
-            except (TypeError, ValueError):
-                continue
-            if n > 0:
-                out.add(n)
-    return out
-
-
 def cmp_count(offer: Offer, cand: Candidate) -> Cmp:
     """Labeling rule (2026-11-19): a different PACK SIZE of the same item is a match; a different
     count PER PACKAGE is not ("36 Count" vs "50 Count").  So a pack multiplier ("Pack of 2" vs
@@ -214,54 +183,6 @@ def _amazon_unit_numbers(cand: Candidate) -> set[int]:
         if n > 1:
             out.add(n)
     return out
-
-
-_CASE_OF = re.compile(r"\bcase\s+of\s+(\d+)\b", re.IGNORECASE)
-
-
-def _multiplier(text: str, *, amazon: bool) -> int | None:
-    """How many packages a title says it holds: "Pack of 6", "3 Packs of 24" (3), "6-Pack".  On the
-    Amazon side "Case of 12" also counts (on the vendor side it is the shipping carton, not the item)."""
-    c = read_counts(text)
-    if c["pack"]:
-        return c["pack"][0]
-    if amazon:
-        m = _CASE_OF.search(text or "")
-        if m and 1 < int(m.group(1)) <= 1000:
-            return int(m.group(1))
-    if c["bundle"]:
-        return c["bundle"][0]
-    return None
-
-
-def amazon_pack(offer: Offer, cand: Candidate) -> tuple[int, str]:
-    """How many vendor units ONE Amazon listing holds (the "AMZ Pack" column).  Returns (n, source).
-
-    Amazon's pack (title first, then its item_package_quantity field) divided by the vendor's own pack
-    when it divides evenly: vendor "Pack of 2" + Amazon "Pack of 6" -> 3; vendor "12 Count" + Amazon
-    "12 Count (Pack of 2)" -> 2.  number_of_items is NOT used: Amazon often fills it with the unit count
-    (24 for one 24-count box), which showed as a wrong pack.  Nothing found -> 1."""
-    s, a = _texts(offer, cand)
-    am, source = _multiplier(a, amazon=True), "amazon_title"
-    if not am:
-        values = (cand.attributes or {}).get("item_package_quantity") or []
-        for v in values if isinstance(values, (list, tuple)) else [values]:
-            try:
-                n = int(float(str(v).strip()))
-            except (TypeError, ValueError):
-                continue
-            if 1 < n <= 1000:
-                am, source = n, "amazon_field"
-                break
-    if not am or am <= 1:
-        return 1, "none"
-    vm = _multiplier(s, amazon=False)
-    if vm and vm > 1:
-        if am == vm:
-            return 1, source + "/vendor_same_pack"
-        if am % vm == 0:
-            return am // vm, source + "/vendor_pack"
-    return am, source
 
 
 ATTRIBUTE_COMPARERS = {

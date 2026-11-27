@@ -52,6 +52,9 @@ def _offer_text(offer: Offer) -> str:
     parts = [offer.brand, offer.title or offer.raw_text]
     if offer.mpn:
         parts.append(f"(vendor part number: {offer.mpn})")
+    hint = (offer.attributes or {}).get("vendor_file")
+    if hint:
+        parts.append(f"({hint})")          # e.g. "vendor file: size 5 ct.; case pack 24 (the shipping case ...)"
     return " ".join(part for part in parts if part)
 
 

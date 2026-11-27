@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 FILE_VERSION = "2026-11-10 brand_extractor v4 (merged with the AI title reader: expansions for the matcher)"
 OPENAI_MODEL = "gpt-4o-mini"
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-PROMPT_VERSION = "fields-keywords-v4-expansions"
+PROMPT_VERSION = "fields-keywords-v5-vendor-units"   # v5 (2026-11-25): vendor unit columns + case shorthand
 LISTING_PROMPT_VERSION = "fields-v2"
 BATCH_SIZE = 20                 # texts per call
 MAX_WORKERS = 4                 # parallel calls
@@ -68,6 +68,9 @@ You read product texts for a program that matches vendor products to Amazon list
 You get a JSON object {"items": [...]}; each item has an "id", a "kind" ("vendor" = a vendor product title,
 "listing" = an Amazon title followed by its description) and the "text". Vendor items may also include
 "manufacturer" and "mpn" fields; use them only as source context, never as evidence for attributes.
+Vendor items may also include "vendor_file": what the vendor file's own columns say about the unit (the product's
+size or count, how it is sold, and the shipping CASE PACK). Use its size / count for keyword_specs when the text
+does not state one. A case pack is how many units ship together: NEVER write it as the product's count.
 
 For EVERY item return "attributes": the variant attributes the text states, each with "evidence" = the exact
 words of the text that state it, copied from the text as written:
@@ -382,17 +385,32 @@ def extract_brands(rows: list, run_id: int = 0, progress_cb=None) -> dict[int, d
         key = vendor_key(getattr(row, "upc", ""), brand, title, mpn)
         if not key:
             continue
-        keyed.append((row.row_idx, key, {
+        entry = {
             "text": title or "Untitled product",
             "manufacturer": brand,
             "mpn": mpn,
-        }))
+        }
+        # what the vendor file's own columns say about the unit (vendor_units.py, 2026-11-25)
+        from services.analytics.vendor_units import hint_text, unit_hints
+        hint = hint_text(unit_hints(getattr(row, "raw", None)), title)
+        if hint:
+            entry["vendor_file"] = hint
+        keyed.append((row.row_idx, key, entry))
     results = _extract(
         run_id, "vendor",
         [{"key": key, **entry} for _, key, entry in keyed],
         progress_cb,
     )
     out = {row_idx: results[key] for row_idx, key, _ in keyed if key in results}
+    # safety check: a count that is really the shipping case ("24 Count" for "24 (8x3)/5 ct.") -> the real unit
+    from services.analytics.vendor_units import fix_case_count
+    titles = {row.row_idx: str(getattr(row, "title", "") or "") for row in rows}
+    for row_idx, result in list(out.items()):
+        spec = str((result or {}).get("keyword_specs") or "")
+        fixed = fix_case_count(spec, titles.get(row_idx, ""))
+        if fixed != spec:
+            out[row_idx] = {**result, "keyword_specs": fixed}
+            log.info("[brand_extractor] row %s: case count corrected: %r -> %r", row_idx, spec, fixed)
     log.info("[brand_extractor] %d/%d vendor rows have AI fields for run %s", len(out), len(keyed), run_id)
     return out
 

@@ -1064,7 +1064,8 @@
                       <th class="sortable" data-sort-key="amz_title">Amazon Item Name <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="brand">Brand <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="sources">Sources <span class="sort-caret"></span></th>
-                      <th class="sortable" data-sort-key="amz_pack">AMZ Pack <span class="sort-caret"></span></th>
+                      <th title="How many pieces the Amazon listing sells (5 ct = 5)">Units in listing</th>
+                      <th class="sortable" data-sort-key="amz_pack" title="How many of the vendor's units one Amazon sale uses (1X, 2X ...)">Vendor units per sale <span style="font-weight:400;color:#94a3b8;">(AMZ Pack)</span> <span class="sort-caret"></span></th>
                       <th class="sortable" data-sort-key="sales_rank">BSR <span class="sort-caret"></span></th>
                       <th title="Amazon selling eligibility — run the Eligibility &amp; Storage check">Approval</th>
                       <th title="FBA storage fee per unit / month (off-peak)">Storage $/mo</th>
@@ -3324,7 +3325,7 @@
   <!-- Each script exactly once: a second app.js / create_po.js tag runs the whole app twice
        (two click handlers per button, e.g. two runs created per "Start run"). -->
   <script src="https://unpkg.com/@lottiefiles/lottie-player@2.0.8/dist/lottie-player.js"></script>
-  <script src="/static/app.js?v=80"></script>
+  <script src="/static/app.js?v=81"></script>
   <script src="/static/families.js?v=10"></script>
   <script src="/static/create_po.js?v=28"></script>
 </body>

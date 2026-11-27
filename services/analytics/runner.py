@@ -455,17 +455,10 @@ def _notify_teams_complete(run_id: int) -> None:
         log.exception("[runner] Teams notification failed for run %s", run_id)
 
 
-def _pack_for(source: dict, amazon: dict, vendor_raw: dict | None = None,
-              extracted: dict | None = None) -> tuple[int | None, dict]:
-    """(amz_pack column value, pack info for scores["pack"]). Never breaks a run.
-    extracted = the row's AI fields, so the vendor count the AI read ("AA-4" -> 4) is used."""
-    try:
-        info = pack_multiplier.compute(source, amazon, vendor_raw, extracted)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("[runner] pack multiplier failed for %s: %s", amazon.get("asin"), exc)
-        return None, {"multiplier": None, "status": "not_sure", "why": "Could not work out the pack."}
-    m = info.get("multiplier")
-    return (m if m and m > 1 else None), info
+def _amz_pack_column(scores: dict) -> int | None:
+    """The amz_pack column: vendor units per Amazon sale, computed by the scorer (adapter._add_pack); None = 1."""
+    m = (scores.get("pack") or {}).get("multiplier")
+    return m if m and m > 1 else None
 
 
 def _upsert_candidate(
@@ -479,7 +472,6 @@ def _upsert_candidate(
     extracted: dict | None = None,
     mode: str = "cpg",
     scoring_method: str = "weighted",
-    vendor_raw: dict | None = None,
 ) -> str:
     """
     Score the candidate, write/merge it into analytics_candidates, and
@@ -511,7 +503,7 @@ def _upsert_candidate(
     # eaches on both sides, titles + vendor unit columns + Amazon fields + barcodes, and a person's
     # confirmed number always wins. scores["pack"] keeps the status (sure / probably / not_sure /
     # confirmed) and both numbers for the run page. None in the column = 1.
-    amz_pack, scores["pack"] = _pack_for(source, normalized, vendor_raw, extracted)
+    amz_pack = _amz_pack_column(scores)
 
     sales_rank = normalized.get("sales_rank")  # int or None
 
@@ -1565,8 +1557,7 @@ def _rescore_pipeline(
             cand_data.pop("family_pass", None)       # CHANGED: fresh score; the family pass below decides again
  
             # Refresh amz_pack on rescore with the same pack step as a new run (confirmed numbers kept).
-            new_amz_pack, scores["pack"] = _pack_for(source, cand_data.get("amazon") or amazon_data,
-                                                     extracted=ext or None)
+            new_amz_pack = _amz_pack_column(scores)
  
             cand_batch.append((
                 float(conf), verdict, new_amz_pack, json.dumps(cand_data, default=str),
@@ -1827,7 +1818,6 @@ def _vet_and_store(
                 run_id, r.row_idx, item, source_dict, srcs,
                 max_rank, min_rank, extracted=ext,
                 mode=mode, scoring_method=scoring_method,
-                vendor_raw=r.raw,
             )
         done += 1
         if done % 25 == 0 or done == total:
@@ -2481,6 +2471,8 @@ def _agent_search_row(
     cannot help (out of credits, usage limit, bad key), so the caller should stop."""
     from services.analytics.matching_core.models import Offer
 
+    from services.analytics.vendor_units import fix_case_count, hint_text, unit_hints
+    hint = hint_text(unit_hints(row.raw), row.title or "")
     offer = Offer(
         offer_id=str(row.row_idx),
         title=row.title or None,
@@ -2488,6 +2480,7 @@ def _agent_search_row(
         brand=(extracted_brands.get(row.row_idx) or {}).get("brand") or row.brand or None,
         upc=row.upc or None,
         mpn=row.itemid or None,
+        attributes={"vendor_file": hint} if hint else {},
     )
     try:
         candidates, trace = agent.run(offer)
@@ -2506,6 +2499,9 @@ def _agent_search_row(
         _save_query_agent_result(run_id, row.row_idx, trace)
         return "", False
  
+    for k in ("comparison_title", "keyword_specs"):            # "24 Count" that is really the case -> "5 Count"
+        if trace.get(k):
+            trace[k] = fix_case_count(str(trace[k]), row.title or "")
     trace["scoring_title"] = trace.get("comparison_title") or row.title
     comparison = str(trace.get("comparison_title") or "")
     _save_query_agent_result(run_id, row.row_idx, trace)

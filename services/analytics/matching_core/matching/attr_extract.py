@@ -383,9 +383,10 @@ def _counts(text: str) -> dict[str, list[int]]:
     return out
 
 
-# Public name for other modules (attribute_compare.cmp_count / amazon_pack): the same reader everywhere,
-# so the scorers' count check and the shared variant gate split count vs pack the same way.
+# Public names for other modules (attribute_compare.cmp_count, pack_multiplier, vendor_units): the same
+# readers everywhere, so every step splits count vs pack the same way.
 read_counts = _counts
+UNIT_COUNT_RE = _COUNT          # "5 ct", "4 Count", "2 each" (lower-case text)
 
 
 # --------------------------------------------------------------------------- #
@@ -598,8 +599,45 @@ _COLUMN_RULES = (
     (("unit count", "item count", "count per"), "count"),
 )
 _COLUMN_SKIP = ("case", "carton", "pallet", "min", "order", "master", "inner", "weight class")
+# A column named just "COUNT" / "CT" / "PCS" / "PIECES" (whole word, so "Discount" is not one). 2026-11-25.
+_COUNT_HEADER_WORDS = frozenset({"count", "ct", "pcs", "pieces"})
 _COLUMN_SKIP_WORDS = frozenset({"code", "sku", "upc", "ean", "gtin", "number", "num", "no", "id",
                                 "ref", "reference", "hex", "rgb"})
+# How the vendor sells the row (read by the pack step and told to the AI, vendor_units.unit_hints; never a
+# product attribute): units per shipping case, and the unit of measure (EA, CS, BX ...).
+_CASE_PACK_HEADER = re.compile(r"\b(?:case\s*(?:pack|qty|quantity|count)|casepack|cspk|(?:units?|qty|quantity)\s+per\s+case"
+                               r"|inner\s+pack|uom\s+(?:qty|quantity))\b")
+_UOM_HEADER = re.compile(r"\buom\b|^um$|\bunit of measure\b|\bselling unit$")
+
+
+def column_role(header: Any) -> str | None:
+    """What a vendor-file column holds, from its header: "case_pack", "uom", or a product box
+    ("color", "flavor", "scent", "material", "size_text", "gender", "count"). The one place that reads
+    column names (style codes are handled in _read_columns)."""
+    h = _norm(header)
+    plain = " ".join(re.findall(r"[a-z0-9]+", str(header or "").lower()))   # "ABC Selling UoM": _norm splits "UoM"
+    if not h:
+        return None
+    if _CASE_PACK_HEADER.search(plain):
+        return "case_pack"
+    if any(bad in h for bad in _COLUMN_SKIP) or (set(h.split()) & _COLUMN_SKIP_WORDS):
+        return None
+    for words, box in _COLUMN_RULES:
+        if any(w in h for w in words) or (box == "count" and set(h.split()) & _COUNT_HEADER_WORDS):
+            return box
+    if _UOM_HEADER.search(plain):
+        return "uom"
+    return None
+
+
+def column_roles(headers: Any) -> dict[str, str]:
+    """{role: header} for the first column of each role (see column_role)."""
+    out: dict[str, str] = {}
+    for header in headers or []:
+        role = column_role(header)
+        if role and role not in out:
+            out[role] = str(header)
+    return out
 
 
 _STYLE_HEADER = re.compile(r"\bstyle\b")
@@ -623,26 +661,23 @@ def _read_columns(bag: "_Bag", raw: dict[str, Any], brand: str) -> list[str]:
             bag.add("style", _style_value(text), "vendor_column")
             used.append(str(header))
             continue
-        if any(bad in h for bad in _COLUMN_SKIP) or (set(h.split()) & _COLUMN_SKIP_WORDS):
+        box = column_role(header)
+        if box is None or box in ("case_pack", "uom"):         # not a product column / how it is sold
             continue
-        for words, box in _COLUMN_RULES:
-            if not any(w in h for w in words):
-                continue
-            if box in ("color",):
-                bag.add("color", _clean_color(text), "vendor_column")
-            elif box in ("flavor", "scent", "material"):
-                bag.add(box, _clean_value(text, brand), "vendor_column")
-            elif box == "size_text":
-                bag.add("size", _size_field(text), "vendor_column")      # the column's own full value first: "XS/S", not "XS"
-                bag.add_text(text, "vendor_column", words=False)
-            elif box == "gender":
-                bag.add("gender", _read_gender(text, field=True), "vendor_column")
-            elif box == "count":
-                n = _num(text)
-                if n:
-                    bag.add("count", n, "vendor_column")
-            used.append(str(header))
-            break
+        if box == "color":
+            bag.add("color", _clean_color(text), "vendor_column")
+        elif box in ("flavor", "scent", "material"):
+            bag.add(box, _clean_value(text, brand), "vendor_column")
+        elif box == "size_text":
+            bag.add("size", _size_field(text), "vendor_column")      # the column's own full value first: "XS/S", not "XS"
+            bag.add_text(text, "vendor_column", words=False)
+        elif box == "gender":
+            bag.add("gender", _read_gender(text, field=True), "vendor_column")
+        elif box == "count":
+            n = _num(text)
+            if n:
+                bag.add("count", n, "vendor_column")
+        used.append(str(header))
     return used
 
 

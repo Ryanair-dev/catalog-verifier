@@ -10,7 +10,7 @@ from typing import Any
 
 from services.analytics.matching_core.models import Candidate, MatchResult, Offer, Verdict
 from services.analytics.matching_core.matching.cascade import score as score_cascade
-from services.analytics.matching_core.matching.attribute_compare import amazon_pack, compare_attributes
+from services.analytics.matching_core.matching.attribute_compare import compare_attributes
 from services.analytics.matching_core.matching.classifier import (
     explain as explain_classifier,
     score as score_classifier,
@@ -178,9 +178,26 @@ def score_export_pair(
         }, "not_approved"
     offer, candidate = build_export_pair(source, amazon, sources=sources)
     result = score_models(offer, candidate, method=method, mode=mode)
-    return result_to_scores(result, method, offer, candidate), (
-        "not_approved" if result.verdict is Verdict.REJECTED else result.verdict.value
-    )
+    scores = result_to_scores(result, method, offer, candidate)
+    first = {k: (v[0] if isinstance(v, (list, tuple)) and v else v) for k, v in (candidate.attributes or {}).items()}
+    _add_pack(scores, {"title": offer.raw_text or offer.title or "", "upc": offer.upc, "itemid": offer.mpn},
+              {**first, "asin": candidate.asin, "title": candidate.title or ""})
+    return scores, ("not_approved" if result.verdict is Verdict.REJECTED else result.verdict.value)
+
+
+def _add_pack(scores: dict[str, Any], source: dict[str, Any], amazon: dict[str, Any],
+              extracted: dict[str, Any] | None = None) -> None:
+    """Vendor units per Amazon sale (services/analytics/pack_multiplier.py), computed once per pair:
+    scores["pack"] (number, sure / probably / not sure, why) and scores["effective_pack"] (the number; read by
+    the runner, Verify, Scans and the Keepa matcher). Never breaks scoring."""
+    try:
+        from services.analytics import pack_multiplier
+        info = pack_multiplier.compute(source, amazon, extracted)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("[adapter] pack failed for %s: %s", amazon.get("asin"), exc)
+        info = {"multiplier": None, "status": "not_sure", "why": "Could not work out the pack."}
+    scores["pack"] = info
+    scores["effective_pack"] = info.get("multiplier")
 
 
 def score_pair(
@@ -243,6 +260,7 @@ def score_pair(
             "reasons": list(result.reasons) + ["upc_unconfirmed_needs_check"],
         })
     scores = result_to_scores(result, method, offer, candidate)
+    _add_pack(scores, source, normalized, extracted)
     scores["mpn_brand_match"] = mpn_brand_match
     if family:
         scores["brand_family"] = f"{family[0]} → {family[1]}"      # shown in the reason; listed on the run page
@@ -363,7 +381,6 @@ def result_to_scores(
     signals = dict(result.signals)
     reasons = list(result.reasons)
     confidence = float(result.confidence)
-    pack_n, pack_source = amazon_pack(offer, candidate)
     manufacturer_match = brands_match(offer.brand, candidate.manufacturer)
     brand_match = candidate_brand_matches(
         offer.brand, candidate.brand, candidate.manufacturer,
@@ -487,10 +504,6 @@ def result_to_scores(
         ),
         "brand_confirmed": brand_match,
         "manufacturer_confirmed": manufacturer_match,
-        # AMZ Pack column: vendor units per Amazon listing, read from the titles (2026-11-19; was always None,
-        # so the column only ever showed Amazon's item_package_quantity / number_of_items fields)
-        "effective_pack": pack_n,
-        "effective_pack_source": pack_source,
     }
     for key in (
         "size_mismatch", "apparel_size_mismatch", "linear_size_mismatch",

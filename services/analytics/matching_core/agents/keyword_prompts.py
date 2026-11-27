@@ -27,7 +27,9 @@ Apply the following rules:
    in parentheses. Preserve mm for surgical or orthopedic hardware.
 4. Collapse nested shipping quantities to the sellable unit count:
    "10/Box, 40/Case" -> "10 Count". Do not mistake the outer case quantity
-   for the unit count. Drop redundant secondary specifications.
+   for the unit count. Drop redundant secondary specifications. The case can
+   also come FIRST: "Large Patch 24 (8x3)/5 ct." and "Gel 24/3 oz." mean
+   24 units per case, each unit 5 Count / 3 oz -> "5 Count" / "3 oz".
 5. Keep real brand and product-line names. If no recognizable brand is in the
    title, prefix the supplied manufacturer. Keep product-form words even when
    they occur after a comma.

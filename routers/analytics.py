@@ -966,7 +966,8 @@ def set_candidate_pack(run_id: int, body: dict = Body(...)) -> dict[str, Any]:
             data = {}
         before = (data.get("scores") or {}).get("pack") or {}
         info = {**info, "title": before.get("title"), "fields": before.get("fields"),
-                "same_barcode": before.get("same_barcode"), "before": before.get("multiplier")}
+                "before": before.get("multiplier"),
+                "amazon_units": before.get("amazon_units")}
         data.setdefault("scores", {})["pack"] = info
         conn.execute(
             "UPDATE analytics_candidates SET amz_pack=?, data_json=? WHERE run_id=? AND row_idx=? AND asin=?",
@@ -1869,7 +1870,8 @@ def export_analytics_run(
     ] + keyword_cols + [
         "ASIN", "Amazon Title",
     ] + (["Amazon Item Name"] if run_d.get("clean_amazon_titles") else []) + [
-        "Amazon Brand", "AMZ Pack", "Pack status", "Pack why", "BSR", "Confidence",
+        "Amazon Brand", "Units in listing", "Vendor units per sale (AMZ Pack)", "Pack status", "Pack why",
+        "BSR", "Confidence",
         "Scorer", "Scorer verdict", "Scoring explanation",
         "Approval Status", "Storage Fee/unit/mo", "Storage Fee/unit/mo (Q4 peak)",
     ] + FAMILY_EXPORT_COLUMNS + pt_cols  # CHANGED: family columns, then passthrough columns
@@ -1913,6 +1915,7 @@ def export_analytics_run(
             c["amz_title"] or "",
         ] + ([c["cleaned_amz_title"] or ""] if run_d.get("clean_amazon_titles") else []) + [
             c["amz_brand"] or "",
+            (score_data.get("pack") or {}).get("amazon_units") or "",   # pieces in the Amazon listing ("5 ct" -> 5)
             c["amz_pack"] if c["amz_pack"] else 1,   # no pack detected → 1 (single unit)
             *_pack_export_cells(score_data.get("pack")),
             c["sales_rank"] if c["sales_rank"] is not None else "",

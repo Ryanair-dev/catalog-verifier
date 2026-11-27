@@ -5754,6 +5754,7 @@
           </td>
           <td class="text-xs">${escapeHtml(amzBrand)}</td>
           <td class="text-xs">${escapeHtml(sources)}</td>
+          ${_unitsCellHtml(c)}
           ${_packCellHtml(c)}
           <td class="text-xs text-right" style="color:#64748b;">${c.sales_rank != null ? Number(c.sales_rank).toLocaleString() : "—"}</td>
           <td class="text-center">${_eligBadge(c.eligibility_status)}</td>
@@ -5787,6 +5788,11 @@
     probably:  { tag: "~",      fg: "#475569", bg: "#f1f5f9", label: "Probably" },
     not_sure:  { tag: "?",      fg: "#9a3412", bg: "#ffedd5", label: "Not sure \u2014 please check" },
   };
+  function _unitsCellHtml(c) {        // pieces in the Amazon listing ("5 ct" -> 5); filled by new runs and rescore
+    const p = (c.data && c.data.scores && c.data.scores.pack) || {};
+    const n = p.amazon_units;
+    return `<td class="text-xs text-center font-mono" title="How many pieces this Amazon listing sells">${n != null ? escapeHtml(String(n)) : "—"}</td>`;
+  }
   function _packCellHtml(c) {
     const p = (c.data && c.data.scores && c.data.scores.pack) || null;
     const key = `${c.row_idx}|${c.asin}`;
