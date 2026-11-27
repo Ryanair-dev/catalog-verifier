@@ -90,17 +90,23 @@ def _s(v) -> str:
     return "" if v is None else str(v).strip()
 
 
+_CRED = None   # one credential for the process, so its token (~1 h) is reused instead of re-fetched per connect
+
+
 def _connect():
+    global _CRED
     import urllib3.util.connection as uc
     uc.HAS_IPV6 = False   # else azure-identity stalls on login.microsoftonline.com
     import certifi
     import pytds
     from azure.identity import ClientSecretCredential
 
-    cred = ClientSecretCredential(
-        os.getenv("AZURE_TENANT_ID"), os.getenv("AZURE_CLIENT_ID"),
-        os.getenv("AZURE_CLIENT_SECRET"),
-    )
+    if _CRED is None:
+        _CRED = ClientSecretCredential(
+            os.getenv("AZURE_TENANT_ID"), os.getenv("AZURE_CLIENT_ID"),
+            os.getenv("AZURE_CLIENT_SECRET"),
+        )
+    cred = _CRED
     return pytds.connect(
         server=os.getenv("AZURE_SQL_SERVER_HOST"), port=1433,
         database=os.getenv("AZURE_SQL_SERVER_DATABASE"),

@@ -16,6 +16,12 @@ Analyzes a received (or about-to-be-received) SellerCloud Purchase Order's FBA/F
 
 ## Changelog
 
+**2026-11-27b** — Adding a PO to Awaiting Analysis: ~11 s -> ~2 s.
+- User: "why does it take a while to add a po to await analysis?"
+- Found (timed live): `POST /po-analytics/automation/watchlist` waits on `po_automation.refresh_tracking_for`, which called `monday_eta.fetch_inbound_items()` = the WHOLE Inbound Shipments board (4,470 items pivoted from `monday.column_values`, 7.8 s) plus a fresh Azure AD token + connect (3.1 s), just to read the added PO's ETA.
+- `monday_eta.fetch_inbound_items(po_numbers=None)`: optional PO filter (`i.id IN (SELECT item_id ... column_id = <PO col> AND LTRIM(RTRIM(link_text_value)) IN (...))`); `refresh_tracking_for` passes its POs. The daily check still pulls the full board. Plus the shared Azure credential reuse (see `docs/infra/azure_sql.md` 2026-11-27).
+- Verified: filtered fetch for 3 random live POs + 1 nonexistent returns rows identical to the full-board subset; add-PO lookup 2.1 s warm. 58 tests pass. Needs a backend restart.
+
 **2026-11-27** — "BB Fluctuation" column now uses the v2 rule (≥10% ABOVE both 30d and 90d; drops are fine) through the shared `bb_fluctuation_formula` — see `docs/features/vendor_offers.md` 2026-11-27.
 
 **2026-11-17** — New "BB Fluctuation" column right after "Buy Box Price current" (same shared formula/CF as the Vendor Offers export, see `docs/features/vendor_offers.md` 2026-11-17d).

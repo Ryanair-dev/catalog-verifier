@@ -55,11 +55,14 @@ def _col_id(name: str) -> str:
     return f"board_id:{INBOUND_BOARD_ID}|column_id:{name}"
 
 
-def fetch_inbound_items() -> list[dict]:
+def fetch_inbound_items(po_numbers: list[int] | None = None) -> list[dict]:
     """One row per active board item:
       {item_id, po_number (int|None), eta_to_warehouse (str 'YYYY-MM-DD'|None),
        status (str|None), actual_arrived_date (str|None), vendor (str|None),
        goods (str|None), amount (str|None), purchaser (str|None), item_updated_at}.
+
+    `po_numbers` limits it to those POs' items -- adding one PO used to pull the
+    whole board (~4.5k items, ~8 s) just to read its ETA.
 
     Best-effort -- an Azure failure here must never crash a caller's scheduler
     loop; returns [] on any connection/query error.
@@ -73,6 +76,12 @@ def fetch_inbound_items() -> list[dict]:
         return []
     try:
         cur = conn.cursor()
+        wanted = sorted({str(int(p)) for p in (po_numbers or []) if p})
+        po_filter, po_params = "", ()
+        if wanted:
+            po_filter = ("AND i.id IN (SELECT item_id FROM monday.column_values WHERE column_id = %s "
+                         "AND LTRIM(RTRIM(link_text_value)) IN (" + ", ".join(["%s"] * len(wanted)) + "))")
+            po_params = (_col_id(_FIELDS["po_number"]), *wanted)
         (po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
          purchaser_col) = (
             _col_id(_FIELDS["po_number"]), _col_id(_FIELDS["eta_to_warehouse"]),
@@ -95,12 +104,13 @@ def fetch_inbound_items() -> list[dict]:
             JOIN monday.column_values cv ON cv.item_id = i.id
             WHERE i.board_id = %s AND i.state = 'active'
               AND cv.column_id IN (%s, %s, %s, %s, %s, %s, %s, %s)
+            """ + po_filter + """
             GROUP BY i.id, i.updated_at
             """,
             (po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
              purchaser_col, INBOUND_BOARD_ID,
              po_col, eta_col, status_col, arrived_col, vendor_col, goods_col, amount_col,
-             purchaser_col),
+             purchaser_col) + po_params,
         )
         out: list[dict] = []
         for r in cur.fetchall():

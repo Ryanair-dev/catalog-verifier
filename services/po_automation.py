@@ -217,7 +217,7 @@ def refresh_tracking_for(po_numbers: list[int]) -> int:
     po_set = {p for p in po_numbers if p}
     if not po_set:
         return 0
-    items = monday_eta.fetch_inbound_items()
+    items = monday_eta.fetch_inbound_items(sorted(po_set))
     relevant = [it for it in items if it.get("po_number") in po_set]
     _upsert_tracking(relevant)
     return len(relevant)

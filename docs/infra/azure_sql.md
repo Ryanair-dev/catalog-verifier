@@ -18,6 +18,8 @@ Read-only mirror of the live SellerCloud catalog (and, separately, a Monday.com 
 
 ## Changelog
 
+**2026-11-27** — `_connect()` reuses one module-level `ClientSecretCredential` (`_CRED`) instead of building a new one per connect, so azure-identity's cached token (~1 h) is reused: connect 2.8 s cold -> ~1.3-1.6 s warm, for every Azure caller. Found while speeding up PO Analytics' add-PO (see `docs/features/po_analytics.md` 2026-11-27b). A changed `AZURE_CLIENT_SECRET` now needs a restart to take effect (it already did, since `.env` is read at startup).
+
 **2026-10-30 — `fetch_rows()` is single-flight; new `is_warm()`:**
 - Found via a PO P&L dashboard load right after a restart taking 240 s: `_LOCK` only guarded the cache read, so every caller arriving during the startup scheduler's ~165 s cold pull started its OWN full pull of the catalog view in parallel. New `_PULL_LOCK` serializes the pull itself; a caller that was waiting re-checks the cache and reuses the fresh rows instead of pulling again (`force=True` still always pulls). Pull body moved to `_pull_rows()`, unchanged.
 - `is_warm()` -- True once the view has been pulled at least once; lets latency-sensitive callers (PO P&L, `docs/features/reports.md` 2026-10-30) skip optional catalog enrichment instead of blocking on a cold pull.
